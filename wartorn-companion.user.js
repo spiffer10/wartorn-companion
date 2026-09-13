@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.6
+// @version      2.7
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -146,22 +146,44 @@
     // your key to a popup dialog directly.
     let userApiKey = safeGmGet('wt_api_key', '');
 
-    safeRegisterMenuCommand(userApiKey ? '✅ Wartorn Linked (re-link)' : '⚙️ Link Wartorn Account', () => {
-        window.open(`${WARTORN_HOST}/login`, '_blank');
-    });
+    // The dashboard-side auto-link (see DASHBOARD HANDSHAKE above) writes
+    // the key via safeGmSet() on wartorn.spiffer10.com, and this side reads
+    // it via safeGmGet() on torn.com - that only actually crosses origins
+    // through real GM_setValue/GM_getValue storage. Without that (the
+    // localStorage fallback is per-origin and can't bridge the two sites),
+    // opening the login page does nothing for this side: the key gets
+    // written to the dashboard's own origin's localStorage and torn.com can
+    // never see it. Detected once here so both entry points below can fall
+    // back to asking for the key directly instead of silently not working.
+    const hasRealGmStorage = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
+
+    function linkWartorn() {
+        if (hasRealGmStorage) {
+            window.open(`${WARTORN_HOST}/login`, '_blank');
+            return;
+        }
+        const key = prompt('This browser (e.g. TornPDA) doesn\'t support the storage the automatic link needs - paste your Torn API key directly instead:', userApiKey);
+        if (key !== null && key.trim()) {
+            userApiKey = key.trim();
+            safeGmSet('wt_api_key', userApiKey);
+            alert('Linked! Reload the page for it to take effect.');
+        }
+    }
+
+    safeRegisterMenuCommand(userApiKey ? '✅ Wartorn Linked (re-link)' : '⚙️ Link Wartorn Account', linkWartorn);
 
     // A browser blocks window.open() unless it's a direct result of a user
     // gesture, so this can't pop the login page open on its own - instead,
     // this is a small clickable notice next to the (now hard to miss)
     // logo, since the Tampermonkey extension menu above is easy to never
     // notice at all. Clicking it is a real gesture, so that window.open()
-    // always goes through.
+    // (or the prompt() fallback above) always goes through.
     if (!userApiKey) {
         const notice = document.createElement('div');
         notice.id = 'wt-link-notice';
         notice.style.cssText = 'position: fixed; top: calc(25vh + 140px); left: 10px; z-index: 9999999; width: 60px; background: #15171c; border: 1px solid #00e5ff; border-radius: 6px; padding: 8px 6px; text-align: center; cursor: pointer; box-shadow: 0 4px 15px rgba(0,0,0,0.6);';
         notice.innerHTML = '<div style="font-size:1.3em; line-height:1;">🔗</div><div style="color:#00e5ff; font-size:0.65em; font-weight:bold; margin-top:4px; line-height:1.2;">Link Wartorn</div>';
-        notice.addEventListener('click', () => window.open(`${WARTORN_HOST}/login`, '_blank'));
+        notice.addEventListener('click', linkWartorn);
         document.body.appendChild(notice);
         return;
     }
@@ -888,7 +910,12 @@
                     0%, 100% { filter: drop-shadow(0 0 3px rgba(244,67,54,0.9)) drop-shadow(0 0 2px rgba(244,67,54,0.9)); }
                     50% { filter: drop-shadow(0 0 16px rgba(244,67,54,1)) drop-shadow(0 0 8px rgba(244,67,54,1)); }
                 }
+                @keyframes wt-away-pulse {
+                    0%, 100% { filter: drop-shadow(0 0 3px rgba(255,152,0,0.85)) drop-shadow(0 0 2px rgba(255,152,0,0.85)); }
+                    50% { filter: drop-shadow(0 0 14px rgba(255,152,0,1)) drop-shadow(0 0 6px rgba(255,152,0,1)); }
+                }
                 #wt-ghost-logo img.wt-logo-danger { animation: wt-danger-pulse 1s ease-in-out infinite; }
+                #wt-ghost-logo img.wt-logo-away { animation: wt-away-pulse 1.4s ease-in-out infinite; }
             `;
             document.head.appendChild(scrollbarStyle);
 
@@ -985,22 +1012,30 @@
         let hasPlayedTravelAlert = false;
         let lastChainBeepTime = 0;
 
-        // Pulses the ghost logo red when: a war is active, AND at least one
-        // enemy with higher stats than you is both Okay (physically able to
-        // attack) and Online (actually at the keyboard, not just logged in
-        // idle) - the combination that means they could plausibly hit you
-        // back right now. Always-on (not a Settings toggle, unlike the
-        // sounds) since it's a passive visual state, not something that
-        // interrupts with noise.
-        function updateLogoDangerState(dangerTarget) {
+        // Pulses the ghost logo when a war is active and an enemy with
+        // higher stats than you is both attackable and present:
+        //   Red    - Online (actually at the keyboard right now)
+        //   Orange - Idle (logged in, but not actively at the keyboard)
+        // "Attackable" depends on where you are: normally that's just
+        // being Okay, but if you're abroad yourself, only enemies who are
+        // ALSO abroad actually count - someone sitting in Torn can't be
+        // the one who hits you while you're overseas, so they're excluded
+        // even if they're online and stronger than you. Always-on (not a
+        // Settings toggle, unlike the sounds) since it's a passive visual
+        // state, not something that interrupts with noise. Red takes
+        // priority over orange when both would apply.
+        function updateLogoDangerState(dangerTarget, awayTarget) {
             const img = document.querySelector('#wt-ghost-logo img');
             const link = document.getElementById('wt-ghost-logo');
             if (!img || !link) return;
+            img.classList.remove('wt-logo-danger', 'wt-logo-away');
             if (dangerTarget) {
                 img.classList.add('wt-logo-danger');
-                link.title = `⚠️ ${dangerTarget.name} (higher stats than you) is Online and Okay - they can attack you right now.`;
+                link.title = `⚠️ ${dangerTarget.name} (higher stats than you) is Online and able to attack you right now.`;
+            } else if (awayTarget) {
+                img.classList.add('wt-logo-away');
+                link.title = `🕐 ${awayTarget.name} (higher stats than you) is Away and able to attack you.`;
             } else {
-                img.classList.remove('wt-logo-danger');
                 link.title = '';
             }
         }
@@ -1009,19 +1044,20 @@
             try {
                 const data = await fetchFromWartorn('war-status');
                 if (!data || data.error) {
-                    updateLogoDangerState(null);
+                    updateLogoDangerState(null, null);
                     return;
                 }
                 if (data.user_cooldowns && data.user_cooldowns.server_time) {
                     serverClockOffsetMs = (data.user_cooldowns.server_time * 1000) - Date.now();
                 }
 
+                const me = (data.us || []).find(m => String(m.id) === String(data.current_user_id));
+                const myStateLower = me ? String(me.state || '').toLowerCase() : '';
+                const amAbroad = myStateLower.includes('travel') || myStateLower.includes('abroad');
+
                 if (flightSoundEnabled) {
-                    const me = (data.us || []).find(m => String(m.id) === String(data.current_user_id));
-                    const stateLower = me ? String(me.state || '').toLowerCase() : '';
-                    const isTraveling = stateLower.includes('travel') || stateLower.includes('abroad');
                     const travelSecs = me ? secsUntil(me.until) : null;
-                    if (isTraveling && travelSecs !== null && travelSecs <= 30) {
+                    if (amAbroad && travelSecs !== null && travelSecs <= 30) {
                         if (!hasPlayedTravelAlert) {
                             playTravelLandingChime();
                             hasPlayedTravelAlert = true;
@@ -1044,18 +1080,33 @@
                     }
                 }
 
+                // "Attackable" depends on where you are: normally that
+                // means Okay (in Torn, not hospital/jail/traveling). If
+                // you're abroad yourself, only enemies who are ALSO abroad
+                // are actually able to reach you - someone sitting in Torn
+                // can't be the one who hits you while you're overseas, so
+                // they shouldn't count as a threat right now even if
+                // they're online and stronger than you.
                 const nowSecs = Math.floor(nowServerMs() / 1000);
                 const warIsActive = data.start_time > 0 && data.start_time <= nowSecs && data.end_time === 0;
                 const myStat = data.current_user_stat || 0;
-                let dangerTarget = null;
+                let dangerTarget = null; // red: Online
+                let awayTarget = null;   // orange: Idle
                 if (warIsActive && myStat > 0 && data.them) {
                     data.them.forEach(m => {
-                        if (m.state === 'Okay' && m.online_status === 'Online' && m.sort_stat > myStat) {
+                        if (m.sort_stat <= myStat) return;
+                        const enemyStateLower = String(m.state || '').toLowerCase();
+                        const enemyAbroad = enemyStateLower.includes('abroad') || enemyStateLower.includes('travel');
+                        const isAttackable = amAbroad ? enemyAbroad : m.state === 'Okay';
+                        if (!isAttackable) return;
+                        if (m.online_status === 'Online') {
                             if (!dangerTarget || m.sort_stat > dangerTarget.sort_stat) dangerTarget = m;
+                        } else if (m.online_status === 'Idle') {
+                            if (!awayTarget || m.sort_stat > awayTarget.sort_stat) awayTarget = m;
                         }
                     });
                 }
-                updateLogoDangerState(dangerTarget);
+                updateLogoDangerState(dangerTarget, awayTarget);
             } catch (e) {}
         }
         setInterval(checkLiveAlerts, 5000);
