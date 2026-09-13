@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.8.4
+// @version      2.9
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -104,10 +104,33 @@
         (document.head || document.documentElement).appendChild(style);
     }
  
+    // Logo + button stack both live inside this one wrapper so the "hide
+    // buttons" toggle (added in the gated module below, since it's
+    // meaningless without buttons) can slide BOTH together with a single
+    // transform on the wrapper, without touching either element's own
+    // transform (the logo already uses its own for the hover scale-up, and
+    // stomping that from two places would fight itself). A transformed
+    // element becomes the containing block for its position:fixed
+    // descendants, so the logo/buttons keep their exact normal-state
+    // top/left values unchanged while still sliding with this wrapper.
+    // Created here (unconditionally, alongside the logo) rather than in the
+    // gated module below, since the logo itself renders even on the attack
+    // popup where that module never runs.
+    function getOrCreateEdgeCluster() {
+        let cluster = document.getElementById('wt-edge-cluster');
+        if (!cluster) {
+            cluster = document.createElement('div');
+            cluster.id = 'wt-edge-cluster';
+            cluster.style.cssText = 'position:fixed; inset:0; pointer-events:none; transform:translateX(0); transition:transform 0.3s ease; z-index:9999999;';
+            document.body.appendChild(cluster);
+        }
+        return cluster;
+    }
+
     // --- 1. THE GHOST HUD LOGO ---
     function injectGhostLogo() {
         if (document.getElementById('wt-ghost-logo')) return;
-        
+
         const link = document.createElement('a');
         link.id = 'wt-ghost-logo';
         link.href = WARTORN_HOST;
@@ -116,7 +139,7 @@
         // 25% down the viewport, with the side-panel button stack directly
         // below it (see injectSidePanels()'s wrapper top offset). Sized to
         // the FINAL (post-rotation) footprint - 40 wide x 130 tall.
-        link.style.cssText = `position: fixed; top: 25vh; left: 9px; z-index: 9999999; opacity: 0.85; transition: all 0.2s ease; cursor: pointer; display: flex; align-items: center; justify-content: center; width: 40px; height: 130px; overflow: hidden;`;
+        link.style.cssText = `position: fixed; top: 25vh; left: 9px; z-index: 9999999; opacity: 0.85; transition: all 0.2s ease; cursor: pointer; display: flex; align-items: center; justify-content: center; width: 40px; height: 130px; overflow: hidden; pointer-events: auto;`;
 
         const img = document.createElement('img');
         img.src = `${WARTORN_HOST}/wartornlogo.png`;
@@ -138,7 +161,7 @@
         link.addEventListener('mouseleave', () => { link.style.opacity = '0.85'; link.style.transform = 'scale(1)'; });
         
         link.appendChild(img);
-        document.body.appendChild(link);
+        getOrCreateEdgeCluster().appendChild(link);
     }
  
     injectGhostLogo();
@@ -947,7 +970,8 @@
             wrap.id = 'wt-side-buttons';
             // Directly below the logo, which sits at top:25vh and is 130px
             // tall - see injectGhostLogo() above.
-            wrap.style.cssText = 'position:fixed; top:calc(25vh + 140px); left:10px; z-index:9999999; display:flex; flex-direction:column; gap:6px;';
+            const WRAP_TRANSITION = 'opacity 0.3s ease, transform 0.3s ease';
+            wrap.style.cssText = `position:fixed; top:calc(25vh + 140px); left:10px; z-index:9999999; display:flex; flex-direction:column; gap:6px; pointer-events:auto; transform-origin:top center; transition:${WRAP_TRANSITION};`;
             Object.keys(PANEL_DEFS).forEach(key => {
                 const def = PANEL_DEFS[key];
                 const btn = document.createElement('div');
@@ -971,7 +995,69 @@
                 btn.addEventListener('click', () => openSidePanel(key));
                 wrap.appendChild(btn);
             });
-            document.body.appendChild(wrap);
+            const cluster = getOrCreateEdgeCluster();
+            cluster.appendChild(wrap);
+
+            // --- HIDE/SHOW TOGGLE ---
+            // Collapsing has two stages: the buttons shrink and fade upward
+            // as if being pulled into the logo above them, then (only once
+            // that finishes) the whole cluster - logo included - slides left
+            // to nearly off-screen. Expanding reverses the order: slide back
+            // in first, then the buttons drop back down out of the logo.
+            // The toggle tab itself lives OUTSIDE the cluster (appended to
+            // body, not into it) so it never slides away and stays
+            // reachable no matter how collapsed things are.
+            const EDGE_SLIDE_PX = 32; // logo is 40px wide - this leaves ~8px peeking out
+            const EDGE_ANIM_MS = 300;
+            const CLUSTER_TRANSITION = 'transform 0.3s ease';
+            let edgeCollapsed = safeGmGet('wt_edge_collapsed', false);
+
+            const toggle = document.createElement('div');
+            toggle.id = 'wt-edge-toggle';
+            toggle.title = 'Hide/show the Wartorn buttons';
+            // Fills exactly the 10px gap between the logo's bottom (top:25vh
+            // + its 130px height) and the button wrap's top (25vh + 140px).
+            toggle.style.cssText = 'position:fixed; top:calc(25vh + 130px); left:9px; z-index:9999999; width:40px; height:10px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-top:none; border-bottom:none; cursor:pointer; font-size:8px; line-height:1; color:#00e5ff; opacity:0.85; transition:0.15s; pointer-events:auto;';
+            toggle.addEventListener('mouseenter', () => { toggle.style.opacity = '1'; });
+            toggle.addEventListener('mouseleave', () => { toggle.style.opacity = '0.85'; });
+
+            function applyEdgeCollapsed(animate) {
+                toggle.innerText = edgeCollapsed ? '›' : '‹'; // › : ‹
+                if (edgeCollapsed) {
+                    wrap.style.pointerEvents = 'none';
+                    wrap.style.opacity = '0';
+                    wrap.style.transform = 'translateY(-120px) scale(0.4)';
+                    setTimeout(() => { cluster.style.transform = `translateX(-${EDGE_SLIDE_PX}px)`; }, animate ? EDGE_ANIM_MS : 0);
+                } else {
+                    cluster.style.transform = 'translateX(0)';
+                    setTimeout(() => {
+                        wrap.style.opacity = '1';
+                        wrap.style.transform = 'translateY(0) scale(1)';
+                        wrap.style.pointerEvents = 'auto';
+                    }, animate ? EDGE_ANIM_MS : 0);
+                }
+            }
+
+            toggle.addEventListener('click', () => {
+                edgeCollapsed = !edgeCollapsed;
+                safeGmSet('wt_edge_collapsed', edgeCollapsed);
+                if (edgeCollapsed) closeSidePanel();
+                applyEdgeCollapsed(true);
+            });
+            document.body.appendChild(toggle);
+
+            // Apply a persisted collapsed state instantly on page load,
+            // skipping the transition - only an actual click should animate,
+            // not every fresh page load landing back in the same state.
+            if (edgeCollapsed) {
+                cluster.style.transition = 'none';
+                wrap.style.transition = 'none';
+                applyEdgeCollapsed(false);
+                requestAnimationFrame(() => {
+                    cluster.style.transition = CLUSTER_TRANSITION;
+                    wrap.style.transition = WRAP_TRANSITION;
+                });
+            }
         }
 
         injectSidePanels();
