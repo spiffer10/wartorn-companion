@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.7
+// @version      2.8
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -149,20 +149,23 @@
     // The dashboard-side auto-link (see DASHBOARD HANDSHAKE above) writes
     // the key via safeGmSet() on wartorn.spiffer10.com, and this side reads
     // it via safeGmGet() on torn.com - that only actually crosses origins
-    // through real GM_setValue/GM_getValue storage. Without that (the
-    // localStorage fallback is per-origin and can't bridge the two sites),
-    // opening the login page does nothing for this side: the key gets
-    // written to the dashboard's own origin's localStorage and torn.com can
-    // never see it. Detected once here so both entry points below can fall
-    // back to asking for the key directly instead of silently not working.
-    const hasRealGmStorage = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
-
+    // through real, globally-shared GM_setValue/GM_getValue storage.
+    //
+    // Tried detecting that with typeof GM_getValue === 'function' and
+    // branching on it, but that turned out unreliable in practice: an
+    // environment (TornPDA, apparently) can define these as real callable
+    // functions without them actually behaving like standard Tampermonkey
+    // storage shared across every domain the script runs on - so the
+    // detection said "should work" while the actual cross-origin bridge
+    // still silently didn't. Rather than keep guessing at environment
+    // detection, both entry points below now always offer the manual path
+    // as a visible second option, so it doesn't matter whether the
+    // automatic one can be verified to work - there's always a way through.
     function linkWartorn() {
-        if (hasRealGmStorage) {
-            window.open(`${WARTORN_HOST}/login`, '_blank');
-            return;
-        }
-        const key = prompt('This browser (e.g. TornPDA) doesn\'t support the storage the automatic link needs - paste your Torn API key directly instead:', userApiKey);
+        window.open(`${WARTORN_HOST}/login`, '_blank');
+    }
+    function linkWartornManually() {
+        const key = prompt('Paste your Torn API key to link Wartorn manually:', userApiKey);
         if (key !== null && key.trim()) {
             userApiKey = key.trim();
             safeGmSet('wt_api_key', userApiKey);
@@ -171,13 +174,14 @@
     }
 
     safeRegisterMenuCommand(userApiKey ? '✅ Wartorn Linked (re-link)' : '⚙️ Link Wartorn Account', linkWartorn);
+    safeRegisterMenuCommand('🔑 Link Wartorn Manually (paste key)', linkWartornManually);
 
     // A browser blocks window.open() unless it's a direct result of a user
     // gesture, so this can't pop the login page open on its own - instead,
     // this is a small clickable notice next to the (now hard to miss)
     // logo, since the Tampermonkey extension menu above is easy to never
     // notice at all. Clicking it is a real gesture, so that window.open()
-    // (or the prompt() fallback above) always goes through.
+    // always goes through.
     if (!userApiKey) {
         const notice = document.createElement('div');
         notice.id = 'wt-link-notice';
@@ -185,6 +189,19 @@
         notice.innerHTML = '<div style="font-size:1.3em; line-height:1;">🔗</div><div style="color:#00e5ff; font-size:0.65em; font-weight:bold; margin-top:4px; line-height:1.2;">Link Wartorn</div>';
         notice.addEventListener('click', linkWartorn);
         document.body.appendChild(notice);
+
+        // Always-visible manual fallback right below it, for whenever the
+        // automatic dashboard-login link doesn't actually work (TornPDA,
+        // or anywhere else GM storage doesn't bridge origins the standard
+        // way) - no environment detection to get wrong, just a second
+        // option that's always reliable regardless of why the first one
+        // didn't work.
+        const manualLink = document.createElement('div');
+        manualLink.id = 'wt-link-manual';
+        manualLink.style.cssText = 'position: fixed; top: calc(25vh + 195px); left: 10px; z-index: 9999999; width: 60px; text-align: center; color: #888; font-size: 0.62em; cursor: pointer; text-decoration: underline; line-height: 1.3;';
+        manualLink.innerText = "Auto-link not working? Paste key manually";
+        manualLink.addEventListener('click', linkWartornManually);
+        document.body.appendChild(manualLink);
         return;
     }
  
@@ -1040,10 +1057,22 @@
             }
         }
 
+        // Network fetch and the actual threshold checks are deliberately
+        // decoupled: fetching war-status every 5s (checkLiveAlerts) keeps
+        // load reasonable, but only checking the 30s/120s/90s thresholds
+        // at that same 5s cadence meant an alert could fire several
+        // seconds late - a threshold crossed between two polls wasn't
+        // caught until the next one. tickLocalAlertClocks() instead
+        // recomputes against the last fetched snapshot every 1s using pure
+        // elapsed-time math, so it catches the exact second a threshold is
+        // crossed without needing a fresh network round-trip for it.
+        let lastAlertSnapshot = null; // { meUntil, amAbroad, chainTimeoutAtFetch, chainCount, chainOnCooldown, fetchedAtMs }
+
         async function checkLiveAlerts() {
             try {
                 const data = await fetchFromWartorn('war-status');
                 if (!data || data.error) {
+                    lastAlertSnapshot = null;
                     updateLogoDangerState(null, null);
                     return;
                 }
@@ -1055,30 +1084,14 @@
                 const myStateLower = me ? String(me.state || '').toLowerCase() : '';
                 const amAbroad = myStateLower.includes('travel') || myStateLower.includes('abroad');
 
-                if (flightSoundEnabled) {
-                    const travelSecs = me ? secsUntil(me.until) : null;
-                    if (amAbroad && travelSecs !== null && travelSecs <= 30) {
-                        if (!hasPlayedTravelAlert) {
-                            playTravelLandingChime();
-                            hasPlayedTravelAlert = true;
-                        }
-                    } else {
-                        hasPlayedTravelAlert = false;
-                    }
-                }
-
-                if (chainSoundEnabled && data.chain) {
-                    const chainSecs = data.chain.timeout || 0;
-                    const chainCount = data.chain.current || 0;
-                    const onCooldown = (data.chain.cooldown || 0) > 0;
-                    if (chainSecs > 0 && chainSecs <= 120 && chainCount >= 10 && !onCooldown) {
-                        const now = Date.now();
-                        if (now - lastChainBeepTime >= 4000) {
-                            lastChainBeepTime = now;
-                            playChainBeep(chainSecs <= 90);
-                        }
-                    }
-                }
+                lastAlertSnapshot = {
+                    meUntil: me ? me.until : null,
+                    amAbroad,
+                    chainTimeoutAtFetch: data.chain ? (data.chain.timeout || 0) : 0,
+                    chainCount: data.chain ? (data.chain.current || 0) : 0,
+                    chainOnCooldown: data.chain ? (data.chain.cooldown || 0) > 0 : false,
+                    fetchedAtMs: Date.now()
+                };
 
                 // "Attackable" depends on where you are: normally that
                 // means Okay (in Torn, not hospital/jail/traveling). If
@@ -1110,6 +1123,43 @@
             } catch (e) {}
         }
         setInterval(checkLiveAlerts, 5000);
+        checkLiveAlerts(); // don't wait 5s for the first check
+
+        function tickLocalAlertClocks() {
+            const s = lastAlertSnapshot;
+            if (!s) return;
+
+            if (flightSoundEnabled && s.amAbroad && s.meUntil) {
+                // meUntil is an absolute epoch timestamp, so this stays
+                // accurate every tick with no elapsed-time math needed -
+                // secsUntil() already measures against current time.
+                const travelSecs = secsUntil(s.meUntil);
+                if (travelSecs !== null && travelSecs <= 30) {
+                    if (!hasPlayedTravelAlert) {
+                        playTravelLandingChime();
+                        hasPlayedTravelAlert = true;
+                    }
+                } else {
+                    hasPlayedTravelAlert = false;
+                }
+            }
+
+            if (chainSoundEnabled && s.chainTimeoutAtFetch > 0 && !s.chainOnCooldown && s.chainCount >= 10) {
+                // chain.timeout is a plain "seconds remaining as of when we
+                // fetched it" duration, not an absolute timestamp, so this
+                // one DOES need elapsed-time correction.
+                const elapsedSecs = (Date.now() - s.fetchedAtMs) / 1000;
+                const chainSecsNow = s.chainTimeoutAtFetch - elapsedSecs;
+                if (chainSecsNow > 0 && chainSecsNow <= 120) {
+                    const now = Date.now();
+                    if (now - lastChainBeepTime >= 4000) {
+                        lastChainBeepTime = now;
+                        playChainBeep(chainSecsNow <= 90);
+                    }
+                }
+            }
+        }
+        setInterval(tickLocalAlertClocks, 1000);
     }
 
 })();
