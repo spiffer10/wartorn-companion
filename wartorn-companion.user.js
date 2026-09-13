@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.9.1
+// @version      2.9.2
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1181,6 +1181,18 @@
             });
         }
 
+        // Right after a real landing, Torn's API can briefly still return a
+        // small leftover time_left (a stale/cached read from just before it
+        // actually hit 0) instead of a clean 0. Since landing had already
+        // nulled travelLandAtMs, that stray reading looked like a brand
+        // new trip and got accepted immediately - re-arming the alert
+        // under the 30s threshold and firing the chime again right after
+        // you'd just landed. Torn's shortest real flight is many minutes,
+        // so any "first" reading (starting fresh from null) under this
+        // floor is almost certainly that kind of stale artifact, not an
+        // actual trip, and is ignored rather than accepted.
+        const MIN_FRESH_TRAVEL_SECS = 45;
+
         async function checkTravelStatus() {
             if (!flightSoundEnabled || !userApiKey) { travelLandAtMs = null; return; }
             const travel = await fetchTornTravel();
@@ -1188,6 +1200,7 @@
                 travelLandAtMs = null;
                 return;
             }
+            if (travelLandAtMs === null && travel.time_left < MIN_FRESH_TRAVEL_SECS) return;
             const candidateLandAtMs = Date.now() + travel.time_left * 1000;
             if (travelLandAtMs === null || candidateLandAtMs > travelLandAtMs + TRAVEL_NEW_TRIP_JUMP_SECS * 1000) {
                 travelLandAtMs = candidateLandAtMs;
