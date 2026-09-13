@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.8
+// @version      2.8.1
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -129,8 +129,12 @@
         // with nothing clipped or bleeding into the button stack below.
         img.style.cssText = `width: 130px; height: 40px; object-fit: contain; filter: drop-shadow(0 0 2px rgba(0,229,255,0.8)); transform: rotate(-90deg);`;
         
+        // Base opacity is 0.85 (set above) - mouseleave used to drop it to
+        // 0.35, well below that, making the logo look far more transparent
+        // after hovering than it was before. Restores to the same 0.85 it
+        // started at instead.
         link.addEventListener('mouseenter', () => { link.style.opacity = '1'; link.style.transform = 'scale(1.05)'; });
-        link.addEventListener('mouseleave', () => { link.style.opacity = '0.35'; link.style.transform = 'scale(1)'; });
+        link.addEventListener('mouseleave', () => { link.style.opacity = '0.85'; link.style.transform = 'scale(1)'; });
         
         link.appendChild(img);
         document.body.appendChild(link);
@@ -870,7 +874,7 @@
             stopPanelTick();
             const p = document.getElementById('wt-side-panel');
             if (p) p.remove();
-            document.querySelectorAll('.wt-side-btn').forEach(b => { b.style.background = 'rgba(21,23,28,0.9)'; });
+            document.querySelectorAll('.wt-side-btn').forEach(b => { b.style.background = 'rgba(21,23,28,0.9)'; b.style.opacity = '0.85'; });
             activePanelKey = null;
         }
 
@@ -902,7 +906,9 @@
             }, { passive: true });
             document.getElementById('wt-panel-close').addEventListener('click', closeSidePanel);
             document.querySelectorAll('.wt-side-btn').forEach(b => {
-                b.style.background = (b.dataset.key === key) ? 'rgba(0,229,255,0.25)' : 'rgba(21,23,28,0.9)';
+                const isActive = b.dataset.key === key;
+                b.style.background = isActive ? 'rgba(0,229,255,0.25)' : 'rgba(21,23,28,0.9)';
+                b.style.opacity = isActive ? '1' : '0.85';
             });
 
             def.render();
@@ -948,9 +954,19 @@
                 btn.dataset.key = key;
                 btn.title = def.title;
                 btn.innerText = def.icon;
-                btn.style.cssText = 'width:34px; height:34px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.1em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5);';
-                btn.addEventListener('mouseenter', () => { if (activePanelKey !== key) btn.style.background = 'rgba(0,229,255,0.15)'; });
-                btn.addEventListener('mouseleave', () => { if (activePanelKey !== key) btn.style.background = 'rgba(21,23,28,0.9)'; });
+                // Same opacity scheme as the ghost logo (0.85 base, 1 on
+                // hover) for visual consistency across the whole left-edge
+                // UI - background color separately signals which panel (if
+                // any) is currently open.
+                btn.style.cssText = 'width:34px; height:34px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.1em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
+                btn.addEventListener('mouseenter', () => {
+                    btn.style.opacity = '1';
+                    if (activePanelKey !== key) btn.style.background = 'rgba(0,229,255,0.15)';
+                });
+                btn.addEventListener('mouseleave', () => {
+                    btn.style.opacity = activePanelKey === key ? '1' : '0.85';
+                    if (activePanelKey !== key) btn.style.background = 'rgba(21,23,28,0.9)';
+                });
                 btn.addEventListener('click', () => openSidePanel(key));
                 wrap.appendChild(btn);
             });
