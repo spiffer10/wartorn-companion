@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.8.1
+// @version      2.8.2
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1045,6 +1045,46 @@
         let hasPlayedTravelAlert = false;
         let lastChainBeepTime = 0;
 
+        // Flight landing timing used to ride on the same war-status fetch as
+        // everything else, which goes through Wartorn's backend and its own
+        // cache - fine for a roster list, but it meant the countdown here
+        // could be several seconds stale, and a fetch landing right on top
+        // of the 30s mark could flip the flag back and forth. The script
+        // already runs on torn.com with the user's own real Torn API key in
+        // hand (userApiKey - see DASHBOARD HANDSHAKE above), so this instead
+        // hits api.torn.com directly: no backend round-trip, no shared
+        // cache, and it's each player's own key/quota, not the server's
+        // shared one, so this doesn't touch the shared-queue rate limits.
+        let travelSnapshot = null; // { timeLeftAtFetch, fetchedAtMs }
+
+        function fetchTornTravel() {
+            return new Promise((resolve) => {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: `https://api.torn.com/user/?selections=travel&key=${encodeURIComponent(userApiKey)}`,
+                    timeout: 8000,
+                    onload: (res) => {
+                        try {
+                            const data = JSON.parse(res.responseText);
+                            resolve((data && !data.error) ? data.travel : null);
+                        } catch (e) { resolve(null); }
+                    },
+                    onerror: () => resolve(null),
+                    ontimeout: () => resolve(null)
+                });
+            });
+        }
+
+        async function checkTravelStatus() {
+            if (!flightSoundEnabled || !userApiKey) { travelSnapshot = null; return; }
+            const travel = await fetchTornTravel();
+            travelSnapshot = (travel && typeof travel.time_left === 'number')
+                ? { timeLeftAtFetch: travel.time_left, fetchedAtMs: Date.now() }
+                : null;
+        }
+        setInterval(checkTravelStatus, 5000);
+        checkTravelStatus();
+
         // Pulses the ghost logo when a war is active and an enemy with
         // higher stats than you is both attackable and present:
         //   Red    - Online (actually at the keyboard right now)
@@ -1082,7 +1122,7 @@
         // recomputes against the last fetched snapshot every 1s using pure
         // elapsed-time math, so it catches the exact second a threshold is
         // crossed without needing a fresh network round-trip for it.
-        let lastAlertSnapshot = null; // { meUntil, amAbroad, chainTimeoutAtFetch, chainCount, chainOnCooldown, fetchedAtMs }
+        let lastAlertSnapshot = null; // { amAbroad, chainTimeoutAtFetch, chainCount, chainOnCooldown, fetchedAtMs }
 
         async function checkLiveAlerts() {
             try {
@@ -1101,7 +1141,6 @@
                 const amAbroad = myStateLower.includes('travel') || myStateLower.includes('abroad');
 
                 lastAlertSnapshot = {
-                    meUntil: me ? me.until : null,
                     amAbroad,
                     chainTimeoutAtFetch: data.chain ? (data.chain.timeout || 0) : 0,
                     chainCount: data.chain ? (data.chain.current || 0) : 0,
@@ -1145,17 +1184,24 @@
             const s = lastAlertSnapshot;
             if (!s) return;
 
-            if (flightSoundEnabled && s.amAbroad && s.meUntil) {
-                // meUntil is an absolute epoch timestamp, so this stays
-                // accurate every tick with no elapsed-time math needed -
-                // secsUntil() already measures against current time.
-                const travelSecs = secsUntil(s.meUntil);
-                if (travelSecs !== null && travelSecs <= 30) {
+            if (flightSoundEnabled && travelSnapshot) {
+                // time_left is a plain "seconds remaining as of that Torn
+                // API call" duration (not an absolute timestamp), so this
+                // needs the same elapsed-time correction as the chain
+                // timeout below.
+                const elapsedSecs = (Date.now() - travelSnapshot.fetchedAtMs) / 1000;
+                const travelSecsNow = travelSnapshot.timeLeftAtFetch - elapsedSecs;
+                if (travelSecsNow > 0 && travelSecsNow <= 30) {
                     if (!hasPlayedTravelAlert) {
                         playTravelLandingChime();
                         hasPlayedTravelAlert = true;
                     }
                 } else {
+                    // Resets both above 30s (not there yet) and at/below 0s
+                    // (already landed) - either way there's nothing left to
+                    // play, and this is what stops it firing again mid-air
+                    // if the countdown briefly reports 30s from two polls
+                    // in a row.
                     hasPlayedTravelAlert = false;
                 }
             }
