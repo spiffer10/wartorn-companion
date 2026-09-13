@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.8.2
+// @version      2.8.3
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -11,6 +11,7 @@
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
 // @connect      wartorn.spiffer10.com
+// @connect      api.torn.com
 // @downloadURL  https://update.greasyfork.org/scripts/595166/Wartorn%20Companion.user.js
 // @updateURL    https://update.greasyfork.org/scripts/595166/Wartorn%20Companion.meta.js
 // @license MIT
