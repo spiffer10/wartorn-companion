@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.8.3
+// @version      2.8.4
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1049,14 +1049,28 @@
         // Flight landing timing used to ride on the same war-status fetch as
         // everything else, which goes through Wartorn's backend and its own
         // cache - fine for a roster list, but it meant the countdown here
-        // could be several seconds stale, and a fetch landing right on top
-        // of the 30s mark could flip the flag back and forth. The script
-        // already runs on torn.com with the user's own real Torn API key in
-        // hand (userApiKey - see DASHBOARD HANDSHAKE above), so this instead
+        // could be several seconds stale. The script already runs on
+        // torn.com with the user's own real Torn API key in hand
+        // (userApiKey - see DASHBOARD HANDSHAKE above), so this instead
         // hits api.torn.com directly: no backend round-trip, no shared
         // cache, and it's each player's own key/quota, not the server's
         // shared one, so this doesn't touch the shared-queue rate limits.
-        let travelSnapshot = null; // { timeLeftAtFetch, fetchedAtMs }
+        //
+        // travel.time_left is "seconds remaining as of this specific call",
+        // not perfectly monotonic between calls - Torn's own rounding/
+        // caching can report a couple seconds MORE remaining on one poll
+        // than the previous one implied. Re-deriving the countdown fresh
+        // from that value every 5s poll let a noisy reading nudge the
+        // estimate back above 30s right as the alert flag had just been
+        // reset for landing, re-arming it and firing the chime again on
+        // the next crossing - repeating roughly every poll. So instead
+        // this locks in one absolute landing timestamp (travelLandAtMs)
+        // that can only be pulled EARLIER by a later poll, never later,
+        // unless the jump is big enough to mean a genuinely new/extended
+        // trip rather than jitter - that's the only case allowed to push
+        // it later, and it also re-arms the alert for the new countdown.
+        let travelLandAtMs = null;
+        const TRAVEL_NEW_TRIP_JUMP_SECS = 60;
 
         function fetchTornTravel() {
             return new Promise((resolve) => {
@@ -1077,11 +1091,19 @@
         }
 
         async function checkTravelStatus() {
-            if (!flightSoundEnabled || !userApiKey) { travelSnapshot = null; return; }
+            if (!flightSoundEnabled || !userApiKey) { travelLandAtMs = null; return; }
             const travel = await fetchTornTravel();
-            travelSnapshot = (travel && typeof travel.time_left === 'number')
-                ? { timeLeftAtFetch: travel.time_left, fetchedAtMs: Date.now() }
-                : null;
+            if (!travel || typeof travel.time_left !== 'number' || travel.time_left <= 0) {
+                travelLandAtMs = null;
+                return;
+            }
+            const candidateLandAtMs = Date.now() + travel.time_left * 1000;
+            if (travelLandAtMs === null || candidateLandAtMs > travelLandAtMs + TRAVEL_NEW_TRIP_JUMP_SECS * 1000) {
+                travelLandAtMs = candidateLandAtMs;
+                hasPlayedTravelAlert = false;
+            } else if (candidateLandAtMs < travelLandAtMs) {
+                travelLandAtMs = candidateLandAtMs;
+            }
         }
         setInterval(checkTravelStatus, 5000);
         checkTravelStatus();
@@ -1182,32 +1204,25 @@
         checkLiveAlerts(); // don't wait 5s for the first check
 
         function tickLocalAlertClocks() {
-            const s = lastAlertSnapshot;
-            if (!s) return;
-
-            if (flightSoundEnabled && travelSnapshot) {
-                // time_left is a plain "seconds remaining as of that Torn
-                // API call" duration (not an absolute timestamp), so this
-                // needs the same elapsed-time correction as the chain
-                // timeout below.
-                const elapsedSecs = (Date.now() - travelSnapshot.fetchedAtMs) / 1000;
-                const travelSecsNow = travelSnapshot.timeLeftAtFetch - elapsedSecs;
-                if (travelSecsNow > 0 && travelSecsNow <= 30) {
-                    if (!hasPlayedTravelAlert) {
-                        playTravelLandingChime();
-                        hasPlayedTravelAlert = true;
-                    }
-                } else {
-                    // Resets both above 30s (not there yet) and at/below 0s
-                    // (already landed) - either way there's nothing left to
-                    // play, and this is what stops it firing again mid-air
-                    // if the countdown briefly reports 30s from two polls
-                    // in a row.
+            // Flight timing is self-contained (travelLandAtMs, tracked
+            // above from direct Torn API polls) and shouldn't depend on
+            // war-status having loaded, so it's checked before the
+            // lastAlertSnapshot guard below rather than inside it.
+            if (flightSoundEnabled && travelLandAtMs !== null) {
+                const travelSecsNow = (travelLandAtMs - Date.now()) / 1000;
+                if (travelSecsNow <= 0) {
+                    // Landed - clear the target and let the next poll (or
+                    // a new trip) start a fresh countdown from scratch.
+                    travelLandAtMs = null;
                     hasPlayedTravelAlert = false;
+                } else if (travelSecsNow <= 30 && !hasPlayedTravelAlert) {
+                    playTravelLandingChime();
+                    hasPlayedTravelAlert = true;
                 }
             }
 
-            if (chainSoundEnabled && s.chainTimeoutAtFetch > 0 && !s.chainOnCooldown && s.chainCount >= 10) {
+            const s = lastAlertSnapshot;
+            if (s && chainSoundEnabled && s.chainTimeoutAtFetch > 0 && !s.chainOnCooldown && s.chainCount >= 10) {
                 // chain.timeout is a plain "seconds remaining as of when we
                 // fetched it" duration, not an absolute timestamp, so this
                 // one DOES need elapsed-time correction.
