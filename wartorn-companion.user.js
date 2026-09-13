@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.3
+// @version      2.4
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -357,6 +357,10 @@
         // choice sticks across page loads instead of resetting on every
         // torn.com navigation.
         let showFactionStatusPanel = GM_getValue('wt_show_faction_status', false);
+        // Defaults on to match the panel's original always-beatable-only
+        // behavior - turning it off is what's new, not the other way
+        // around, so nobody who never touches this setting sees a change.
+        let beatableOnlyFilter = GM_getValue('wt_beatable_only', true);
 
         function openAttackPopup(id) {
             const call = companionTargetCalls.calls[id];
@@ -520,24 +524,34 @@
                 // <= your own stat, strongest-beatable first) - not the full
                 // enemy roster. That's what makes this an actual hit list
                 // instead of a scroll-through of everyone regardless of
-                // whether you could even beat them.
+                // whether you could even beat them. Now user-toggleable
+                // (beatableOnlyFilter) instead of always-on, and shared by
+                // both view modes so it also scopes the 2-column enemy side.
                 const effectiveUserStat = data.current_user_stat || 0;
-                const validTargets = effectiveUserStat > 0
-                    ? data.them.filter(m => m.sort_stat > 0 && m.sort_stat <= effectiveUserStat).sort((a, b) => b.sort_stat - a.sort_stat)
-                    : [];
+                const enemyList = (beatableOnlyFilter && effectiveUserStat > 0)
+                    ? data.them.filter(m => m.sort_stat > 0 && m.sort_stat <= effectiveUserStat)
+                    : data.them.slice();
+                enemyList.sort((a, b) => (b.sort_stat || 0) - (a.sort_stat || 0));
+                const validTargets = enemyList;
 
                 const chainHtml = data.chain ? `<div style="margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid #333; color:#FF9800; font-weight:bold;">⛓️ Chain: ${data.chain.current || 0}${data.chain.timeout ? ` · ${formatDuration(data.chain.timeout)} left` : ''}</div>` : '';
 
-                const toggleHtml = `<label style="display:flex; align-items:center; gap:5px; color:#aaa; font-size:0.7em; cursor:pointer; margin-bottom:8px; justify-content:flex-end;">
-                    <input type="checkbox" id="wt-faction-status-toggle" ${showFactionStatusPanel ? 'checked' : ''} style="cursor:pointer;">
-                    Show our faction too
-                </label>`;
+                const toggleHtml = `<div style="display:flex; flex-direction:column; align-items:flex-end; gap:3px; margin-bottom:8px;">
+                    <label style="display:flex; align-items:center; gap:5px; color:#aaa; font-size:0.7em; cursor:pointer;">
+                        <input type="checkbox" id="wt-beatable-only-toggle" ${beatableOnlyFilter ? 'checked' : ''} style="cursor:pointer;">
+                        Beatable only
+                    </label>
+                    <label style="display:flex; align-items:center; gap:5px; color:#aaa; font-size:0.7em; cursor:pointer;">
+                        <input type="checkbox" id="wt-faction-status-toggle" ${showFactionStatusPanel ? 'checked' : ''} style="cursor:pointer;">
+                        Show our faction too
+                    </label>
+                </div>`;
 
                 let contentHtml;
                 if (showFactionStatusPanel) {
                     // Compact 2-column overview: no action buttons, just
                     // name + online dot + abbreviated status, so both sides
-                    // fit side by side in a 290px panel.
+                    // fit side by side in the panel.
                     const compactRow = (m) => {
                         const tag = abbreviateStatus(m.state, m.until, m.desc);
                         return `<div style="display:flex; align-items:center; gap:3px; padding:3px 0; border-bottom:1px solid #1f2229; font-size:0.72em; overflow:hidden;">
@@ -547,7 +561,7 @@
                         </div>`;
                     };
                     const usRows = (data.us || []).map(compactRow).join('') || '<div style="color:#666; font-size:0.75em;">No data</div>';
-                    const themRows = (data.them || []).map(compactRow).join('') || '<div style="color:#666; font-size:0.75em;">No data</div>';
+                    const themRows = validTargets.map(compactRow).join('') || '<div style="color:#666; font-size:0.75em;">No data</div>';
                     contentHtml = `<div style="display:flex; gap:8px;">
                         <div style="flex:1; min-width:0;">
                             <div style="color:#4CAF50; font-weight:bold; font-size:0.7em; margin-bottom:4px; text-align:center;">OUR FACTION</div>
@@ -577,13 +591,18 @@
                         }
                         return rowHtml(m.name, `<span style="color:${tag.color};">${tag.label}</span>`, actionHtml, m.online_status);
                     }).join('');
-                    contentHtml = rowsHtml || '<div style="color:#888;">No valid targets found under your stats.</div>';
+                    contentHtml = rowsHtml || `<div style="color:#888;">${beatableOnlyFilter ? 'No valid targets found under your stats.' : 'No enemy members found.'}</div>`;
                 }
 
                 document.getElementById('wt-panel-body').innerHTML = chainHtml + toggleHtml + contentHtml;
                 document.getElementById('wt-faction-status-toggle').addEventListener('change', (e) => {
                     showFactionStatusPanel = e.target.checked;
                     GM_setValue('wt_show_faction_status', showFactionStatusPanel);
+                    renderWarTargetsPanel();
+                });
+                document.getElementById('wt-beatable-only-toggle').addEventListener('change', (e) => {
+                    beatableOnlyFilter = e.target.checked;
+                    GM_setValue('wt_beatable_only', beatableOnlyFilter);
                     renderWarTargetsPanel();
                 });
                 if (!showFactionStatusPanel) {
@@ -676,7 +695,7 @@
             stopPanelTick();
             const p = document.getElementById('wt-side-panel');
             if (p) p.remove();
-            document.querySelectorAll('.wt-side-btn').forEach(b => { b.style.background = 'rgba(21,23,28,0.85)'; });
+            document.querySelectorAll('.wt-side-btn').forEach(b => { b.style.background = 'rgba(21,23,28,0.9)'; });
             activePanelKey = null;
         }
 
@@ -688,7 +707,7 @@
 
             const panel = document.createElement('div');
             panel.id = 'wt-side-panel';
-            panel.style.cssText = 'position:fixed; top:25vh; left:56px; width:290px; max-height:70vh; overflow-y:auto; background:#15171c; border:1px solid #3a3f4b; border-left:3px solid #00e5ff; border-radius:0 6px 6px 0; box-shadow:0 10px 30px rgba(0,0,0,0.8); z-index:9999998; font-family:sans-serif; color:#ccc;';
+            panel.style.cssText = 'position:fixed; top:25vh; left:56px; width:360px; max-height:70vh; overflow-y:auto; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-left:3px solid #00e5ff; border-radius:0 6px 6px 0; box-shadow:0 10px 30px rgba(0,0,0,0.8); z-index:9999998; font-family:sans-serif; color:#ccc; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.15) transparent;';
             panel.innerHTML = `
                 <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:#0b0c10; border-bottom:1px solid #333;">
                     <span style="color:#00e5ff; font-weight:bold; font-size:0.9em;">${def.icon} ${def.title}</span>
@@ -708,7 +727,7 @@
             }, { passive: true });
             document.getElementById('wt-panel-close').addEventListener('click', closeSidePanel);
             document.querySelectorAll('.wt-side-btn').forEach(b => {
-                b.style.background = (b.dataset.key === key) ? 'rgba(0,229,255,0.25)' : 'rgba(21,23,28,0.85)';
+                b.style.background = (b.dataset.key === key) ? 'rgba(0,229,255,0.25)' : 'rgba(21,23,28,0.9)';
             });
 
             def.render();
@@ -717,6 +736,21 @@
 
         function injectSidePanels() {
             if (document.getElementById('wt-side-buttons')) return;
+
+            // Webkit scrollbar pseudo-elements can't be set via an inline
+            // style attribute - needs a real stylesheet rule. Targets the
+            // panel by ID, so this one-time injection covers every future
+            // #wt-side-panel even though it's fully destroyed and recreated
+            // on each open/close.
+            const scrollbarStyle = document.createElement('style');
+            scrollbarStyle.textContent = `
+                #wt-side-panel::-webkit-scrollbar { width: 6px; }
+                #wt-side-panel::-webkit-scrollbar-track { background: transparent; }
+                #wt-side-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+                #wt-side-panel::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
+            `;
+            document.head.appendChild(scrollbarStyle);
+
             const wrap = document.createElement('div');
             wrap.id = 'wt-side-buttons';
             // Directly below the logo, which sits at top:25vh and is 130px
@@ -729,9 +763,9 @@
                 btn.dataset.key = key;
                 btn.title = def.title;
                 btn.innerText = def.icon;
-                btn.style.cssText = 'width:34px; height:34px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.85); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.1em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5);';
+                btn.style.cssText = 'width:34px; height:34px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.1em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5);';
                 btn.addEventListener('mouseenter', () => { if (activePanelKey !== key) btn.style.background = 'rgba(0,229,255,0.15)'; });
-                btn.addEventListener('mouseleave', () => { if (activePanelKey !== key) btn.style.background = 'rgba(21,23,28,0.85)'; });
+                btn.addEventListener('mouseleave', () => { if (activePanelKey !== key) btn.style.background = 'rgba(21,23,28,0.9)'; });
                 btn.addEventListener('click', () => openSidePanel(key));
                 wrap.appendChild(btn);
             });
