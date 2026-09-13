@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.9
+// @version      2.9.1
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1012,17 +1012,22 @@
             const CLUSTER_TRANSITION = 'transform 0.3s ease';
             let edgeCollapsed = safeGmGet('wt_edge_collapsed', false);
 
+            const TOGGLE_OPACITY_EXPANDED = '0.85';
+            const TOGGLE_OPACITY_COLLAPSED = '0.2'; // nearly hidden away, not competing for attention
+
             const toggle = document.createElement('div');
             toggle.id = 'wt-edge-toggle';
             toggle.title = 'Hide/show the Wartorn buttons';
-            // Fills exactly the 10px gap between the logo's bottom (top:25vh
-            // + its 130px height) and the button wrap's top (25vh + 140px).
-            toggle.style.cssText = 'position:fixed; top:calc(25vh + 130px); left:9px; z-index:9999999; width:40px; height:10px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-top:none; border-bottom:none; cursor:pointer; font-size:8px; line-height:1; color:#00e5ff; opacity:0.85; transition:0.15s; pointer-events:auto;';
+            // Sits just above the logo (top:25vh) rather than between the
+            // logo and the button stack - that gap was thin enough that it
+            // visually ran into the War Targets button below it.
+            toggle.style.cssText = 'position:fixed; top:calc(25vh - 11px); left:9px; z-index:9999999; width:40px; height:10px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-bottom:none; border-radius:4px 4px 0 0; cursor:pointer; font-size:8px; line-height:1; color:#00e5ff; opacity:0.85; transition:0.15s; pointer-events:auto;';
             toggle.addEventListener('mouseenter', () => { toggle.style.opacity = '1'; });
-            toggle.addEventListener('mouseleave', () => { toggle.style.opacity = '0.85'; });
+            toggle.addEventListener('mouseleave', () => { toggle.style.opacity = edgeCollapsed ? TOGGLE_OPACITY_COLLAPSED : TOGGLE_OPACITY_EXPANDED; });
 
             function applyEdgeCollapsed(animate) {
                 toggle.innerText = edgeCollapsed ? '›' : '‹'; // › : ‹
+                toggle.style.opacity = edgeCollapsed ? TOGGLE_OPACITY_COLLAPSED : TOGGLE_OPACITY_EXPANDED;
                 if (edgeCollapsed) {
                     wrap.style.pointerEvents = 'none';
                     wrap.style.opacity = '0';
