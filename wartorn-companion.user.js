@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.4
+// @version      2.5
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -215,7 +215,12 @@
     // clutter. Previously checked `!window.opener` instead, which also
     // hid every button inside TornPDA's embedded browser - that webview
     // apparently sets window.opener on its own for unrelated reasons, so a
-    // generic "has an opener" check was too broad a net.
+    // generic "has an opener" check was too broad a net. A fourth button,
+    // ⚙️ Settings, holds panel width/height/font size/opacity, the Chain
+    // Targets FF value, the two War Targets toggles above, and two sound
+    // alerts (flight landing, chain timeout warning) ported from the
+    // dashboard's own audio alerts so they work while browsing torn.com
+    // directly.
     if (window.name !== 'attack_window') {
         function fetchFromWartorn(endpoint) {
             return new Promise((resolve, reject) => {
@@ -362,6 +367,32 @@
         // around, so nobody who never touches this setting sees a change.
         let beatableOnlyFilter = GM_getValue('wt_beatable_only', true);
 
+        // All settings below live in one place (the ⚙️ Settings panel) -
+        // these are just the persisted values, all defaulting to whatever
+        // the panel already looked/behaved like before this existed, so
+        // nobody who never opens Settings sees any change.
+        let panelWidthSetting = GM_getValue('wt_panel_width', 360);
+        let panelHeightVhSetting = GM_getValue('wt_panel_height_vh', 70);
+        let fontSizeSetting = GM_getValue('wt_font_size', 14);
+        let opacitySetting = GM_getValue('wt_panel_opacity', 0.9);
+        let chainFfSetting = GM_getValue('wt_chain_ff', 3.0);
+        // Sound alerts default OFF - opt-in, since audio surprising someone
+        // mid-browsing is worse than them having to turn it on once.
+        let flightSoundEnabled = GM_getValue('wt_flight_sound', false);
+        let chainSoundEnabled = GM_getValue('wt_chain_sound', false);
+
+        function getPanelBaseStyle() {
+            return `position:fixed; top:25vh; left:56px; width:${panelWidthSetting}px; max-height:${panelHeightVhSetting}vh; overflow-y:auto; background:rgba(21,23,28,${opacitySetting}); border:1px solid #3a3f4b; border-left:3px solid #00e5ff; border-radius:0 6px 6px 0; box-shadow:0 10px 30px rgba(0,0,0,0.8); z-index:9999998; font-family:sans-serif; color:#ccc; font-size:${fontSizeSetting}px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.15) transparent;`;
+        }
+        // Applies current settings to whichever panel is open right now,
+        // for live feedback while dragging a slider in Settings - a fresh
+        // openSidePanel() call already picks these up via getPanelBaseStyle()
+        // on its own, this is only needed for the panel already on screen.
+        function applyLivePanelStyle() {
+            const p = document.getElementById('wt-side-panel');
+            if (p) p.style.cssText = getPanelBaseStyle();
+        }
+
         function openAttackPopup(id) {
             const call = companionTargetCalls.calls[id];
             if (call && call.callerId !== companionTargetCalls.myPlayerId) {
@@ -464,7 +495,14 @@
             const body = document.getElementById('wt-panel-body');
             if (!body) return;
             try {
-                const data = await getPanelData('targets', 'targets?limit=30&preset=respect');
+                // Exact 3.0 uses the same optimized "respect" preset the
+                // dashboard's Chains tab does for that specific value;
+                // anything else is a real min/max FF query. Cache key
+                // includes the FF value so changing it in Settings doesn't
+                // return a stale result cached under the old value.
+                const ff = parseFloat(chainFfSetting) || 3.0;
+                const endpoint = ff === 3.0 ? 'targets?limit=30&preset=respect' : `targets?limit=30&minff=${ff}&maxff=${ff}&inactive=1`;
+                const data = await getPanelData('targets_' + ff, endpoint);
                 if (activePanelKey !== 'targets' || !document.getElementById('wt-panel-body')) return;
                 if (data.error || !data.targets || !data.targets.length) {
                     body.innerHTML = `<div style="color:#888;">${data.error || 'No targets found.'}</div>`;
@@ -536,17 +574,9 @@
 
                 const chainHtml = data.chain ? `<div style="margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid #333; color:#FF9800; font-weight:bold;">⛓️ Chain: ${data.chain.current || 0}${data.chain.timeout ? ` · ${formatDuration(data.chain.timeout)} left` : ''}</div>` : '';
 
-                const toggleHtml = `<div style="display:flex; flex-direction:column; align-items:flex-end; gap:3px; margin-bottom:8px;">
-                    <label style="display:flex; align-items:center; gap:5px; color:#aaa; font-size:0.7em; cursor:pointer;">
-                        <input type="checkbox" id="wt-beatable-only-toggle" ${beatableOnlyFilter ? 'checked' : ''} style="cursor:pointer;">
-                        Beatable only
-                    </label>
-                    <label style="display:flex; align-items:center; gap:5px; color:#aaa; font-size:0.7em; cursor:pointer;">
-                        <input type="checkbox" id="wt-faction-status-toggle" ${showFactionStatusPanel ? 'checked' : ''} style="cursor:pointer;">
-                        Show our faction too
-                    </label>
-                </div>`;
-
+                // "Show our faction too" and "Beatable only" now live in the
+                // ⚙️ Settings panel instead of inline checkboxes here - one
+                // place for both this panel's view and everything else.
                 let contentHtml;
                 if (showFactionStatusPanel) {
                     // Compact 2-column overview: no action buttons, just
@@ -594,17 +624,7 @@
                     contentHtml = rowsHtml || `<div style="color:#888;">${beatableOnlyFilter ? 'No valid targets found under your stats.' : 'No enemy members found.'}</div>`;
                 }
 
-                document.getElementById('wt-panel-body').innerHTML = chainHtml + toggleHtml + contentHtml;
-                document.getElementById('wt-faction-status-toggle').addEventListener('change', (e) => {
-                    showFactionStatusPanel = e.target.checked;
-                    GM_setValue('wt_show_faction_status', showFactionStatusPanel);
-                    renderWarTargetsPanel();
-                });
-                document.getElementById('wt-beatable-only-toggle').addEventListener('change', (e) => {
-                    beatableOnlyFilter = e.target.checked;
-                    GM_setValue('wt_beatable_only', beatableOnlyFilter);
-                    renderWarTargetsPanel();
-                });
+                document.getElementById('wt-panel-body').innerHTML = chainHtml + contentHtml;
                 if (!showFactionStatusPanel) {
                     wireAttackButtons(document.getElementById('wt-panel-body'));
                     document.querySelectorAll('.wt-call-target-btn').forEach(btn => {
@@ -685,10 +705,93 @@
             renderMilestonePanel();
         }
 
+        function renderSettingsPanel() {
+            const body = document.getElementById('wt-panel-body');
+            if (!body) return;
+
+            const slider = (id, label, value, min, max, step, unit) => `
+                <label style="display:flex; flex-direction:column; gap:3px; color:#aaa; font-size:0.75em;">
+                    <span>${label}: <span id="${id}-val" style="color:#00e5ff; font-weight:bold;">${value}${unit || ''}</span></span>
+                    <input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${value}" style="cursor:pointer;">
+                </label>`;
+
+            body.innerHTML = `
+                <div style="display:flex; flex-direction:column; gap:12px;">
+                    ${slider('wt-set-width', 'Panel Width', panelWidthSetting, 280, 520, 10, 'px')}
+                    ${slider('wt-set-height', 'Panel Height', panelHeightVhSetting, 30, 90, 5, 'vh')}
+                    ${slider('wt-set-font', 'Font Size', fontSizeSetting, 10, 18, 1, 'px')}
+                    ${slider('wt-set-opacity', 'Opacity', Math.round(opacitySetting * 100), 50, 100, 5, '%')}
+
+                    <label style="display:flex; flex-direction:column; gap:3px; color:#aaa; font-size:0.75em;">
+                        Chain Target FF (exact value, e.g. 3.0)
+                        <input type="number" id="wt-set-chainff" min="1" max="10" step="0.1" value="${chainFfSetting}" style="background:#0b0c10; border:1px solid #444; color:#fff; padding:5px 8px; border-radius:3px;">
+                    </label>
+
+                    <div style="display:flex; flex-direction:column; gap:8px; border-top:1px solid #333; padding-top:10px;">
+                        <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
+                            <input type="checkbox" id="wt-set-showfaction" ${showFactionStatusPanel ? 'checked' : ''} style="cursor:pointer;">
+                            Show our faction too (War Targets)
+                        </label>
+                        <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
+                            <input type="checkbox" id="wt-set-beatable" ${beatableOnlyFilter ? 'checked' : ''} style="cursor:pointer;">
+                            Beatable targets only
+                        </label>
+                        <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
+                            <input type="checkbox" id="wt-set-flightsound" ${flightSoundEnabled ? 'checked' : ''} style="cursor:pointer;">
+                            ✈️ Flight landing sound (30s warning)
+                        </label>
+                        <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
+                            <input type="checkbox" id="wt-set-chainsound" ${chainSoundEnabled ? 'checked' : ''} style="cursor:pointer;">
+                            ⛓️ Chain warning sound
+                        </label>
+                    </div>
+                </div>
+            `;
+
+            const bindSlider = (id, gmKey, setter, unit, isPercent) => {
+                document.getElementById(id).addEventListener('input', (e) => {
+                    const raw = parseInt(e.target.value, 10);
+                    const stored = isPercent ? raw / 100 : raw;
+                    setter(stored);
+                    GM_setValue(gmKey, stored);
+                    document.getElementById(id + '-val').innerText = raw + unit;
+                    applyLivePanelStyle();
+                });
+            };
+            bindSlider('wt-set-width', 'wt_panel_width', (v) => panelWidthSetting = v, 'px', false);
+            bindSlider('wt-set-height', 'wt_panel_height_vh', (v) => panelHeightVhSetting = v, 'vh', false);
+            bindSlider('wt-set-font', 'wt_font_size', (v) => fontSizeSetting = v, 'px', false);
+            bindSlider('wt-set-opacity', 'wt_panel_opacity', (v) => opacitySetting = v, '%', true);
+
+            document.getElementById('wt-set-chainff').addEventListener('change', (e) => {
+                chainFfSetting = parseFloat(e.target.value) || 3.0;
+                GM_setValue('wt_chain_ff', chainFfSetting);
+            });
+            document.getElementById('wt-set-showfaction').addEventListener('change', (e) => {
+                showFactionStatusPanel = e.target.checked;
+                GM_setValue('wt_show_faction_status', showFactionStatusPanel);
+            });
+            document.getElementById('wt-set-beatable').addEventListener('change', (e) => {
+                beatableOnlyFilter = e.target.checked;
+                GM_setValue('wt_beatable_only', beatableOnlyFilter);
+            });
+            document.getElementById('wt-set-flightsound').addEventListener('change', (e) => {
+                flightSoundEnabled = e.target.checked;
+                GM_setValue('wt_flight_sound', flightSoundEnabled);
+                if (flightSoundEnabled) unlockAudioContext();
+            });
+            document.getElementById('wt-set-chainsound').addEventListener('change', (e) => {
+                chainSoundEnabled = e.target.checked;
+                GM_setValue('wt_chain_sound', chainSoundEnabled);
+                if (chainSoundEnabled) unlockAudioContext();
+            });
+        }
+
         const PANEL_DEFS = {
             war: { icon: '⚔️', title: 'War Targets', render: renderWarTargetsPanel, ticking: true },
             targets: { icon: '⛓️', title: 'Chain Targets', render: renderTargetsPanel, ticking: true },
-            milestone: { icon: '🔥', title: 'Chain Hits', render: renderMilestonePanel, ticking: true }
+            milestone: { icon: '🔥', title: 'Chain Hits', render: renderMilestonePanel, ticking: true },
+            settings: { icon: '⚙️', title: 'Settings', render: renderSettingsPanel, ticking: false }
         };
 
         function closeSidePanel() {
@@ -707,7 +810,7 @@
 
             const panel = document.createElement('div');
             panel.id = 'wt-side-panel';
-            panel.style.cssText = 'position:fixed; top:25vh; left:56px; width:360px; max-height:70vh; overflow-y:auto; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-left:3px solid #00e5ff; border-radius:0 6px 6px 0; box-shadow:0 10px 30px rgba(0,0,0,0.8); z-index:9999998; font-family:sans-serif; color:#ccc; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.15) transparent;';
+            panel.style.cssText = getPanelBaseStyle();
             panel.innerHTML = `
                 <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:#0b0c10; border-bottom:1px solid #333;">
                     <span style="color:#00e5ff; font-weight:bold; font-size:0.9em;">${def.icon} ${def.title}</span>
@@ -773,6 +876,116 @@
         }
 
         injectSidePanels();
+
+        // --- 6. MODULE: SOUND ALERTS ---
+        // Same two alerts the dashboard itself has (Flight Alert, chain
+        // timeout warning), ported here so they work while browsing
+        // torn.com directly, not just with the dashboard tab open. Both
+        // default off (see the settings declarations above) - opt in via
+        // ⚙️ Settings.
+        let sharedAudioCtx = null;
+        function unlockAudioContext() {
+            try {
+                if (!sharedAudioCtx) sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (sharedAudioCtx.state === 'suspended') sharedAudioCtx.resume();
+            } catch (e) {}
+        }
+        // Browsers block audio until a real user gesture happens on the
+        // page - this is that gesture, same trick the dashboard uses.
+        document.addEventListener('click', unlockAudioContext, { once: true });
+
+        // Airline-style double-chime, same synthesis as the dashboard's
+        // playBongBong() - two sine "bong" notes with a slow exponential
+        // decay so it reads as a landing chime, not a beep.
+        function playTravelLandingChime() {
+            if (!sharedAudioCtx) return;
+            try {
+                const ctx = sharedAudioCtx;
+                const playBong = (startTime, freq) => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(freq, startTime);
+                    gain.gain.setValueAtTime(0, startTime);
+                    gain.gain.linearRampToValueAtTime(0.7, startTime + 0.05);
+                    gain.gain.exponentialRampToValueAtTime(0.01, startTime + 1.5);
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start(startTime);
+                    osc.stop(startTime + 1.8);
+                };
+                const now = ctx.currentTime;
+                playBong(now, 659.25);
+                playBong(now + 0.5, 523.25);
+            } catch (e) {}
+        }
+
+        // Matches the dashboard's checkChainAudioAlerts(): a soft single
+        // beep with over a minute left, an urgent double square-wave beep
+        // under 90s.
+        function playChainBeep(urgent) {
+            if (!sharedAudioCtx) return;
+            try {
+                const ctx = sharedAudioCtx;
+                const beep = (startTime) => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = urgent ? 'square' : 'sine';
+                    osc.frequency.setValueAtTime(urgent ? 880 : 440, startTime);
+                    gain.gain.setValueAtTime(0.2, startTime);
+                    gain.gain.exponentialRampToValueAtTime(0.001, startTime + (urgent ? 0.15 : 0.3));
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start(startTime);
+                    osc.stop(startTime + (urgent ? 0.15 : 0.3));
+                };
+                beep(ctx.currentTime);
+                if (urgent) beep(ctx.currentTime + 0.2);
+            } catch (e) {}
+        }
+
+        let hasPlayedTravelAlert = false;
+        let lastChainBeepTime = 0;
+
+        async function checkAudioAlerts() {
+            if (!flightSoundEnabled && !chainSoundEnabled) return;
+            try {
+                const data = await fetchFromWartorn('war-status');
+                if (!data || data.error) return;
+                if (data.user_cooldowns && data.user_cooldowns.server_time) {
+                    serverClockOffsetMs = (data.user_cooldowns.server_time * 1000) - Date.now();
+                }
+
+                if (flightSoundEnabled) {
+                    const me = (data.us || []).find(m => String(m.id) === String(data.current_user_id));
+                    const stateLower = me ? String(me.state || '').toLowerCase() : '';
+                    const isTraveling = stateLower.includes('travel') || stateLower.includes('abroad');
+                    const travelSecs = me ? secsUntil(me.until) : null;
+                    if (isTraveling && travelSecs !== null && travelSecs <= 30) {
+                        if (!hasPlayedTravelAlert) {
+                            playTravelLandingChime();
+                            hasPlayedTravelAlert = true;
+                        }
+                    } else {
+                        hasPlayedTravelAlert = false;
+                    }
+                }
+
+                if (chainSoundEnabled && data.chain) {
+                    const chainSecs = data.chain.timeout || 0;
+                    const chainCount = data.chain.current || 0;
+                    const onCooldown = (data.chain.cooldown || 0) > 0;
+                    if (chainSecs > 0 && chainSecs <= 120 && chainCount >= 10 && !onCooldown) {
+                        const now = Date.now();
+                        if (now - lastChainBeepTime >= 4000) {
+                            lastChainBeepTime = now;
+                            playChainBeep(chainSecs <= 90);
+                        }
+                    }
+                }
+            } catch (e) {}
+        }
+        setInterval(checkAudioAlerts, 5000);
     }
 
 })();
