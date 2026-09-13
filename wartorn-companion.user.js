@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.5
+// @version      2.6
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -19,6 +19,39 @@
 (function() {
     'use strict';
     const WARTORN_HOST = 'https://wartorn.spiffer10.com';
+
+    // Defensive wrappers around Tampermonkey's GM_* storage/menu API.
+    // Leading theory for why TornPDA's embedded browser only ever showed
+    // the ghost logo (even after the window.name popup-detection fix):
+    // GM_getValue is the very first GM_* call that runs right after the
+    // logo renders (see the auth section below) - if that environment's
+    // script engine doesn't fully support it and it throws, every line
+    // after it silently never executes for the rest of this run, which
+    // matches the symptom exactly. Falling back to localStorage instead of
+    // hard-crashing means the rest of the script - buttons, panels, all of
+    // it - can still run even somewhere GM_getValue/GM_setValue don't work,
+    // just without settings persisting across page loads there.
+    function safeGmGet(key, def) {
+        try {
+            if (typeof GM_getValue === 'function') return GM_getValue(key, def);
+        } catch (e) {}
+        try {
+            const raw = localStorage.getItem('wt_gm_' + key);
+            return raw !== null ? JSON.parse(raw) : def;
+        } catch (e) {}
+        return def;
+    }
+    function safeGmSet(key, val) {
+        try {
+            if (typeof GM_setValue === 'function') { GM_setValue(key, val); return; }
+        } catch (e) {}
+        try { localStorage.setItem('wt_gm_' + key, JSON.stringify(val)); } catch (e) {}
+    }
+    function safeRegisterMenuCommand(label, fn) {
+        try {
+            if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand(label, fn);
+        } catch (e) {}
+    }
  
     // --- DASHBOARD HANDSHAKE ---
     if (window.location.href.includes('wartorn.spiffer10.com')) {
@@ -33,10 +66,10 @@
         // If nobody's logged in, this 401s and does nothing; the torn.com
         // side just stays unlinked until someone visits the dashboard and
         // logs in (see the menu command below for the manual path there).
-        if (!GM_getValue('wt_api_key', '')) {
+        if (!safeGmGet('wt_api_key', '')) {
             fetch('/api/companion/link', { credentials: 'same-origin' })
                 .then(r => r.ok ? r.json() : null)
-                .then(data => { if (data && data.apiKey) GM_setValue('wt_api_key', data.apiKey); })
+                .then(data => { if (data && data.apiKey) safeGmSet('wt_api_key', data.apiKey); })
                 .catch(() => {});
         }
         return;
@@ -111,9 +144,9 @@
     // the DASHBOARD HANDSHAKE block above). If that hasn't happened yet,
     // this just sends you to log in there instead of asking you to hand
     // your key to a popup dialog directly.
-    let userApiKey = GM_getValue('wt_api_key', '');
+    let userApiKey = safeGmGet('wt_api_key', '');
 
-    GM_registerMenuCommand(userApiKey ? '✅ Wartorn Linked (re-link)' : '⚙️ Link Wartorn Account', () => {
+    safeRegisterMenuCommand(userApiKey ? '✅ Wartorn Linked (re-link)' : '⚙️ Link Wartorn Account', () => {
         window.open(`${WARTORN_HOST}/login`, '_blank');
     });
 
@@ -361,25 +394,25 @@
         // War Targets panel view mode - persisted via GM_setValue so the
         // choice sticks across page loads instead of resetting on every
         // torn.com navigation.
-        let showFactionStatusPanel = GM_getValue('wt_show_faction_status', false);
+        let showFactionStatusPanel = safeGmGet('wt_show_faction_status', false);
         // Defaults on to match the panel's original always-beatable-only
         // behavior - turning it off is what's new, not the other way
         // around, so nobody who never touches this setting sees a change.
-        let beatableOnlyFilter = GM_getValue('wt_beatable_only', true);
+        let beatableOnlyFilter = safeGmGet('wt_beatable_only', true);
 
         // All settings below live in one place (the ⚙️ Settings panel) -
         // these are just the persisted values, all defaulting to whatever
         // the panel already looked/behaved like before this existed, so
         // nobody who never opens Settings sees any change.
-        let panelWidthSetting = GM_getValue('wt_panel_width', 360);
-        let panelHeightVhSetting = GM_getValue('wt_panel_height_vh', 70);
-        let fontSizeSetting = GM_getValue('wt_font_size', 14);
-        let opacitySetting = GM_getValue('wt_panel_opacity', 0.9);
-        let chainFfSetting = GM_getValue('wt_chain_ff', 3.0);
+        let panelWidthSetting = safeGmGet('wt_panel_width', 360);
+        let panelHeightVhSetting = safeGmGet('wt_panel_height_vh', 70);
+        let fontSizeSetting = safeGmGet('wt_font_size', 14);
+        let opacitySetting = safeGmGet('wt_panel_opacity', 0.9);
+        let chainFfSetting = safeGmGet('wt_chain_ff', 3.0);
         // Sound alerts default OFF - opt-in, since audio surprising someone
         // mid-browsing is worse than them having to turn it on once.
-        let flightSoundEnabled = GM_getValue('wt_flight_sound', false);
-        let chainSoundEnabled = GM_getValue('wt_chain_sound', false);
+        let flightSoundEnabled = safeGmGet('wt_flight_sound', false);
+        let chainSoundEnabled = safeGmGet('wt_chain_sound', false);
 
         function getPanelBaseStyle() {
             return `position:fixed; top:25vh; left:56px; width:${panelWidthSetting}px; max-height:${panelHeightVhSetting}vh; overflow-y:auto; background:rgba(21,23,28,${opacitySetting}); border:1px solid #3a3f4b; border-left:3px solid #00e5ff; border-radius:0 6px 6px 0; box-shadow:0 10px 30px rgba(0,0,0,0.8); z-index:9999998; font-family:sans-serif; color:#ccc; font-size:${fontSizeSetting}px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.15) transparent;`;
@@ -753,7 +786,7 @@
                     const raw = parseInt(e.target.value, 10);
                     const stored = isPercent ? raw / 100 : raw;
                     setter(stored);
-                    GM_setValue(gmKey, stored);
+                    safeGmSet(gmKey, stored);
                     document.getElementById(id + '-val').innerText = raw + unit;
                     applyLivePanelStyle();
                 });
@@ -765,24 +798,24 @@
 
             document.getElementById('wt-set-chainff').addEventListener('change', (e) => {
                 chainFfSetting = parseFloat(e.target.value) || 3.0;
-                GM_setValue('wt_chain_ff', chainFfSetting);
+                safeGmSet('wt_chain_ff', chainFfSetting);
             });
             document.getElementById('wt-set-showfaction').addEventListener('change', (e) => {
                 showFactionStatusPanel = e.target.checked;
-                GM_setValue('wt_show_faction_status', showFactionStatusPanel);
+                safeGmSet('wt_show_faction_status', showFactionStatusPanel);
             });
             document.getElementById('wt-set-beatable').addEventListener('change', (e) => {
                 beatableOnlyFilter = e.target.checked;
-                GM_setValue('wt_beatable_only', beatableOnlyFilter);
+                safeGmSet('wt_beatable_only', beatableOnlyFilter);
             });
             document.getElementById('wt-set-flightsound').addEventListener('change', (e) => {
                 flightSoundEnabled = e.target.checked;
-                GM_setValue('wt_flight_sound', flightSoundEnabled);
+                safeGmSet('wt_flight_sound', flightSoundEnabled);
                 if (flightSoundEnabled) unlockAudioContext();
             });
             document.getElementById('wt-set-chainsound').addEventListener('change', (e) => {
                 chainSoundEnabled = e.target.checked;
-                GM_setValue('wt_chain_sound', chainSoundEnabled);
+                safeGmSet('wt_chain_sound', chainSoundEnabled);
                 if (chainSoundEnabled) unlockAudioContext();
             });
         }
@@ -851,6 +884,11 @@
                 #wt-side-panel::-webkit-scrollbar-track { background: transparent; }
                 #wt-side-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
                 #wt-side-panel::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
+                @keyframes wt-danger-pulse {
+                    0%, 100% { filter: drop-shadow(0 0 3px rgba(244,67,54,0.9)) drop-shadow(0 0 2px rgba(244,67,54,0.9)); }
+                    50% { filter: drop-shadow(0 0 16px rgba(244,67,54,1)) drop-shadow(0 0 8px rgba(244,67,54,1)); }
+                }
+                #wt-ghost-logo img.wt-logo-danger { animation: wt-danger-pulse 1s ease-in-out infinite; }
             `;
             document.head.appendChild(scrollbarStyle);
 
@@ -947,11 +985,33 @@
         let hasPlayedTravelAlert = false;
         let lastChainBeepTime = 0;
 
-        async function checkAudioAlerts() {
-            if (!flightSoundEnabled && !chainSoundEnabled) return;
+        // Pulses the ghost logo red when: a war is active, AND at least one
+        // enemy with higher stats than you is both Okay (physically able to
+        // attack) and Online (actually at the keyboard, not just logged in
+        // idle) - the combination that means they could plausibly hit you
+        // back right now. Always-on (not a Settings toggle, unlike the
+        // sounds) since it's a passive visual state, not something that
+        // interrupts with noise.
+        function updateLogoDangerState(dangerTarget) {
+            const img = document.querySelector('#wt-ghost-logo img');
+            const link = document.getElementById('wt-ghost-logo');
+            if (!img || !link) return;
+            if (dangerTarget) {
+                img.classList.add('wt-logo-danger');
+                link.title = `⚠️ ${dangerTarget.name} (higher stats than you) is Online and Okay - they can attack you right now.`;
+            } else {
+                img.classList.remove('wt-logo-danger');
+                link.title = '';
+            }
+        }
+
+        async function checkLiveAlerts() {
             try {
                 const data = await fetchFromWartorn('war-status');
-                if (!data || data.error) return;
+                if (!data || data.error) {
+                    updateLogoDangerState(null);
+                    return;
+                }
                 if (data.user_cooldowns && data.user_cooldowns.server_time) {
                     serverClockOffsetMs = (data.user_cooldowns.server_time * 1000) - Date.now();
                 }
@@ -983,9 +1043,22 @@
                         }
                     }
                 }
+
+                const nowSecs = Math.floor(nowServerMs() / 1000);
+                const warIsActive = data.start_time > 0 && data.start_time <= nowSecs && data.end_time === 0;
+                const myStat = data.current_user_stat || 0;
+                let dangerTarget = null;
+                if (warIsActive && myStat > 0 && data.them) {
+                    data.them.forEach(m => {
+                        if (m.state === 'Okay' && m.online_status === 'Online' && m.sort_stat > myStat) {
+                            if (!dangerTarget || m.sort_stat > dangerTarget.sort_stat) dangerTarget = m;
+                        }
+                    });
+                }
+                updateLogoDangerState(dangerTarget);
             } catch (e) {}
         }
-        setInterval(checkAudioAlerts, 5000);
+        setInterval(checkLiveAlerts, 5000);
     }
 
 })();
