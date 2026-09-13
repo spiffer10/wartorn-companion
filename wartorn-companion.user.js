@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.1
+// @version      2.2
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -199,7 +199,9 @@
     // slide-out panel: War Targets (enemy members under your own current
     // power level, strongest-beatable-first, abbreviated status - the same
     // filter as the Priority Target box on the dashboard's War tab, not a
-    // full roster dump), Chain Targets (the FFScouter-scouted target
+    // full roster dump - plus a call/release button per target so the
+    // faction doesn't pile multiple hits onto the same person), Chain
+    // Targets (the FFScouter-scouted target
     // list), and Chain Hits (call a hit number in the 10-hit buildup before
     // a chain milestone, and vote on who takes the bonus-awarding hit -
     // same shared chain_hit_calls/chain_bonus_votes state the dashboard's
@@ -340,7 +342,17 @@
         function attackButtonHtml(id) {
             return `<span class="wt-attack-btn" data-attack-id="${id}" style="background:#4CAF50; color:#fff; padding:4px 9px; border-radius:3px; font-size:0.85em; font-weight:bold; white-space:nowrap; cursor:pointer;">⚔️</span>`;
         }
+        // Populated by renderWarTargetsPanel() from /api/companion/target-calls -
+        // shared here so EVERY attack button (War Targets and Chain Targets
+        // alike) warns before piling onto a target someone else already
+        // called, not just the panel that happens to fetch the data.
+        let companionTargetCalls = { calls: {}, myPlayerId: null };
+
         function openAttackPopup(id) {
+            const call = companionTargetCalls.calls[id];
+            if (call && call.callerId !== companionTargetCalls.myPlayerId) {
+                if (!confirm(`${call.callerName} already called this target - attack anyway?`)) return;
+            }
             window.open(`https://www.torn.com/page.php?sid=attack&user2ID=${id}`, 'attack_window', 'width=450,height=750,left=150,top=100,popup=yes,scrollbars=yes');
         }
         function wireAttackButtons(container) {
@@ -420,6 +432,7 @@
             panelRefreshTimer = setInterval(() => {
                 if (activePanelKey !== 'war' && activePanelKey !== 'milestone') return;
                 delete panelCache[activePanelKey];
+                if (activePanelKey === 'war') delete panelCache.targetCalls;
                 PANEL_DEFS[activePanelKey].render();
             }, 15000);
         }
@@ -451,6 +464,19 @@
             }
         }
 
+        async function callTargetCompanion(id, name) {
+            try { await postToWartorn('target-calls/call', { target_id: id, target_name: name }); } catch (e) {}
+            delete panelCache.war;
+            delete panelCache.targetCalls;
+            renderWarTargetsPanel();
+        }
+        async function releaseTargetCompanion(id) {
+            try { await postToWartorn('target-calls/release', { target_id: id }); } catch (e) {}
+            delete panelCache.war;
+            delete panelCache.targetCalls;
+            renderWarTargetsPanel();
+        }
+
         async function renderWarTargetsPanel() {
             const body = document.getElementById('wt-panel-body');
             if (!body) return;
@@ -461,6 +487,14 @@
                     document.getElementById('wt-panel-body').innerHTML = `<div style="color:#888;">${data.error || 'No active war.'}</div>`;
                     return;
                 }
+
+                // "We often fight over targets" - lets someone claim a target
+                // they're about to attack so the rest of the faction sees
+                // it's taken. Shares the same target_calls rows the
+                // dashboard's roster reads/writes.
+                const callsData = await getPanelData('targetCalls', 'target-calls').catch(() => ({ calls: {}, myPlayerId: null }));
+                companionTargetCalls = callsData || { calls: {}, myPlayerId: null };
+
                 // Same "targets under your current power level" filter as the
                 // Priority Target box on the dashboard's War tab (sort_stat
                 // <= your own stat, strongest-beatable first) - not the full
@@ -476,14 +510,29 @@
                 const rowsHtml = validTargets.map(m => {
                     const okay = m.state === 'Okay';
                     const tag = abbreviateStatus(m.state, m.until, m.desc);
-                    return rowHtml(
-                        m.name,
-                        `<span style="color:${tag.color};">${tag.label}</span>`,
-                        okay ? attackButtonHtml(m.id) : ''
-                    );
+                    const call = companionTargetCalls.calls ? companionTargetCalls.calls[m.id] : null;
+                    const mine = call && call.callerId === companionTargetCalls.myPlayerId;
+
+                    let actionHtml = '';
+                    if (call && !mine) {
+                        actionHtml = `<span style="color:#FF9800; font-size:0.7em; white-space:nowrap;">📣 ${call.callerName}</span>`;
+                    } else if (okay) {
+                        const safeName = String(m.name || '').replace(/"/g, '&quot;');
+                        const callBtn = mine
+                            ? `<span class="wt-release-target-btn" data-tid="${m.id}" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">✅</span>`
+                            : `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">📣</span>`;
+                        actionHtml = `<div style="display:flex; gap:4px; align-items:center;">${callBtn}${attackButtonHtml(m.id)}</div>`;
+                    }
+                    return rowHtml(m.name, `<span style="color:${tag.color};">${tag.label}</span>`, actionHtml);
                 }).join('');
                 document.getElementById('wt-panel-body').innerHTML = chainHtml + (rowsHtml || '<div style="color:#888;">No valid targets found under your stats.</div>');
                 wireAttackButtons(document.getElementById('wt-panel-body'));
+                document.querySelectorAll('.wt-call-target-btn').forEach(btn => {
+                    btn.addEventListener('click', () => callTargetCompanion(parseInt(btn.dataset.tid, 10), btn.dataset.tname));
+                });
+                document.querySelectorAll('.wt-release-target-btn').forEach(btn => {
+                    btn.addEventListener('click', () => releaseTargetCompanion(parseInt(btn.dataset.tid, 10)));
+                });
             } catch (e) {
                 if (activePanelKey === 'war' && document.getElementById('wt-panel-body')) {
                     document.getElementById('wt-panel-body').innerHTML = '<div style="color:#f44336;">Failed to load - check your Wartorn key is still valid.</div>';
