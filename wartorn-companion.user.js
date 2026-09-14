@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.9.3
+// @version      2.9.4
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -980,7 +980,7 @@
             // Directly below the logo, which sits at top:25vh and is 130px
             // tall - see injectGhostLogo() above.
             const WRAP_TRANSITION = 'opacity 0.3s ease, transform 0.3s ease';
-            wrap.style.cssText = `position:fixed; top:calc(25vh + 140px); left:10px; z-index:9999999; display:flex; flex-direction:column; gap:6px; pointer-events:auto; transform-origin:top center; transition:${WRAP_TRANSITION};`;
+            wrap.style.cssText = `position:fixed; top:calc(25vh + 134px); left:10px; z-index:9999999; display:flex; flex-direction:column; gap:6px; pointer-events:auto; transform-origin:top center; transition:${WRAP_TRANSITION};`;
             Object.keys(PANEL_DEFS).forEach(key => {
                 const def = PANEL_DEFS[key];
                 const btn = document.createElement('div');
@@ -1030,7 +1030,7 @@
             // Sits just above the logo (top:25vh) rather than between the
             // logo and the button stack - that gap was thin enough that it
             // visually ran into the War Targets button below it.
-            toggle.style.cssText = 'position:fixed; top:calc(25vh - 11px); left:9px; z-index:9999999; width:40px; height:10px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-bottom:none; border-radius:4px 4px 0 0; cursor:pointer; font-size:8px; line-height:1; color:#00e5ff; opacity:0.85; transition:0.15s; pointer-events:auto;';
+            toggle.style.cssText = 'position:fixed; top:calc(25vh - 9px); left:9px; z-index:9999999; width:40px; height:10px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-bottom:none; border-radius:4px 4px 0 0; cursor:pointer; font-size:8px; line-height:1; color:#00e5ff; opacity:0.85; transition:0.15s; pointer-events:auto;';
             toggle.addEventListener('mouseenter', () => { toggle.style.opacity = '1'; });
             toggle.addEventListener('mouseleave', () => { toggle.style.opacity = edgeCollapsed ? TOGGLE_OPACITY_COLLAPSED : TOGGLE_OPACITY_EXPANDED; });
 
