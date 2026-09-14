@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.9.4
+// @version      2.9.5
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -980,7 +980,7 @@
             // Directly below the logo, which sits at top:25vh and is 130px
             // tall - see injectGhostLogo() above.
             const WRAP_TRANSITION = 'opacity 0.3s ease, transform 0.3s ease';
-            wrap.style.cssText = `position:fixed; top:calc(25vh + 134px); left:10px; z-index:9999999; display:flex; flex-direction:column; gap:6px; pointer-events:auto; transform-origin:top center; transition:${WRAP_TRANSITION};`;
+            wrap.style.cssText = `position:fixed; top:calc(25vh + 131px); left:10px; z-index:9999999; display:flex; flex-direction:column; gap:6px; pointer-events:auto; transform-origin:top center; transition:${WRAP_TRANSITION};`;
             Object.keys(PANEL_DEFS).forEach(key => {
                 const def = PANEL_DEFS[key];
                 const btn = document.createElement('div');
