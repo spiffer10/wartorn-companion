@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.9.7
+// @version      2.9.8
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1093,7 +1093,21 @@
         }
         // Browsers block audio until a real user gesture happens on the
         // page - this is that gesture, same trick the dashboard uses.
-        document.addEventListener('click', unlockAudioContext, { once: true });
+        // Companion pages are shorter-lived than the dashboard's own tab
+        // though (a fresh script instance runs per page load, not once for
+        // a whole session) - someone who loads torn.com and immediately
+        // alt-tabs away to another game without ever clicking anything on
+        // THAT specific page load never unlocks audio for it, so both
+        // alerts silently no-op for the rest of that page's lifetime even
+        // though everything else (polling, threshold checks) keeps working.
+        // Listening for several common gesture types instead of only
+        // 'click' catches more of what someone does in the ordinary course
+        // of arriving at/using a Torn page before switching away.
+        // unlockAudioContext() is idempotent, so redundant listeners are
+        // harmless - whichever fires first does the real work.
+        ['click', 'keydown', 'mousedown', 'touchstart'].forEach(evt => {
+            document.addEventListener(evt, unlockAudioContext, { once: true, passive: true });
+        });
 
         // Airline-style double-chime, same synthesis as the dashboard's
         // playBongBong() - two sine "bong" notes with a slow exponential
