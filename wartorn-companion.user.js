@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.9.8
+// @version      2.9.9
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -699,7 +699,12 @@
                             <span style="color:${tag.color}; white-space:nowrap; flex-shrink:0;">${tag.label}</span>
                         </div>`;
                     };
-                    const usRows = (data.us || []).map(compactRow).join('') || '<div style="color:#666; font-size:0.75em;">No data</div>';
+                    // Same descending-by-stat sort as the enemy side, so
+                    // strongest-first ordering is consistent on both columns
+                    // instead of whatever raw order war-status happened to
+                    // return "our faction" in.
+                    const usList = (data.us || []).slice().sort((a, b) => (b.sort_stat || 0) - (a.sort_stat || 0));
+                    const usRows = usList.map(compactRow).join('') || '<div style="color:#666; font-size:0.75em;">No data</div>';
                     const themRows = validTargets.map(compactRow).join('') || '<div style="color:#666; font-size:0.75em;">No data</div>';
                     contentHtml = `<div style="display:flex; gap:8px;">
                         <div style="flex:1; min-width:0;">
