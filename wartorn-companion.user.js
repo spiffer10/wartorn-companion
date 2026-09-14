@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.9.5
+// @version      2.9.6
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -995,10 +995,12 @@
                 btn.style.cssText = 'width:34px; height:34px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.1em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
                 btn.addEventListener('mouseenter', () => {
                     btn.style.opacity = '1';
-                    if (activePanelKey !== key) btn.style.background = 'rgba(0,229,255,0.15)';
+                    btn.style.transform = 'scale(1.05)';
+                    if (activePanelKey !== key) btn.style.background = 'rgba(10,11,14,0.95)';
                 });
                 btn.addEventListener('mouseleave', () => {
                     btn.style.opacity = activePanelKey === key ? '1' : '0.85';
+                    btn.style.transform = 'scale(1)';
                     if (activePanelKey !== key) btn.style.background = 'rgba(21,23,28,0.9)';
                 });
                 btn.addEventListener('click', () => openSidePanel(key));
