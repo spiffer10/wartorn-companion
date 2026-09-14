@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.9.6
+// @version      2.9.7
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -940,7 +940,7 @@
             document.getElementById('wt-panel-close').addEventListener('click', closeSidePanel);
             document.querySelectorAll('.wt-side-btn').forEach(b => {
                 const isActive = b.dataset.key === key;
-                b.style.background = isActive ? 'rgba(0,229,255,0.25)' : 'rgba(21,23,28,0.9)';
+                b.style.background = isActive ? 'rgba(10,11,14,0.95)' : 'rgba(21,23,28,0.9)';
                 b.style.opacity = isActive ? '1' : '0.85';
             });
 
