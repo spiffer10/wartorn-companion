@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.11.4
+// @version      2.12
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1344,8 +1344,30 @@
                 travelLandAtMs = candidateLandAtMs;
             }
         }
-        setInterval(checkTravelStatus, 5000);
-        checkTravelStatus();
+        // Once travelLandAtMs is locked in, the countdown itself ticks down
+        // locally every second in tickLocalAlertClocks() below at zero API
+        // cost - a poll here only needs to catch takeoff, correct drift, and
+        // confirm the actual landing, not babysit a countdown that already
+        // knows where it's going. So instead of a flat 5s interval (which
+        // burns a real Torn call every 5s for the ENTIRE length of a flight,
+        // including multi-hour ones), back off hard once a flight is
+        // confirmed and only wake up again as landing approaches. Capped at
+        // 5 minutes so an unexpected early landing/trip cancellation is
+        // still caught reasonably quickly instead of being missed for hours.
+        let travelCheckTimer = null;
+        function scheduleTravelCheck(delayMs) {
+            if (travelCheckTimer) clearTimeout(travelCheckTimer);
+            travelCheckTimer = setTimeout(async () => {
+                await checkTravelStatus();
+                const msUntilLanding = travelLandAtMs !== null ? (travelLandAtMs - Date.now()) : null;
+                let nextDelay = 5000;
+                if (msUntilLanding !== null && msUntilLanding > 60000) {
+                    nextDelay = Math.min(msUntilLanding - 40000, 5 * 60 * 1000);
+                }
+                scheduleTravelCheck(nextDelay);
+            }, delayMs);
+        }
+        scheduleTravelCheck(0);
 
         // Pulses the ghost logo when a war is active and an enemy with
         // higher stats than you is both attackable and present:
