@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.11.1
+// @version      2.11.2
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -911,6 +911,13 @@
                             ⛓️ Chain warning sound
                         </label>
                     </div>
+
+                    <div style="display:flex; flex-direction:column; gap:6px; border-top:1px solid #333; padding-top:10px;">
+                        <div style="color:#888; font-size:0.75em;">
+                            🔑 Wartorn key: ${userApiKey ? ('••••' + userApiKey.slice(-4)) : '<span style="color:#f44336;">not linked</span>'}
+                        </div>
+                        <button id="wt-set-change-key" style="background:#252525; border:1px solid #444; color:#00e5ff; padding:7px; border-radius:4px; cursor:pointer; font-size:0.8em; font-weight:bold;">Change Wartorn Key</button>
+                    </div>
                 </div>
             `;
 
@@ -951,6 +958,12 @@
                 safeGmSet('wt_chain_sound', chainSoundEnabled);
                 if (chainSoundEnabled) unlockAudioContext();
             });
+            // Same slide-out panel the Tampermonkey menu command and the
+            // "Auto-link not working?" link use - previously the ONLY way
+            // to change the key from inside the companion itself was that
+            // menu, which is easy to never notice since it's tucked away
+            // in the browser extension's own dropdown, not the page.
+            document.getElementById('wt-set-change-key').addEventListener('click', showManualLinkPanel);
         }
 
         const PANEL_DEFS = {
