@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.9.10
+// @version      2.10
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -10,6 +10,7 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
+// @grant        unsafeWindow
 // @connect      wartorn.spiffer10.com
 // @connect      api.torn.com
 // @downloadURL  https://update.greasyfork.org/scripts/595166/Wartorn%20Companion.user.js
@@ -1281,6 +1282,42 @@
         // crossed without needing a fresh network round-trip for it.
         let lastAlertSnapshot = null; // { amAbroad, chainTimeoutAtFetch, chainCount, chainOnCooldown, fetchedAtMs }
 
+        // Reads Torn's own self-status straight off the page
+        // (window.topBannerInitData - a real JS object Torn embeds inline on
+        // every page load, not something scraped via CSS selectors that
+        // could silently break) at zero API cost. Requires unsafeWindow -
+        // this script runs in a sandboxed JS context (any @grant besides
+        // none), where plain `window` is a proxy, not the actual page.
+        function getPageSelfStatus() {
+            try {
+                const w = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+                const d = w.topBannerInitData;
+                if (!d || !d.user || !d.user.state) return null;
+                return {
+                    isTravelling: !!d.user.state.isTravelling,
+                    isAbroad: !!d.user.state.isAbroad,
+                    hospitalUntil: (d.user.data && d.user.data.hospitalStamp) || 0,
+                    jailUntil: (d.user.data && d.user.data.jailStamp) || 0
+                };
+            } catch (e) { return null; }
+        }
+
+        // Pushes the above to Wartorn so the backend can skip its own live
+        // Torn call for this user's travel/hospital state when this is
+        // fresh - that call was only ever needed for exactly this coarse
+        // state (bars/battlestats change slowly and tolerate being cached
+        // longer), and this gets it for free from a page Torn already
+        // rendered. Falls back to a real Torn call itself whenever this
+        // hasn't been reported recently (companion not installed, hasn't
+        // been on torn.com in a while, etc.) - never the only source.
+        async function pushSelfStatus() {
+            const status = getPageSelfStatus();
+            if (!status) return;
+            try { await postToWartorn('self-status', status); } catch (e) {}
+        }
+        setInterval(pushSelfStatus, 20000);
+        pushSelfStatus();
+
         async function checkLiveAlerts() {
             try {
                 const data = await fetchFromWartorn('war-status');
@@ -1295,7 +1332,14 @@
 
                 const me = (data.us || []).find(m => String(m.id) === String(data.current_user_id));
                 const myStateLower = me ? String(me.state || '').toLowerCase() : '';
-                const amAbroad = myStateLower.includes('travel') || myStateLower.includes('abroad');
+                // Page-sourced state is fresher than whatever war-status
+                // last polled (it's read live, not on a 5s cycle) and free -
+                // prefer it, falling back to the API-derived value if the
+                // page data isn't available for some reason.
+                const pageStatus = getPageSelfStatus();
+                const amAbroad = pageStatus
+                    ? (pageStatus.isTravelling || pageStatus.isAbroad)
+                    : (myStateLower.includes('travel') || myStateLower.includes('abroad'));
 
                 lastAlertSnapshot = {
                     amAbroad,
