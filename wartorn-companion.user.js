@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.10
+// @version      2.11
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1302,17 +1302,66 @@
             } catch (e) { return null; }
         }
 
-        // Pushes the above to Wartorn so the backend can skip its own live
-        // Torn call for this user's travel/hospital state when this is
-        // fresh - that call was only ever needed for exactly this coarse
-        // state (bars/battlestats change slowly and tolerate being cached
-        // longer), and this gets it for free from a page Torn already
-        // rendered. Falls back to a real Torn call itself whenever this
-        // hasn't been reported recently (companion not installed, hasn't
-        // been on torn.com in a while, etc.) - never the only source.
+        // Bars and the chain counter live inside Torn's own sidebar SPA,
+        // which renders into an initially-empty #sidebarroot after the page
+        // loads - not present in raw page source, only in the live DOM.
+        // Torn's build hashes these CSS module class suffixes per deploy
+        // (e.g. "energy___hc9Jz"), so matching is done on the stable
+        // prefix substring via [class*="..."] rather than an exact class
+        // name, which would silently break on Torn's next frontend
+        // rebuild.
+        function parseBarTimeToSecs(text) {
+            if (!text) return 0;
+            const parts = String(text).trim().split(':').map(n => parseInt(n, 10) || 0);
+            if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+            if (parts.length === 2) return parts[0] * 60 + parts[1];
+            return 0;
+        }
+        function parseBarValue(el) {
+            if (!el) return null;
+            const m = String(el.textContent || '').match(/(-?\d+)\s*\/\s*(-?\d+)/);
+            return m ? { current: parseInt(m[1], 10), max: parseInt(m[2], 10) } : null;
+        }
+        function getPageBarsAndChain() {
+            try {
+                const w = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+                const doc = w.document || document;
+                const scope = doc.querySelector('#sidebarroot') || doc;
+                const bars = {};
+                ['energy', 'nerve', 'happy', 'life'].forEach(name => {
+                    const el = scope.querySelector(`[class*="${name}___"]`);
+                    const v = el ? parseBarValue(el.querySelector('[class*="bar-value"]')) : null;
+                    if (v) bars[name] = v;
+                });
+                let chain = null;
+                const chainEl = scope.querySelector('[class*="chain-bar"]');
+                if (chainEl) {
+                    const v = parseBarValue(chainEl.querySelector('[class*="bar-value"]'));
+                    const timeEl = chainEl.querySelector('[class*="bar-timeleft"]');
+                    if (v) chain = { current: v.current, max: v.max, timeoutSecs: parseBarTimeToSecs(timeEl ? timeEl.textContent : '') };
+                }
+                return (Object.keys(bars).length || chain) ? { bars, chain } : null;
+            } catch (e) { return null; }
+        }
+
+        // Pushes self-status (+ bars/chain when available) to Wartorn so the
+        // backend can skip its own live Torn calls when this is fresh - the
+        // self-profile call was only ever needed for coarse travel/hospital
+        // state plus bars (battlestats change slowly and tolerate being
+        // cached longer), and the shared faction chain fetch is exactly
+        // what this sidebar widget already shows. All of this is read for
+        // free from a page Torn already rendered. Falls back to a real
+        // Torn call itself whenever this hasn't been reported recently
+        // (companion not installed, hasn't been on torn.com in a while,
+        // etc.) - never the only source.
         async function pushSelfStatus() {
             const status = getPageSelfStatus();
             if (!status) return;
+            const barsChain = getPageBarsAndChain();
+            if (barsChain) {
+                if (Object.keys(barsChain.bars).length) status.bars = barsChain.bars;
+                if (barsChain.chain) status.chain = barsChain.chain;
+            }
             try { await postToWartorn('self-status', status); } catch (e) {}
         }
         setInterval(pushSelfStatus, 20000);
