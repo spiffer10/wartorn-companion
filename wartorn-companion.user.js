@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.11
+// @version      2.11.1
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -193,13 +193,64 @@
     function linkWartorn() {
         window.open(`${WARTORN_HOST}/login`, '_blank');
     }
-    function linkWartornManually() {
-        const key = prompt('Paste your Torn API key to link Wartorn manually:', userApiKey);
-        if (key !== null && key.trim()) {
-            userApiKey = key.trim();
+
+    // A real slide-out panel instead of a plain prompt() dialog - prompt()
+    // is exactly the kind of native browser UI that can render oddly, get
+    // silently blocked, or just be easy to miss/dismiss inside an embedded
+    // webview like TornPDA's. Defined up here (not inside the gated panel
+    // system further below) since it has to work even when nothing else in
+    // this file has run yet - see the early `return` right after this
+    // block for someone who isn't linked at all.
+    function showManualLinkPanel() {
+        if (document.getElementById('wt-manual-link-panel')) return;
+
+        const overlay = document.createElement('div');
+        overlay.id = 'wt-manual-link-panel';
+        overlay.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.75); z-index:10000000; display:flex; align-items:center; justify-content:flex-start;';
+
+        const panel = document.createElement('div');
+        panel.style.cssText = 'background:#15171c; border:1px solid #3a3f4b; border-left:3px solid #00e5ff; width:280px; max-width:85vw; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,0.8); font-family:sans-serif; color:#ccc; box-sizing:border-box; transform:translateX(-100%); transition:transform 0.25s ease;';
+        panel.innerHTML = `
+            <div style="color:#00e5ff; font-weight:bold; font-size:1.05em; margin-bottom:10px;">🔑 Link Wartorn</div>
+            <div style="font-size:0.85em; color:#aaa; margin-bottom:12px; line-height:1.4;">Paste the same Torn API key you use to log into the Wartorn dashboard.</div>
+            <input id="wt-manual-key-input" type="text" placeholder="Torn API key" style="width:100%; box-sizing:border-box; padding:8px; background:#0b0c10; border:1px solid #3a3f4b; border-radius:4px; color:#fff; font-size:0.9em; margin-bottom:10px;">
+            <div style="display:flex; gap:8px;">
+                <button id="wt-manual-key-save" style="flex:1; background:#00e5ff; color:#111; border:none; padding:8px; border-radius:4px; font-weight:bold; cursor:pointer;">Save &amp; Link</button>
+                <button id="wt-manual-key-cancel" style="background:#252525; color:#ccc; border:1px solid #444; padding:8px 12px; border-radius:4px; cursor:pointer;">Cancel</button>
+            </div>
+            <div id="wt-manual-key-msg" style="font-size:0.8em; margin-top:8px; min-height:1.2em;"></div>
+        `;
+
+        overlay.appendChild(panel);
+        document.body.appendChild(overlay);
+        requestAnimationFrame(() => { panel.style.transform = 'translateX(0)'; });
+
+        const close = () => {
+            panel.style.transform = 'translateX(-100%)';
+            setTimeout(() => overlay.remove(), 250);
+        };
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        document.getElementById('wt-manual-key-cancel').addEventListener('click', close);
+
+        const input = document.getElementById('wt-manual-key-input');
+        input.value = userApiKey || '';
+        input.focus();
+
+        const save = () => {
+            const val = input.value.trim();
+            const msg = document.getElementById('wt-manual-key-msg');
+            if (!val) { msg.style.color = '#f44336'; msg.innerText = 'Please paste a key first.'; return; }
+            userApiKey = val;
             safeGmSet('wt_api_key', userApiKey);
-            alert('Linked! Reload the page for it to take effect.');
-        }
+            msg.style.color = '#4CAF50';
+            msg.innerText = 'Linked! Reloading...';
+            setTimeout(() => location.reload(), 700);
+        };
+        document.getElementById('wt-manual-key-save').addEventListener('click', save);
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+    }
+    function linkWartornManually() {
+        showManualLinkPanel();
     }
 
     safeRegisterMenuCommand(userApiKey ? '✅ Wartorn Linked (re-link)' : '⚙️ Link Wartorn Account', linkWartorn);
