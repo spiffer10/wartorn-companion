@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.9.2
+// @version      2.9.3
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -608,7 +608,16 @@
                     body.innerHTML = `<div style="color:#888;">${data.error || 'No targets found.'}</div>`;
                     return;
                 }
-                body.innerHTML = data.targets.map(t => {
+                // Same endpoint/response as the dashboard's Chains tab, but the
+                // dashboard re-sorts client-side (favorites first, then highest
+                // level) instead of showing FFScouter's raw match order - without
+                // matching that here, this panel's "top" targets were often
+                // completely different people from the dashboard's, effectively
+                // burying whichever ones the dashboard puts first further down
+                // this much smaller panel's list. No favorites concept here, so
+                // just the level sort.
+                const sortedTargets = [...data.targets].sort((a, b) => (b.level || 0) - (a.level || 0));
+                body.innerHTML = sortedTargets.map(t => {
                     const tag = abbreviateStatus(t.state, t.until, t.desc);
                     const okay = t.state === 'Okay';
                     return rowHtml(
