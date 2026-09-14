@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.11.2
+// @version      2.11.3
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -71,7 +71,28 @@
         if (!safeGmGet('wt_api_key', '')) {
             fetch('/api/companion/link', { credentials: 'same-origin' })
                 .then(r => r.ok ? r.json() : null)
-                .then(data => { if (data && data.apiKey) safeGmSet('wt_api_key', data.apiKey); })
+                .then(data => {
+                    if (data && data.apiKey) {
+                        safeGmSet('wt_api_key', data.apiKey);
+                        // This whole handshake ran completely silently before -
+                        // on a genuinely new browser/system, the sequence is
+                        // "click Link Wartorn on torn.com, log in here on a
+                        // NEW tab" - with zero feedback, there was nothing
+                        // telling the user it actually worked or that they
+                        // needed to go back and reload the ORIGINAL torn.com
+                        // tab for it to take effect (this page load already
+                        // has the key; that other one doesn't, yet). Easy to
+                        // read as "auto-link doesn't work" when it actually
+                        // just succeeded silently.
+                        try {
+                            const banner = document.createElement('div');
+                            banner.style.cssText = 'position:fixed; top:20px; left:50%; transform:translateX(-50%); z-index:99999999; background:#15171c; border:1px solid #4CAF50; border-left:4px solid #4CAF50; color:#fff; padding:14px 20px; border-radius:6px; font-family:sans-serif; font-size:0.95em; box-shadow:0 8px 24px rgba(0,0,0,0.6); max-width:90vw; text-align:center;';
+                            banner.innerHTML = '✅ <b>Wartorn Companion linked!</b><br><span style="color:#aaa; font-size:0.9em;">Go back to your Torn tab and refresh the page to activate it.</span>';
+                            document.body.appendChild(banner);
+                            setTimeout(() => banner.remove(), 10000);
+                        } catch (e) {}
+                    }
+                })
                 .catch(() => {});
         }
         return;
@@ -275,11 +296,15 @@
         // or anywhere else GM storage doesn't bridge origins the standard
         // way) - no environment detection to get wrong, just a second
         // option that's always reliable regardless of why the first one
-        // didn't work.
+        // didn't work. Styled as a real button matching the notice above
+        // it (was tiny gray underlined text, reported as hard to see -
+        // this is the one thing standing between a stuck new install and
+        // actually getting linked, so it needs to be impossible to miss).
         const manualLink = document.createElement('div');
         manualLink.id = 'wt-link-manual';
-        manualLink.style.cssText = 'position: fixed; top: calc(25vh + 195px); left: 10px; z-index: 9999999; width: 60px; text-align: center; color: #888; font-size: 0.62em; cursor: pointer; text-decoration: underline; line-height: 1.3;';
-        manualLink.innerText = "Auto-link not working? Paste key manually";
+        manualLink.style.cssText = 'position: fixed; top: calc(25vh + 195px); left: 10px; z-index: 9999999; width: 60px; background: #15171c; border: 1px solid #666; border-radius: 6px; padding: 6px 4px; text-align: center; color: #00e5ff; font-size: 0.68em; font-weight: bold; cursor: pointer; line-height: 1.25; box-shadow: 0 4px 15px rgba(0,0,0,0.6);';
+        manualLink.innerHTML = '<div style="font-size:1.1em; line-height:1;">🔑</div><div style="margin-top:3px;">Paste Key</div>';
+        manualLink.title = 'Auto-link not working? Click to paste your key manually.';
         manualLink.addEventListener('click', linkWartornManually);
         document.body.appendChild(manualLink);
         return;
