@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.11.3
+// @version      2.11.4
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -307,6 +307,21 @@
         manualLink.title = 'Auto-link not working? Click to paste your key manually.';
         manualLink.addEventListener('click', linkWartornManually);
         document.body.appendChild(manualLink);
+
+        // This page's own script instance already decided "no key" at load
+        // time - linking on wartorn.spiffer10.com's tab stashes the key via
+        // GM storage, but doesn't touch THIS already-running page, so
+        // without this it just sits there unlinked until manually
+        // refreshed. Poll for the key showing up (works everywhere GM
+        // storage itself works, unlike GM_addValueChangeListener which
+        // isn't reliably available in every environment this runs in -
+        // e.g. TornPDA) and reload automatically the moment it appears.
+        const linkPollInterval = setInterval(() => {
+            if (safeGmGet('wt_api_key', '')) {
+                clearInterval(linkPollInterval);
+                location.reload();
+            }
+        }, 2000);
         return;
     }
  
