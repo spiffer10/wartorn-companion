@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.15.4
+// @version      2.15.5
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -799,7 +799,7 @@
         // which matters when deciding who's likely to react.
         function onlineDotHtml(onlineStatus) {
             const color = onlineStatus === 'Online' ? '#4CAF50' : (onlineStatus === 'Idle' ? '#FF9800' : '#666');
-            return `<span style="color:${color}; font-size:0.7em; margin-right:4px;" title="${onlineStatus || 'Offline'}">●</span>`;
+            return `<span style="color:${color}; font-size:1.5em; line-height:0; margin-right:5px; vertical-align:middle;" title="${onlineStatus || 'Offline'}">●</span>`;
         }
         function rowHtml(name, subtitleHtml, actionHtml, onlineStatus, profileId) {
             const dot = onlineStatus !== undefined ? onlineDotHtml(onlineStatus) : '';
