@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.15.3
+// @version      2.15.4
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1227,36 +1227,23 @@
                 <div id="wt-panel-body" style="padding:10px 12px; font-size:0.85em;">Loading...</div>
             `;
             document.body.appendChild(panel);
+            panel.style.scrollBehavior = 'smooth';
             // Manually drive scrolling and stop the wheel event from
             // bubbling - Torn's own page can otherwise swallow/intercept
             // wheel events before the browser's native overflow-y:auto
             // scrolling on this injected, unrelated element gets a chance
-            // to apply. Snapping scrollTop straight to each event's raw
-            // deltaY (a trackpad/wheel can fire many small events per
-            // gesture) felt jerky - easing toward an accumulated target over
-            // a few animation frames instead smooths it out, same idea as
-            // native smooth-scroll but self-driven since native scrolling
-            // isn't what's actually moving this element.
-            let wheelTargetScrollTop = null;
-            let wheelAnimFrame = null;
-            function stepSmoothScroll() {
-                if (wheelTargetScrollTop === null || !panel.isConnected) { wheelAnimFrame = null; return; }
-                const diff = wheelTargetScrollTop - panel.scrollTop;
-                if (Math.abs(diff) < 0.5) {
-                    panel.scrollTop = wheelTargetScrollTop;
-                    wheelTargetScrollTop = null;
-                    wheelAnimFrame = null;
-                    return;
-                }
-                panel.scrollTop += diff * 0.25;
-                wheelAnimFrame = requestAnimationFrame(stepSmoothScroll);
-            }
+            // to apply. A hand-rolled catch-up-to-target easing was tried
+            // here first and converged too fast to actually read as smooth -
+            // looked like a plain instant jump (same complaint as before,
+            // just now per-notch instead of per-event). scrollBy's own
+            // native smooth behavior is the browser's real scroll-physics
+            // implementation, not a from-scratch approximation of it, and
+            // handles a burst of wheel events (extending the animation
+            // instead of restarting it) far more reliably than a hand-timed
+            // easing loop would.
             panel.addEventListener('wheel', (e) => {
                 e.stopPropagation();
-                const maxScrollTop = panel.scrollHeight - panel.clientHeight;
-                const base = wheelTargetScrollTop === null ? panel.scrollTop : wheelTargetScrollTop;
-                wheelTargetScrollTop = Math.max(0, Math.min(maxScrollTop, base + e.deltaY));
-                if (!wheelAnimFrame) wheelAnimFrame = requestAnimationFrame(stepSmoothScroll);
+                panel.scrollBy({ top: e.deltaY, behavior: 'smooth' });
             }, { passive: true });
             document.getElementById('wt-panel-close').addEventListener('click', closeSidePanel);
             document.querySelectorAll('.wt-side-btn').forEach(b => {
