@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.15.1
+// @version      2.15.2
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -615,14 +615,6 @@
             if (m > 0) return `${m}m ${s}s`;
             return `${s}s`;
         }
-        // H:MM - matches how Torn itself displays flight time remaining.
-        function formatHM(totalSecs) {
-            if (totalSecs == null || totalSecs <= 0) return null;
-            totalSecs = Math.floor(totalSecs);
-            const h = Math.floor(totalSecs / 3600);
-            const m = Math.floor((totalSecs % 3600) / 60);
-            return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-        }
         // H:MM:SS - hospital/jail countdowns run down to the second.
         function formatHMS(totalSecs) {
             if (totalSecs == null || totalSecs <= 0) return null;
@@ -783,8 +775,16 @@
             }
             if (s.includes('travel')) {
                 const dest = parseDestination(desc);
-                const t = formatHM(secsLeft);
-                return { label: `TRN${dest ? ' > ' + dest : ''}${t ? ' ' + t : ''}`.trim(), color: '#2196F3' };
+                // parseDestination only finds WHICH country is mentioned, not
+                // which direction - Torn phrases a return leg as "Traveling
+                // from X to Torn", which used to show as "TRN > X" (implying
+                // outbound) same as an actual outbound "Traveling to X".
+                const isReturning = /from .+ to torn/i.test(desc || '');
+                const t = formatHMS(secsLeft);
+                let label;
+                if (!dest) label = 'TRN';
+                else label = isReturning ? `${dest} > TRN` : `TRN > ${dest}`;
+                return { label: `${label}${t ? ' ' + t : ''}`.trim(), color: '#2196F3' };
             }
             if (s.includes('abroad')) {
                 // Landed, not counting down a flight - no timer to show.
