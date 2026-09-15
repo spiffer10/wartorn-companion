@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.16.2
+// @version      2.16.3
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -943,20 +943,23 @@
                     const mine = call && call.callerId === companionTargetCalls.myPlayerId;
                     if (call && !mine) {
                         return `<span style="color:#FF9800; font-size:0.7em; white-space:nowrap;">📣 ${call.callerName}</span>`;
-                    } else if (okay) {
-                        const safeName = String(m.name || '').replace(/"/g, '&quot;');
-                        const callBtn = mine
-                            ? `<span class="wt-release-target-btn" data-tid="${m.id}" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">✅</span>`
-                            : `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">📣</span>`;
-                        // Target-calling (harmless pre-war coordination) stays
-                        // available regardless - only the real attack button
-                        // is gated on the war actually being active.
-                        const attackHtml = warIsActive
-                            ? attackButtonHtml(m.id)
-                            : `<span style="color:#666; font-size:0.75em;" title="War hasn't started yet">⏳</span>`;
-                        return `<div style="display:flex; gap:4px; align-items:center;">${callBtn}${attackHtml}</div>`;
                     }
-                    return '';
+                    const safeName = String(m.name || '').replace(/"/g, '&quot;');
+                    const callBtn = mine
+                        ? `<span class="wt-release-target-btn" data-tid="${m.id}" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">✅</span>`
+                        : `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">📣</span>`;
+                    // Calling dibs works regardless of their current state -
+                    // factions often want to claim a target BEFORE they land
+                    // or get released from hospital/jail so nobody else grabs
+                    // the first hit the instant they become available, not
+                    // only once they're already Okay. The real attack button
+                    // is still gated on Torn actually allowing the hit
+                    // (Okay) and the war being active - Torn won't let
+                    // anyone attack someone hospitalized/traveling/abroad
+                    // regardless of a call existing.
+                    let attackHtml = '';
+                    if (okay) attackHtml = warIsActive ? attackButtonHtml(m.id) : `<span style="color:#666; font-size:0.75em;" title="War hasn't started yet">⏳</span>`;
+                    return `<div style="display:flex; gap:4px; align-items:center;">${callBtn}${attackHtml}</div>`;
                 };
 
                 // "Show our faction too" and "Beatable only" now live in the
