@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.16
+// @version      2.16.1
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -911,7 +911,17 @@
                 const enemyList = (beatableOnlyFilter && effectiveUserStat > 0)
                     ? data.them.filter(m => m.sort_stat > 0 && m.sort_stat <= effectiveUserStat)
                     : data.them.slice();
-                enemyList.sort((a, b) => (b.sort_stat || 0) - (a.sort_stat || 0));
+                // Favorites first (matching Chain Targets/the dashboard's own
+                // behavior), then strongest-beatable-first within each group -
+                // marking a favorite with a star but leaving them wherever
+                // their stat happened to land wasn't much use for actually
+                // finding them in the list.
+                enemyList.sort((a, b) => {
+                    const aFav = isFavorited(a.id) ? 1 : 0;
+                    const bFav = isFavorited(b.id) ? 1 : 0;
+                    if (aFav !== bFav) return bFav - aFav;
+                    return (b.sort_stat || 0) - (a.sort_stat || 0);
+                });
                 const validTargets = enemyList;
 
                 const chainHtml = data.chain ? `<div style="margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid #333; color:#FF9800; font-weight:bold;">⛓️ Chain: ${data.chain.current || 0}${data.chain.timeout ? ` · ${formatDuration(data.chain.timeout)} left` : ''}</div>` : '';
