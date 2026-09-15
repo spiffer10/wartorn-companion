@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.17.6
+// @version      2.18
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -554,6 +554,26 @@
                     url: `${WARTORN_HOST}/api/companion/${endpoint}`,
                     headers: { 'Content-Type': 'application/json', 'x-wartorn-key': userApiKey },
                     data: JSON.stringify(payload),
+                    timeout: 10000,
+                    onload: (res) => {
+                        let data = {};
+                        try { data = JSON.parse(res.responseText); } catch (e) {}
+                        resolve({ status: res.status, data });
+                    },
+                    onerror: () => reject(new Error('network error')),
+                    ontimeout: () => reject(new Error('timeout'))
+                });
+            });
+        }
+
+        // Only the Vendettas panel needs an actual DELETE (removing a saved
+        // target) - everything else so far only ever GETs or POSTs.
+        function deleteFromWartorn(endpoint) {
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: 'DELETE',
+                    url: `${WARTORN_HOST}/api/companion/${endpoint}`,
+                    headers: { 'x-wartorn-key': userApiKey },
                     timeout: 10000,
                     onload: (res) => {
                         let data = {};
@@ -1291,10 +1311,161 @@
             document.getElementById('wt-set-change-key').addEventListener('click', showManualLinkPanel);
         }
 
+        // Torn's status.color ('green'/'red'/'blue'/etc.) straight from the
+        // API - a plain hex map instead of the dashboard's CSS classes
+        // (status-green etc.), which don't exist inside this userscript's
+        // injected DOM.
+        function tornColorToHex(c) {
+            if (c === 'green') return '#4CAF50';
+            if (c === 'red') return '#f44336';
+            if (c === 'blue') return '#2196F3';
+            return '#888';
+        }
+        async function addVendettaCompanion() {
+            const input = document.getElementById('wt-vendetta-add-input');
+            if (!input) return;
+            const raw = input.value.trim();
+            if (!raw) return;
+            const idMatch = raw.match(/\D*(\d+)/);
+            const target_id = idMatch ? idMatch[1] : raw;
+            input.value = '';
+            try { await postToWartorn('vendettas', { target_id }); } catch (e) {}
+            delete panelCache.vendetta;
+            renderVendettaPanel();
+        }
+        async function deleteVendettaCompanion(id) {
+            try { await deleteFromWartorn('vendettas/' + id); } catch (e) {}
+            delete panelCache.vendetta;
+            renderVendettaPanel();
+        }
+        async function renderVendettaPanel() {
+            const body = document.getElementById('wt-panel-body');
+            if (!body) return;
+            const addFormHtml = `<div style="display:flex; gap:4px; margin-bottom:10px;">
+                <input id="wt-vendetta-add-input" type="text" placeholder="Player ID or profile link" style="flex:1; min-width:0; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 8px; border-radius:4px; font-size:0.85em;">
+                <span id="wt-vendetta-add-btn" style="background:#E91E63; color:#fff; padding:0 12px; border-radius:4px; font-size:0.9em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; white-space:nowrap;">+ Add</span>
+            </div>`;
+            const wireAddForm = () => {
+                const addBtn = document.getElementById('wt-vendetta-add-btn');
+                if (addBtn) addBtn.addEventListener('click', addVendettaCompanion);
+                const addInput = document.getElementById('wt-vendetta-add-input');
+                if (addInput) addInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addVendettaCompanion(); });
+            };
+            try {
+                const data = await getPanelData('vendetta', 'vendettas');
+                if (activePanelKey !== 'vendetta' || !document.getElementById('wt-panel-body')) return;
+                const vendettas = (data && data.vendettas) || [];
+                if (!vendettas.length) {
+                    body.innerHTML = addFormHtml + '<div style="color:#888;">No vendetta targets saved yet.</div>';
+                    wireAddForm();
+                    return;
+                }
+                const rowsHtml = vendettas.map(v => {
+                    const statusText = v.desc || v.state || 'Unknown';
+                    const statText = v.display_stat || v.stat_estimate || '?';
+                    const subtitleHtml = `<span style="color:${tornColorToHex(v.color)};">${statusText}</span> <span style="color:#666;">·</span> <span style="color:#888;">${statText}</span>`;
+                    const safeName = String(v.name || 'Unknown').replace(/"/g, '&quot;');
+                    const attackHtml = attackButtonHtml(v.target_id);
+                    const messageBtn = `<a href="https://www.torn.com/messages.php#/p=compose&XID=${v.target_id}" target="_blank" style="background:#252525; border:1px solid #444; color:#ccc; padding:0 8px; border-radius:4px; font-size:0.95em; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; box-sizing:border-box;" title="Message">✉️</a>`;
+                    const bountyBtn = `<a href="https://www.torn.com/bounties.php?p=add&XID=${v.target_id}" target="_blank" style="background:#252525; border:1px solid #444; color:#ccc; padding:0 8px; border-radius:4px; font-size:0.95em; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; box-sizing:border-box;" title="Bounty">🎯</a>`;
+                    const deleteBtn = `<span class="wt-vendetta-delete-btn" data-tid="${v.target_id}" style="background:#252525; border:1px solid #444; color:#ff5555; padding:0 8px; border-radius:4px; font-size:0.95em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; box-sizing:border-box;" title="Delete">🗑️</span>`;
+                    const actionHtml = `<div style="display:flex; gap:3px; align-items:stretch;">${messageBtn}${bountyBtn}${deleteBtn}${attackHtml}</div>`;
+                    return rowHtml(safeName, subtitleHtml, actionHtml, v.online_status, v.target_id);
+                }).join('');
+                body.innerHTML = addFormHtml + rowsHtml;
+                wireAddForm();
+                wireAttackButtons(body);
+                body.querySelectorAll('.wt-vendetta-delete-btn').forEach(btn => {
+                    btn.addEventListener('click', () => deleteVendettaCompanion(btn.dataset.tid));
+                });
+            } catch (e) {
+                if (activePanelKey === 'vendetta' && document.getElementById('wt-panel-body')) {
+                    document.getElementById('wt-panel-body').innerHTML = addFormHtml + '<div style="color:#f44336;">Failed to load - check your Wartorn key is still valid.</div>';
+                    wireAddForm();
+                }
+            }
+        }
+
+        // Persisted via GM storage (not just an in-memory variable) so a
+        // running timer survives Torn's frequent page navigations/reloads,
+        // not just staying alive as long as this one page stays open.
+        let customTimerTargetMs = safeGmGet('wt_timer_target_ms', null);
+        let customTimerLabel = safeGmGet('wt_timer_label', '');
+        function startCustomTimer(durationMs, label) {
+            customTimerTargetMs = Date.now() + durationMs;
+            customTimerLabel = label || '';
+            safeGmSet('wt_timer_target_ms', customTimerTargetMs);
+            safeGmSet('wt_timer_label', customTimerLabel);
+            unlockAudioContext();
+            if (activePanelKey === 'timer') renderTimerPanel();
+        }
+        function cancelCustomTimer() {
+            customTimerTargetMs = null;
+            customTimerLabel = '';
+            safeGmSet('wt_timer_target_ms', null);
+            safeGmSet('wt_timer_label', '');
+            if (activePanelKey === 'timer') renderTimerPanel();
+        }
+        // A small floating notice for when the timer fires while its panel
+        // isn't even open - the sound alone is easy to miss/misattribute if
+        // there's nothing on screen explaining what just made noise.
+        function showCompanionToast(msg) {
+            const toast = document.createElement('div');
+            toast.textContent = msg;
+            toast.style.cssText = 'position:fixed; top:16px; right:16px; z-index:99999999; background:rgba(21,23,28,0.97); border:1px solid #00e5ff; color:#fff; padding:10px 16px; border-radius:6px; font-size:0.9em; font-weight:bold; box-shadow:0 4px 16px rgba(0,0,0,0.6); max-width:280px;';
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 8000);
+        }
+        function renderTimerPanel() {
+            const body = document.getElementById('wt-panel-body');
+            if (!body) return;
+            if (customTimerTargetMs !== null && Date.now() < customTimerTargetMs) {
+                const remainingSecs = Math.ceil((customTimerTargetMs - Date.now()) / 1000);
+                body.innerHTML = `<div style="text-align:center; padding:10px 0;">
+                    ${customTimerLabel ? `<div style="color:#ccc; font-size:0.9em; margin-bottom:6px;">${customTimerLabel}</div>` : ''}
+                    <div style="font-size:1.8em; font-weight:bold; color:#00e5ff; font-variant-numeric:tabular-nums;">${formatHMS(remainingSecs)}</div>
+                    <span id="wt-timer-cancel-btn" style="display:inline-block; margin-top:12px; background:#252525; border:1px solid #f44336; color:#f44336; padding:6px 14px; border-radius:4px; cursor:pointer; font-size:0.85em;">Cancel Timer</span>
+                </div>`;
+                const cancelBtn = document.getElementById('wt-timer-cancel-btn');
+                if (cancelBtn) cancelBtn.addEventListener('click', cancelCustomTimer);
+                return;
+            }
+            body.innerHTML = `<div style="display:flex; flex-direction:column; gap:8px;">
+                <div style="color:#888; font-size:0.8em;">Set a timer - plays a sound (and shows a notice) when it goes off, even if this panel isn't open.</div>
+                <input id="wt-timer-label-input" type="text" placeholder="Label (optional)" style="background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 8px; border-radius:4px; font-size:0.85em;">
+                <div style="display:flex; gap:4px; align-items:center; justify-content:center;">
+                    <input id="wt-timer-hours" type="number" min="0" max="23" value="0" style="width:44px; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 4px; border-radius:4px; text-align:center;">
+                    <span style="color:#888;">h</span>
+                    <input id="wt-timer-mins" type="number" min="0" max="59" value="5" style="width:44px; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 4px; border-radius:4px; text-align:center;">
+                    <span style="color:#888;">m</span>
+                    <input id="wt-timer-secs" type="number" min="0" max="59" value="0" style="width:44px; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 4px; border-radius:4px; text-align:center;">
+                    <span style="color:#888;">s</span>
+                </div>
+                <span id="wt-timer-start-btn" style="background:#4CAF50; color:#fff; text-align:center; padding:8px; border-radius:4px; cursor:pointer; font-weight:bold; font-size:0.9em;">Start Timer</span>
+            </div>`;
+            const startBtn = document.getElementById('wt-timer-start-btn');
+            if (startBtn) startBtn.addEventListener('click', () => {
+                const h = parseInt(document.getElementById('wt-timer-hours').value, 10) || 0;
+                const m = parseInt(document.getElementById('wt-timer-mins').value, 10) || 0;
+                const s = parseInt(document.getElementById('wt-timer-secs').value, 10) || 0;
+                const totalMs = ((h * 3600) + (m * 60) + s) * 1000;
+                if (totalMs <= 0) return;
+                const label = (document.getElementById('wt-timer-label-input').value || '').trim();
+                startCustomTimer(totalMs, label);
+            });
+        }
+
         const PANEL_DEFS = {
             war: { icon: '⚔️', title: 'War Targets', render: renderWarTargetsPanel, ticking: true },
             targets: { icon: '⛓️', title: 'Chain Targets', render: renderTargetsPanel, ticking: true },
             milestone: { icon: '🔥', title: 'Chain Hits', render: renderMilestonePanel, ticking: true },
+            vendetta: { icon: '🔪', title: 'Vendettas', render: renderVendettaPanel, ticking: false },
+            // Not ticking: the setup form (label/h/m/s inputs) would get
+            // wiped out and reset every second by the shared panelTickTimer
+            // re-render while someone's still typing into it. The live
+            // countdown display (once a timer is actually running) instead
+            // gets its own dedicated 1s redraw below, well past PANEL_DEFS.
+            timer: { icon: '⏰', title: 'Custom Timer', render: renderTimerPanel, ticking: false },
             settings: { icon: '⚙️', title: 'Settings', render: renderSettingsPanel, ticking: false }
         };
 
@@ -1562,6 +1733,34 @@
                 };
                 beep(ctx.currentTime);
                 if (urgent) beep(ctx.currentTime + 0.2);
+            } catch (e) {}
+        }
+
+        // The Custom Timer's alert sound. Can't embed the actual copyrighted
+        // Final Fantasy moogle "Kupo!" clip this is named after, so this
+        // synthesizes a stand-in with the same two-syllable feel: a short
+        // "ku" note followed by a "po!" that bends upward in pitch.
+        function playKupoSound() {
+            if (!sharedAudioCtx) return;
+            try {
+                const ctx = sharedAudioCtx;
+                const now = ctx.currentTime;
+                const note = (startTime, freq, dur, glideToFreq) => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(freq, startTime);
+                    if (glideToFreq) osc.frequency.linearRampToValueAtTime(glideToFreq, startTime + dur);
+                    gain.gain.setValueAtTime(0, startTime);
+                    gain.gain.linearRampToValueAtTime(0.5, startTime + 0.02);
+                    gain.gain.exponentialRampToValueAtTime(0.01, startTime + dur);
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start(startTime);
+                    osc.stop(startTime + dur + 0.05);
+                };
+                note(now, 392, 0.15);
+                note(now + 0.18, 523.25, 0.35, 659.25);
             } catch (e) {}
         }
 
@@ -1885,8 +2084,29 @@
                     }
                 }
             }
+
+            // Fires independently of whether the Timer panel is even open -
+            // checked here (alongside the other background alert checks)
+            // rather than only inside renderTimerPanel(), which only runs
+            // while that specific panel is on screen.
+            if (customTimerTargetMs !== null && Date.now() >= customTimerTargetMs) {
+                playKupoSound();
+                showCompanionToast(customTimerLabel ? `⏰ ${customTimerLabel}` : '⏰ Timer\'s up!');
+                customTimerTargetMs = null;
+                customTimerLabel = '';
+                safeGmSet('wt_timer_target_ms', null);
+                safeGmSet('wt_timer_label', '');
+                if (activePanelKey === 'timer') renderTimerPanel();
+            }
         }
         setInterval(tickLocalAlertClocks, 1000);
+        // Purely cosmetic live countdown for the Timer panel while it's
+        // open and actually counting down - separate from the expiry check
+        // above so the setup form (still showing when no timer is running)
+        // never gets rebuilt out from under someone mid-typing.
+        setInterval(() => {
+            if (activePanelKey === 'timer' && customTimerTargetMs !== null) renderTimerPanel();
+        }, 1000);
     }
 
 })();
