@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.17.1
+// @version      2.17.2
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -635,6 +635,23 @@
             const label = formatDuration(remainingSecs);
             return label ? `${label} left` : 'expiring';
         }
+        // Same 24h "can't stack energy/drugs" cooldown as the dashboard's
+        // OD badge (getOdCooldownRemainingMs in index.html) - kept as an
+        // icon-only badge here (hover for the exact time left) since the
+        // panel's rows are tighter than the dashboard's roster table.
+        const OD_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+        function getOdCooldownRemainingMs(lastOd) {
+            if (!lastOd || lastOd <= 0) return 0;
+            const remaining = (lastOd + OD_COOLDOWN_MS) - Date.now();
+            return remaining > 0 ? remaining : 0;
+        }
+        function odBadgeHtml(lastOd) {
+            const remainingMs = getOdCooldownRemainingMs(lastOd);
+            if (remainingMs <= 0) return '';
+            const rHrs = Math.floor(remainingMs / 3600000);
+            const rMins = Math.floor((remainingMs % 3600000) / 60000);
+            return `<span style="font-size:1.1em; margin-left:4px; cursor:help; filter: drop-shadow(0 0 3px rgba(233,30,99,0.5));" title="OD cooldown: ${rHrs}h ${rMins}m left - can't stack energy/drugs until this clears">💊</span>`;
+        }
         // H:MM:SS - hospital/jail countdowns run down to the second.
         function formatHMS(totalSecs) {
             if (totalSecs == null || totalSecs <= 0) return null;
@@ -795,17 +812,23 @@
             const color = onlineStatus === 'Online' ? '#4CAF50' : (onlineStatus === 'Idle' ? '#FF9800' : '#666');
             return `<span style="color:${color}; font-size:1.5em; line-height:0; margin-right:5px; vertical-align:middle;" title="${onlineStatus || 'Offline'}">●</span>`;
         }
-        function rowHtml(name, subtitleHtml, actionHtml, onlineStatus, profileId) {
+        function rowHtml(name, subtitleHtml, actionHtml, onlineStatus, profileId, odBadge) {
             const dot = onlineStatus !== undefined ? onlineDotHtml(onlineStatus) : '';
             const nameHtml = profileId
                 ? `<a href="https://www.torn.com/profiles.php?XID=${profileId}" target="_blank" style="color:#fff; text-decoration:none;">${name}</a>`
                 : name;
-            return `<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0; border-bottom:1px solid #1f2229;">
-                <div style="min-width:0;">
-                    <div style="color:#fff; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${dot}${nameHtml}</div>
-                    <div style="font-size:0.8em;">${subtitleHtml}</div>
+            // Genuine two-row layout (name+dot+OD icon on row 1, status and
+            // call/attack actions on row 2) instead of squeezing actionHtml
+            // into a single column vertically centered beside both rows -
+            // that layout ran out of horizontal room the moment a call
+            // badge, countdown, and attack button all needed to show at
+            // once. Splitting across two rows gives each its own line.
+            return `<div style="padding:6px 0; border-bottom:1px solid #1f2229;">
+                <div style="color:#fff; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${dot}${nameHtml}${odBadge || ''}</div>
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:2px;">
+                    <div style="font-size:0.8em; min-width:0; overflow:hidden; text-overflow:ellipsis;">${subtitleHtml}</div>
+                    ${actionHtml || ''}
                 </div>
-                ${actionHtml || ''}
             </div>`;
         }
 
@@ -1036,9 +1059,11 @@
                         const tag = abbreviateStatus(m.state, m.until, m.desc);
                         const actionHtml = isEnemy ? buildTargetActionHtml(m) : '';
                         const star = isFavorited(m.id) ? '⭐ ' : '';
+                        const odIcon = isEnemy ? odBadgeHtml(m.last_od) : '';
                         return `<div style="display:flex; align-items:center; gap:3px; padding:3px 0; border-bottom:1px solid #1f2229; font-size:0.72em; overflow:hidden;">
                             ${onlineDotHtml(m.online_status)}
                             <a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" style="color:#fff; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; min-width:0;">${star}${m.name}</a>
+                            ${odIcon}
                             <span style="color:${tag.color}; white-space:nowrap; flex-shrink:0;">${tag.label}</span>
                             ${actionHtml}
                         </div>`;
@@ -1064,7 +1089,7 @@
                     const rowsHtml = validTargets.map(m => {
                         const tag = abbreviateStatus(m.state, m.until, m.desc);
                         const name = isFavorited(m.id) ? `⭐ ${m.name}` : m.name;
-                        return rowHtml(name, `<span style="color:${tag.color};">${tag.label}</span>`, buildTargetActionHtml(m), m.online_status, m.id);
+                        return rowHtml(name, `<span style="color:${tag.color};">${tag.label}</span>`, buildTargetActionHtml(m), m.online_status, m.id, odBadgeHtml(m.last_od));
                     }).join('');
                     contentHtml = rowsHtml || `<div style="color:#888;">${beatableOnlyFilter ? 'No valid targets found under your stats.' : 'No enemy members found.'}</div>`;
                 }
