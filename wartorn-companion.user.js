@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.15.2
+// @version      2.15.3
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1231,10 +1231,32 @@
             // bubbling - Torn's own page can otherwise swallow/intercept
             // wheel events before the browser's native overflow-y:auto
             // scrolling on this injected, unrelated element gets a chance
-            // to apply.
+            // to apply. Snapping scrollTop straight to each event's raw
+            // deltaY (a trackpad/wheel can fire many small events per
+            // gesture) felt jerky - easing toward an accumulated target over
+            // a few animation frames instead smooths it out, same idea as
+            // native smooth-scroll but self-driven since native scrolling
+            // isn't what's actually moving this element.
+            let wheelTargetScrollTop = null;
+            let wheelAnimFrame = null;
+            function stepSmoothScroll() {
+                if (wheelTargetScrollTop === null || !panel.isConnected) { wheelAnimFrame = null; return; }
+                const diff = wheelTargetScrollTop - panel.scrollTop;
+                if (Math.abs(diff) < 0.5) {
+                    panel.scrollTop = wheelTargetScrollTop;
+                    wheelTargetScrollTop = null;
+                    wheelAnimFrame = null;
+                    return;
+                }
+                panel.scrollTop += diff * 0.25;
+                wheelAnimFrame = requestAnimationFrame(stepSmoothScroll);
+            }
             panel.addEventListener('wheel', (e) => {
                 e.stopPropagation();
-                panel.scrollTop += e.deltaY;
+                const maxScrollTop = panel.scrollHeight - panel.clientHeight;
+                const base = wheelTargetScrollTop === null ? panel.scrollTop : wheelTargetScrollTop;
+                wheelTargetScrollTop = Math.max(0, Math.min(maxScrollTop, base + e.deltaY));
+                if (!wheelAnimFrame) wheelAnimFrame = requestAnimationFrame(stepSmoothScroll);
             }, { passive: true });
             document.getElementById('wt-panel-close').addEventListener('click', closeSidePanel);
             document.querySelectorAll('.wt-side-btn').forEach(b => {
