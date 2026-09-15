@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.17.4
+// @version      2.17.5
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -686,7 +686,7 @@
         // wouldn't resolve. Buttons instead carry a data-attack-id and get
         // wired up via wireAttackButtons() after every render.
         function attackButtonHtml(id) {
-            return `<span class="wt-attack-btn" data-attack-id="${id}" style="background:#4CAF50; color:#fff; padding:6px 12px; border-radius:4px; font-size:1.05em; font-weight:bold; white-space:nowrap; cursor:pointer;">⚔️</span>`;
+            return `<span class="wt-attack-btn" data-attack-id="${id}" style="background:#4CAF50; color:#fff; padding:0 12px; border-radius:4px; font-size:1.05em; font-weight:bold; white-space:nowrap; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; height:100%; box-sizing:border-box;">⚔️</span>`;
         }
         // Populated by renderWarTargetsPanel() from /api/companion/target-calls -
         // shared here so EVERY attack button (War Targets and Chain Targets
@@ -825,8 +825,8 @@
             // once. Splitting across two rows gives each its own line.
             return `<div style="padding:6px 0; border-bottom:1px solid #1f2229;">
                 <div style="color:#fff; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${dot}${nameHtml}${odBadge || ''}</div>
-                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:2px;">
-                    <div style="font-size:0.8em; min-width:0; overflow:hidden; text-overflow:ellipsis;">${subtitleHtml}</div>
+                <div style="display:flex; align-items:stretch; justify-content:space-between; gap:8px; margin-top:2px;">
+                    <div style="font-size:0.8em; min-width:0; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center;">${subtitleHtml}</div>
                     ${actionHtml || ''}
                 </div>
             </div>`;
@@ -1015,7 +1015,7 @@
                     // moment. Torn's own attack page handles a not-yet-
                     // attackable target gracefully; only whether the WAR
                     // itself has started is checked here.
-                    const attackHtml = warIsActive ? attackButtonHtml(m.id) : `<span style="color:#666; font-size:0.75em;" title="War hasn't started yet">⏳</span>`;
+                    const attackHtml = warIsActive ? attackButtonHtml(m.id) : `<span style="color:#666; font-size:0.75em; display:inline-flex; align-items:center;" title="War hasn't started yet">⏳</span>`;
                     if (call && !mine) {
                         // Someone else already called this - warn, don't
                         // block (same philosophy as the dashboard's own
@@ -1029,21 +1029,21 @@
                         // still good for so someone can judge whether it's
                         // worth waiting on; re-renders every second while the
                         // panel's open (startPanelTick), so it ticks down live.
-                        return `<div style="display:flex; gap:4px; align-items:center;">
-                            <span style="color:#FF9800; font-size:0.7em; white-space:nowrap;">📣 ${call.callerName} · ${targetCallRemainingLabel(call)}</span>
+                        return `<div style="display:flex; gap:4px; align-items:stretch;">
+                            <span style="color:#FF9800; font-size:0.7em; white-space:nowrap; display:inline-flex; align-items:center;">📣 ${call.callerName} · ${targetCallRemainingLabel(call)}</span>
                             ${attackHtml}
                         </div>`;
                     }
                     const safeName = String(m.name || '').replace(/"/g, '&quot;');
                     if (mine) {
-                        const releaseBtn = `<span class="wt-release-target-btn" data-tid="${m.id}" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:5px 9px; border-radius:4px; font-size:1em; cursor:pointer;">✅</span>`;
-                        return `<div style="display:flex; gap:4px; align-items:center;">
-                            <span style="color:#666; font-size:0.65em; white-space:nowrap;">${targetCallRemainingLabel(call)}</span>
+                        const releaseBtn = `<span class="wt-release-target-btn" data-tid="${m.id}" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:0 9px; border-radius:4px; font-size:1em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; box-sizing:border-box;">✅</span>`;
+                        return `<div style="display:flex; gap:4px; align-items:stretch;">
+                            <span style="color:#666; font-size:0.65em; white-space:nowrap; display:inline-flex; align-items:center;">${targetCallRemainingLabel(call)}</span>
                             ${releaseBtn}${attackHtml}
                         </div>`;
                     }
-                    const callBtn = `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:5px 9px; border-radius:4px; font-size:1em; cursor:pointer;">📣</span>`;
-                    return `<div style="display:flex; gap:4px; align-items:center;">${callBtn}${attackHtml}</div>`;
+                    const callBtn = `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:0 9px; border-radius:4px; font-size:1em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; box-sizing:border-box;">📣</span>`;
+                    return `<div style="display:flex; gap:4px; align-items:stretch;">${callBtn}${attackHtml}</div>`;
                 };
 
                 // "Show our faction too" and "Beatable only" now live in the
@@ -1076,8 +1076,8 @@
                                 <a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" style="color:#fff; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:0 1 auto;">${star}${m.name}</a>
                                 ${odIcon}
                             </div>
-                            <div style="display:flex; align-items:center; justify-content:space-between; gap:4px; margin-top:1px;">
-                                <span style="color:${tag.color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${tag.label}</span>
+                            <div style="display:flex; align-items:stretch; justify-content:space-between; gap:4px; margin-top:1px;">
+                                <span style="color:${tag.color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:inline-flex; align-items:center;">${tag.label}</span>
                                 ${actionHtml}
                             </div>
                         </div>`;
