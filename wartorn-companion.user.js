@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.14
+// @version      2.15
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -126,6 +126,53 @@
         (document.head || document.documentElement).appendChild(style);
     }
  
+    // --- DRAGGABLE POSITION ---
+    // Every piece of the left-edge UI (logo, button stack, collapse toggle,
+    // link-notice, manual-link button) was independently positioned via a
+    // hardcoded "top:25vh, left:9-10px" - fine as a default, but nobody
+    // could move it. All of them now derive their top/left from this one
+    // shared anchor instead, offset by the same amounts those hardcoded
+    // values used, so dragging the logo (the drag handle - see the
+    // mousedown/mousemove/mouseup wiring right after it's created) moves
+    // the whole cluster together and the result persists across reloads.
+    let companionAnchorTop = safeGmGet('wt_anchor_top', null);
+    let companionAnchorLeft = safeGmGet('wt_anchor_left', null);
+    if (typeof companionAnchorTop !== 'number') companionAnchorTop = Math.round(window.innerHeight * 0.25);
+    if (typeof companionAnchorLeft !== 'number') companionAnchorLeft = 9;
+
+    function clampCompanionAnchor() {
+        // Rough total footprint of the cluster below the anchor (toggle
+        // sits 9px above it, the manual-link button's bottom edge is the
+        // lowest point at +195+~50px) - just enough to stop it being
+        // dragged somewhere entirely unreachable, not pixel-perfect.
+        const maxTop = Math.max(0, window.innerHeight - 260);
+        const maxLeft = Math.max(0, window.innerWidth - 60);
+        companionAnchorTop = Math.min(Math.max(0, companionAnchorTop), maxTop);
+        companionAnchorLeft = Math.min(Math.max(0, companionAnchorLeft), maxLeft);
+    }
+
+    // Called after creating/updating any of these elements - safe to call
+    // before some of them exist yet (e.g. the link-notice only renders when
+    // unlinked), each lookup just no-ops if that element isn't there.
+    function applyCompanionAnchor() {
+        clampCompanionAnchor();
+        const place = (id, dTop, dLeft) => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.style.top = (companionAnchorTop + dTop) + 'px';
+                el.style.left = (companionAnchorLeft + dLeft) + 'px';
+            }
+        };
+        place('wt-ghost-logo', 0, 0);
+        place('wt-side-buttons', 129, 1);
+        place('wt-edge-toggle', -9, 0);
+        place('wt-link-notice', 140, 1);
+        place('wt-link-manual', 195, 1);
+    }
+    // Re-clamp (not re-center) on resize, so shrinking the window can't
+    // strand a dragged position somewhere off-screen and unreachable.
+    window.addEventListener('resize', applyCompanionAnchor);
+
     // Logo + button stack both live inside this one wrapper so the "hide
     // buttons" toggle (added in the gated module below, since it's
     // meaningless without buttons) can slide BOTH together with a single
@@ -158,10 +205,12 @@
         link.href = WARTORN_HOST;
         link.target = 'wartorn_dashboard'; 
         
-        // 25% down the viewport, with the side-panel button stack directly
-        // below it (see injectSidePanels()'s wrapper top offset). Sized to
+        // Position (top/left) is applied below via applyCompanionAnchor() -
+        // defaults to 25% down the viewport, with the side-panel button
+        // stack directly below it (see injectSidePanels()'s wrapper top
+        // offset), but is draggable and persisted from there on. Sized to
         // the FINAL (post-rotation) footprint - 40 wide x 130 tall.
-        link.style.cssText = `position: fixed; top: 25vh; left: 9px; z-index: 9999999; opacity: 0.85; transition: all 0.2s ease; cursor: pointer; display: flex; align-items: center; justify-content: center; width: 40px; height: 130px; overflow: hidden; pointer-events: auto;`;
+        link.style.cssText = `position: fixed; z-index: 9999999; opacity: 0.85; transition: opacity 0.2s ease, transform 0.2s ease; cursor: grab; display: flex; align-items: center; justify-content: center; width: 40px; height: 130px; overflow: hidden; pointer-events: auto;`;
 
         const img = document.createElement('img');
         img.src = `${WARTORN_HOST}/wartornlogo.png`;
@@ -181,9 +230,61 @@
         // started at instead.
         link.addEventListener('mouseenter', () => { link.style.opacity = '1'; link.style.transform = 'scale(1.05)'; });
         link.addEventListener('mouseleave', () => { link.style.opacity = '0.85'; link.style.transform = 'scale(1)'; });
-        
+
+        // Drag-to-move: the logo is the one handle for repositioning the
+        // WHOLE companion (buttons/toggle/link-notice all follow, since
+        // they're all placed off the same shared anchor). A plain click
+        // still needs to navigate to the dashboard as before, so this only
+        // treats it as a drag once the pointer has actually moved past a
+        // small threshold - a real click never crosses that, and the
+        // 'click' handler below suppresses navigation for the cases that do.
+        let dragging = false;
+        let dragMoved = false;
+        let dragStartX = 0, dragStartY = 0;
+        let dragStartAnchorTop = 0, dragStartAnchorLeft = 0;
+        const DRAG_THRESHOLD_PX = 5;
+
+        link.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return; // left click only
+            dragging = true;
+            dragMoved = false;
+            dragStartX = e.clientX;
+            dragStartY = e.clientY;
+            dragStartAnchorTop = companionAnchorTop;
+            dragStartAnchorLeft = companionAnchorLeft;
+            e.preventDefault(); // no text-selection/native image-drag ghost
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!dragging) return;
+            const dx = e.clientX - dragStartX;
+            const dy = e.clientY - dragStartY;
+            if (!dragMoved && (Math.abs(dx) > DRAG_THRESHOLD_PX || Math.abs(dy) > DRAG_THRESHOLD_PX)) {
+                dragMoved = true;
+                link.style.cursor = 'grabbing';
+            }
+            if (!dragMoved) return;
+            companionAnchorTop = dragStartAnchorTop + dy;
+            companionAnchorLeft = dragStartAnchorLeft + dx;
+            applyCompanionAnchor();
+        });
+        document.addEventListener('mouseup', () => {
+            if (!dragging) return;
+            dragging = false;
+            link.style.cursor = 'grab';
+            if (dragMoved) {
+                safeGmSet('wt_anchor_top', companionAnchorTop);
+                safeGmSet('wt_anchor_left', companionAnchorLeft);
+            }
+        });
+        link.addEventListener('click', (e) => {
+            // A drag ends with the same 'click' event a plain tap would -
+            // without this, every drag would also open the dashboard.
+            if (dragMoved) { e.preventDefault(); dragMoved = false; }
+        });
+
         link.appendChild(img);
         getOrCreateEdgeCluster().appendChild(link);
+        applyCompanionAnchor();
     }
  
     injectGhostLogo();
@@ -286,7 +387,7 @@
     if (!userApiKey) {
         const notice = document.createElement('div');
         notice.id = 'wt-link-notice';
-        notice.style.cssText = 'position: fixed; top: calc(25vh + 140px); left: 10px; z-index: 9999999; width: 60px; background: #15171c; border: 1px solid #00e5ff; border-radius: 6px; padding: 8px 6px; text-align: center; cursor: pointer; box-shadow: 0 4px 15px rgba(0,0,0,0.6);';
+        notice.style.cssText = 'position: fixed; z-index: 9999999; width: 60px; background: #15171c; border: 1px solid #00e5ff; border-radius: 6px; padding: 8px 6px; text-align: center; cursor: pointer; box-shadow: 0 4px 15px rgba(0,0,0,0.6);';
         notice.innerHTML = '<div style="font-size:1.3em; line-height:1;">🔗</div><div style="color:#00e5ff; font-size:0.65em; font-weight:bold; margin-top:4px; line-height:1.2;">Link Wartorn</div>';
         notice.addEventListener('click', linkWartorn);
         document.body.appendChild(notice);
@@ -302,11 +403,12 @@
         // actually getting linked, so it needs to be impossible to miss).
         const manualLink = document.createElement('div');
         manualLink.id = 'wt-link-manual';
-        manualLink.style.cssText = 'position: fixed; top: calc(25vh + 195px); left: 10px; z-index: 9999999; width: 60px; background: #15171c; border: 1px solid #666; border-radius: 6px; padding: 6px 4px; text-align: center; color: #00e5ff; font-size: 0.68em; font-weight: bold; cursor: pointer; line-height: 1.25; box-shadow: 0 4px 15px rgba(0,0,0,0.6);';
+        manualLink.style.cssText = 'position: fixed; z-index: 9999999; width: 60px; background: #15171c; border: 1px solid #666; border-radius: 6px; padding: 6px 4px; text-align: center; color: #00e5ff; font-size: 0.68em; font-weight: bold; cursor: pointer; line-height: 1.25; box-shadow: 0 4px 15px rgba(0,0,0,0.6);';
         manualLink.innerHTML = '<div style="font-size:1.1em; line-height:1;">🔑</div><div style="margin-top:3px;">Paste Key</div>';
         manualLink.title = 'Auto-link not working? Click to paste your key manually.';
         manualLink.addEventListener('click', linkWartornManually);
         document.body.appendChild(manualLink);
+        applyCompanionAnchor();
 
         // This page's own script instance already decided "no key" at load
         // time - linking on wartorn.spiffer10.com's tab stashes the key via
@@ -1160,10 +1262,10 @@
 
             const wrap = document.createElement('div');
             wrap.id = 'wt-side-buttons';
-            // Directly below the logo, which sits at top:25vh and is 130px
-            // tall - see injectGhostLogo() above.
+            // Positioned below via applyCompanionAnchor() - directly below
+            // the logo, which is 130px tall (see injectGhostLogo() above).
             const WRAP_TRANSITION = 'opacity 0.3s ease, transform 0.3s ease';
-            wrap.style.cssText = `position:fixed; top:calc(25vh + 129px); left:10px; z-index:9999999; display:flex; flex-direction:column; gap:6px; pointer-events:auto; transform-origin:top center; transition:${WRAP_TRANSITION};`;
+            wrap.style.cssText = `position:fixed; z-index:9999999; display:flex; flex-direction:column; gap:6px; pointer-events:auto; transform-origin:top center; transition:${WRAP_TRANSITION};`;
             Object.keys(PANEL_DEFS).forEach(key => {
                 const def = PANEL_DEFS[key];
                 const btn = document.createElement('div');
@@ -1212,10 +1314,11 @@
             const toggle = document.createElement('div');
             toggle.id = 'wt-edge-toggle';
             toggle.title = 'Hide/show the Wartorn buttons';
-            // Sits just above the logo (top:25vh) rather than between the
-            // logo and the button stack - that gap was thin enough that it
-            // visually ran into the War Targets button below it.
-            toggle.style.cssText = 'position:fixed; top:calc(25vh - 9px); left:9px; z-index:9999999; width:40px; height:10px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-bottom:none; border-radius:4px 4px 0 0; cursor:pointer; font-size:8px; line-height:1; color:#00e5ff; opacity:0.85; transition:0.15s; pointer-events:auto;';
+            // Sits just above the logo rather than between the logo and the
+            // button stack - that gap was thin enough that it visually ran
+            // into the War Targets button below it. Position applied below
+            // via applyCompanionAnchor().
+            toggle.style.cssText = 'position:fixed; z-index:9999999; width:40px; height:10px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-bottom:none; border-radius:4px 4px 0 0; cursor:pointer; font-size:8px; line-height:1; color:#00e5ff; opacity:0.85; transition:0.15s; pointer-events:auto;';
             toggle.addEventListener('mouseenter', () => { toggle.style.opacity = '1'; });
             toggle.addEventListener('mouseleave', () => { toggle.style.opacity = edgeCollapsed ? TOGGLE_OPACITY_COLLAPSED : TOGGLE_OPACITY_EXPANDED; });
 
@@ -1244,6 +1347,7 @@
                 applyEdgeCollapsed(true);
             });
             document.body.appendChild(toggle);
+            applyCompanionAnchor();
 
             // Apply a persisted collapsed state instantly on page load,
             // skipping the transition - only an actual click should animate,
