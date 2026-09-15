@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.17
+// @version      2.17.1
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -585,6 +585,18 @@
         // network latency.
         let serverClockOffsetMs = 0;
         function nowServerMs() { return Date.now() + serverClockOffsetMs; }
+        // War Targets' chain display re-renders every 1s (startPanelTick),
+        // but getPanelData('war', ...) caches its response for 20s -
+        // formatDuration(data.chain.timeout) on the raw cached value looked
+        // frozen for stretches of ~20s at a time, then jumped, instead of
+        // ticking down smoothly. Anchoring to an absolute target epoch
+        // (computed once, only when the underlying data object actually
+        // changes - i.e. a real fetch happened, not a cache hit) and
+        // recomputing "remaining" against the live clock on every render
+        // fixes that, same pattern as every other countdown in this file.
+        let companionChainAnchorData = null;
+        let companionChainTargetMs = null;
+        let companionChainIsCooldown = false;
         function secsUntil(untilEpochSecs) {
             if (!untilEpochSecs) return null;
             const diff = untilEpochSecs - Math.floor(nowServerMs() / 1000);
@@ -935,7 +947,24 @@
                 });
                 const validTargets = enemyList;
 
-                const chainHtml = data.chain ? `<div style="margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid #333; color:#FF9800; font-weight:bold;">⛓️ Chain: ${data.chain.current || 0}${data.chain.timeout ? ` · ${formatDuration(data.chain.timeout)} left` : ''}</div>` : '';
+                // Only re-anchor when this is genuinely a fresh fetch (a new
+                // data object), not merely a re-render of the same cached
+                // one - re-anchoring on every 1s tick would just keep
+                // resetting the countdown to the same ~20s-stale duration
+                // instead of ever actually counting down.
+                if (data.chain && data !== companionChainAnchorData) {
+                    companionChainAnchorData = data;
+                    companionChainIsCooldown = (data.chain.cooldown || 0) > 0;
+                    const secsFromFetch = companionChainIsCooldown ? data.chain.cooldown : data.chain.timeout;
+                    companionChainTargetMs = secsFromFetch > 0 ? (nowServerMs() + secsFromFetch * 1000) : null;
+                }
+                let chainTimeLabel = '';
+                if (data.chain && companionChainTargetMs) {
+                    const remainingSecs = Math.max(0, Math.floor((companionChainTargetMs - nowServerMs()) / 1000));
+                    const d = formatDuration(remainingSecs);
+                    if (d) chainTimeLabel = ` · ${d} ${companionChainIsCooldown ? 'cooldown' : 'left'}`;
+                }
+                const chainHtml = data.chain ? `<div style="margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid #333; color:#FF9800; font-weight:bold;">⛓️ Chain: ${data.chain.current || 0}${chainTimeLabel}</div>` : '';
 
                 // Same start_time/end_time check the dashboard's own roster
                 // uses to disable attacking before a queued war actually
@@ -971,25 +1000,23 @@
                         // AFK, or a double-team may be intended. The attack
                         // button stays available; openAttackPopup() below
                         // nags before actually opening the attack window.
-                        // Shows how long the call is still good for so
-                        // someone can judge whether it's worth waiting on -
-                        // this re-renders every second while the panel's
-                        // open (startPanelTick), so the countdown ticks down
-                        // live, same as any other timer here.
-                        return `<div style="display:flex; flex-direction:column; align-items:flex-end; gap:1px;">
-                            <div style="display:flex; gap:4px; align-items:center;">
-                                <span style="color:#FF9800; font-size:0.7em; white-space:nowrap;">📣 ${call.callerName}</span>
-                                ${attackHtml}
-                            </div>
-                            <span style="color:#666; font-size:0.65em; white-space:nowrap;">${targetCallRemainingLabel(call)}</span>
+                        // Kept on one line (not stacked) so it can't get
+                        // clipped by the compact 2-column view's tighter,
+                        // overflow:hidden row - shows how long the call is
+                        // still good for so someone can judge whether it's
+                        // worth waiting on; re-renders every second while the
+                        // panel's open (startPanelTick), so it ticks down live.
+                        return `<div style="display:flex; gap:4px; align-items:center;">
+                            <span style="color:#FF9800; font-size:0.7em; white-space:nowrap;">📣 ${call.callerName} · ${targetCallRemainingLabel(call)}</span>
+                            ${attackHtml}
                         </div>`;
                     }
                     const safeName = String(m.name || '').replace(/"/g, '&quot;');
                     if (mine) {
                         const releaseBtn = `<span class="wt-release-target-btn" data-tid="${m.id}" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">✅</span>`;
-                        return `<div style="display:flex; flex-direction:column; align-items:flex-end; gap:1px;">
-                            <div style="display:flex; gap:4px; align-items:center;">${releaseBtn}${attackHtml}</div>
+                        return `<div style="display:flex; gap:4px; align-items:center;">
                             <span style="color:#666; font-size:0.65em; white-space:nowrap;">${targetCallRemainingLabel(call)}</span>
+                            ${releaseBtn}${attackHtml}
                         </div>`;
                     }
                     const callBtn = `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">📣</span>`;
