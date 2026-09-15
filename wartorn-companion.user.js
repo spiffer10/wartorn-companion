@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.17.5
+// @version      2.17.6
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -823,12 +823,17 @@
             // that layout ran out of horizontal room the moment a call
             // badge, countdown, and attack button all needed to show at
             // once. Splitting across two rows gives each its own line.
-            return `<div style="padding:6px 0; border-bottom:1px solid #1f2229;">
-                <div style="color:#fff; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${dot}${nameHtml}${odBadge || ''}</div>
-                <div style="display:flex; align-items:stretch; justify-content:space-between; gap:8px; margin-top:2px;">
-                    <div style="font-size:0.8em; min-width:0; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center;">${subtitleHtml}</div>
-                    ${actionHtml || ''}
+            // actionHtml is a sibling of the name+status column (not nested
+            // inside the status row) so align-items:stretch on this outer
+            // row lets it span both lines - the name row on top and the
+            // status row underneath - instead of only matching the shorter
+            // status-only row's height.
+            return `<div style="display:flex; align-items:stretch; gap:8px; padding:6px 0; border-bottom:1px solid #1f2229;">
+                <div style="flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; gap:2px; overflow:hidden;">
+                    <div style="color:#fff; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${dot}${nameHtml}${odBadge || ''}</div>
+                    <div style="font-size:0.8em; overflow:hidden; text-overflow:ellipsis;">${subtitleHtml}</div>
                 </div>
+                ${actionHtml || ''}
             </div>`;
         }
 
@@ -1065,21 +1070,25 @@
                         // info this was built for, not just an enemy tell.
                         const odIcon = odBadgeHtml(m.last_od);
                         // Two rows here too (name+dot+OD icon on row 1, status
-                        // and any call/attack actions on row 2) - this is the
-                        // side-by-side "our faction too" view, and it's the
-                        // narrowest one (half-width column plus a second
-                        // column beside it), so a single crammed row is where
-                        // the tag/action squeeze actually happened.
-                        return `<div style="padding:3px 0; border-bottom:1px solid #1f2229; font-size:0.72em; overflow:hidden;">
-                            <div style="display:flex; align-items:center; gap:3px; overflow:hidden;">
-                                ${onlineDotHtml(m.online_status)}
-                                <a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" style="color:#fff; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:0 1 auto;">${star}${m.name}</a>
-                                ${odIcon}
+                        // on row 2) - this is the side-by-side "our faction
+                        // too" view, and it's the narrowest one (half-width
+                        // column plus a second column beside it), so a
+                        // single crammed row is where the tag/action squeeze
+                        // actually happened. actionHtml is a sibling of the
+                        // name+status column, not nested inside the status
+                        // row, so align-items:stretch on the outer row lets
+                        // it span BOTH lines instead of only the shorter
+                        // status row.
+                        return `<div style="display:flex; align-items:stretch; gap:4px; padding:3px 0; border-bottom:1px solid #1f2229; font-size:0.72em; overflow:hidden;">
+                            <div style="flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; gap:1px; overflow:hidden;">
+                                <div style="display:flex; align-items:center; gap:3px; overflow:hidden;">
+                                    ${onlineDotHtml(m.online_status)}
+                                    <a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" style="color:#fff; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:0 1 auto;">${star}${m.name}</a>
+                                    ${odIcon}
+                                </div>
+                                <span style="color:${tag.color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${tag.label}</span>
                             </div>
-                            <div style="display:flex; align-items:stretch; justify-content:space-between; gap:4px; margin-top:1px;">
-                                <span style="color:${tag.color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:inline-flex; align-items:center;">${tag.label}</span>
-                                ${actionHtml}
-                            </div>
+                            ${actionHtml}
                         </div>`;
                     };
                     // Same descending-by-stat sort as the enemy side, so
