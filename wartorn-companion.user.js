@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.12
+// @version      2.13
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -415,6 +415,9 @@
     // directly.
     if (window.name !== 'attack_window') {
         function fetchFromWartorn(endpoint) {
+            if (simulateWarEnabled && endpoint === 'war-status') {
+                return Promise.resolve(buildSimulatedWarStatus());
+            }
             return new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
                     method: 'GET',
@@ -572,6 +575,39 @@
         // mid-browsing is worse than them having to turn it on once.
         let flightSoundEnabled = safeGmGet('wt_flight_sound', false);
         let chainSoundEnabled = safeGmGet('wt_chain_sound', false);
+        // Dev/test aid - feeds a fake, locally-generated war-status payload
+        // (chain, a few enemies, an ally in hospital) into the exact same
+        // rendering/alert code the real data drives, instead of a real
+        // network call, so panels/sounds/danger-logo can be exercised
+        // without an actual war. Never persisted across reloads - always
+        // starts OFF, since leaving it on by accident would otherwise mean
+        // silently never seeing real war data again.
+        let simulateWarEnabled = false;
+        let simWarStartedAtMs = null;
+        const SIM_CHAIN_INITIAL_TIMEOUT_SECS = 150;
+        function buildSimulatedWarStatus() {
+            if (simWarStartedAtMs === null) simWarStartedAtMs = Date.now();
+            const nowSecs = Math.floor(Date.now() / 1000);
+            const elapsedSecs = Math.floor((Date.now() - simWarStartedAtMs) / 1000);
+            const chainTimeout = Math.max(0, SIM_CHAIN_INITIAL_TIMEOUT_SECS - elapsedSecs);
+            return {
+                start_time: nowSecs - 60,
+                end_time: 0,
+                current_user_id: 'sim_me',
+                current_user_stat: 50000,
+                user_cooldowns: { server_time: nowSecs },
+                chain: { current: 15, max: 25, timeout: chainTimeout, cooldown: 0, server_time: nowSecs },
+                us: [
+                    { id: 'sim_me', name: 'You (Simulated)', state: 'Okay', color: 'green', desc: '', until: 0, sort_stat: 50000, online_status: 'Online' },
+                    { id: 'sim_ally1', name: 'Test Ally', state: 'Hospital', color: 'red', desc: 'In hospital for 4 mins', until: nowSecs + 240, sort_stat: 40000, online_status: 'Idle' }
+                ],
+                them: [
+                    { id: 'sim_enemy1', name: 'Strong Enemy (Online)', state: 'Okay', color: 'green', desc: '', until: 0, sort_stat: 70000, online_status: 'Online' },
+                    { id: 'sim_enemy2', name: 'Weak Enemy (Idle)', state: 'Okay', color: 'green', desc: '', until: 0, sort_stat: 20000, online_status: 'Idle' },
+                    { id: 'sim_enemy3', name: 'Traveling Enemy', state: 'Traveling', color: 'blue', desc: 'Traveling to Mexico', until: nowSecs + 300, sort_stat: 80000, online_status: 'Online' }
+                ]
+            };
+        }
 
         function getPanelBaseStyle() {
             return `position:fixed; top:25vh; left:56px; width:${panelWidthSetting}px; max-height:${panelHeightVhSetting}vh; overflow-y:auto; background:rgba(21,23,28,${opacitySetting}); border:1px solid #3a3f4b; border-left:3px solid #00e5ff; border-radius:0 6px 6px 0; box-shadow:0 10px 30px rgba(0,0,0,0.8); z-index:9999998; font-family:sans-serif; color:#ccc; font-size:${fontSizeSetting}px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.15) transparent;`;
@@ -953,6 +989,14 @@
                     </div>
 
                     <div style="display:flex; flex-direction:column; gap:6px; border-top:1px solid #333; padding-top:10px;">
+                        <label style="display:flex; align-items:center; gap:8px; color:#FF9800; font-size:0.85em; cursor:pointer;">
+                            <input type="checkbox" id="wt-set-simwar" ${simulateWarEnabled ? 'checked' : ''} style="cursor:pointer;">
+                            🧪 Simulate war (test mode)
+                        </label>
+                        <div style="color:#888; font-size:0.7em;">Feeds fake war/chain/enemy data into War Targets, the danger logo, and sound alerts - no real war needed. Never saved; turns off on reload.</div>
+                    </div>
+
+                    <div style="display:flex; flex-direction:column; gap:6px; border-top:1px solid #333; padding-top:10px;">
                         <div style="color:#888; font-size:0.75em;">
                             🔑 Wartorn key: ${userApiKey ? ('••••' + userApiKey.slice(-4)) : '<span style="color:#f44336;">not linked</span>'}
                         </div>
@@ -997,6 +1041,16 @@
                 chainSoundEnabled = e.target.checked;
                 safeGmSet('wt_chain_sound', chainSoundEnabled);
                 if (chainSoundEnabled) unlockAudioContext();
+            });
+            document.getElementById('wt-set-simwar').addEventListener('change', (e) => {
+                simulateWarEnabled = e.target.checked;
+                simWarStartedAtMs = null;
+                // Drop the cached real (or previously-simulated) war-status
+                // response so the very next read reflects the new mode
+                // immediately instead of up to PANEL_CACHE_TTL/5s later.
+                delete panelCache.war;
+                lastAlertSnapshot = null;
+                if (activePanelKey === 'war') renderWarTargetsPanel();
             });
             // Same slide-out panel the Tampermonkey menu command and the
             // "Auto-link not working?" link use - previously the ONLY way
