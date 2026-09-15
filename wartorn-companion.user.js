@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.16.5
+// @version      2.17
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -612,6 +612,17 @@
             if (m > 0) return `${m}m ${s}s`;
             return `${s}s`;
         }
+        // "Xm Ys left" for a target call, using the same calledAt+ttlMs the
+        // backend already returns (and now uses itself to auto-expire a
+        // call) - lets someone judge whether it's worth waiting on a call
+        // or it's about to lapse, instead of just seeing a name with no
+        // sense of how fresh the claim is.
+        function targetCallRemainingLabel(call) {
+            const ttlMs = companionTargetCalls.ttlMs || (2 * 60 * 1000);
+            const remainingSecs = Math.floor((call.calledAt + ttlMs - Date.now()) / 1000);
+            const label = formatDuration(remainingSecs);
+            return label ? `${label} left` : 'expiring';
+        }
         // H:MM:SS - hospital/jail countdowns run down to the second.
         function formatHMS(totalSecs) {
             if (totalSecs == null || totalSecs <= 0) return null;
@@ -652,7 +663,7 @@
         // shared here so EVERY attack button (War Targets and Chain Targets
         // alike) warns before piling onto a target someone else already
         // called, not just the panel that happens to fetch the data.
-        let companionTargetCalls = { calls: {}, myPlayerId: null };
+        let companionTargetCalls = { calls: {}, myPlayerId: null, ttlMs: 2 * 60 * 1000 };
 
         // Mirrors the dashboard's own favorites (GET /api/companion/favorites,
         // a read-only view of the same user_preferences row) so War/Chain
@@ -960,15 +971,28 @@
                         // AFK, or a double-team may be intended. The attack
                         // button stays available; openAttackPopup() below
                         // nags before actually opening the attack window.
-                        return `<div style="display:flex; gap:4px; align-items:center;">
-                            <span style="color:#FF9800; font-size:0.7em; white-space:nowrap;">📣 ${call.callerName}</span>
-                            ${attackHtml}
+                        // Shows how long the call is still good for so
+                        // someone can judge whether it's worth waiting on -
+                        // this re-renders every second while the panel's
+                        // open (startPanelTick), so the countdown ticks down
+                        // live, same as any other timer here.
+                        return `<div style="display:flex; flex-direction:column; align-items:flex-end; gap:1px;">
+                            <div style="display:flex; gap:4px; align-items:center;">
+                                <span style="color:#FF9800; font-size:0.7em; white-space:nowrap;">📣 ${call.callerName}</span>
+                                ${attackHtml}
+                            </div>
+                            <span style="color:#666; font-size:0.65em; white-space:nowrap;">${targetCallRemainingLabel(call)}</span>
                         </div>`;
                     }
                     const safeName = String(m.name || '').replace(/"/g, '&quot;');
-                    const callBtn = mine
-                        ? `<span class="wt-release-target-btn" data-tid="${m.id}" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">✅</span>`
-                        : `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">📣</span>`;
+                    if (mine) {
+                        const releaseBtn = `<span class="wt-release-target-btn" data-tid="${m.id}" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">✅</span>`;
+                        return `<div style="display:flex; flex-direction:column; align-items:flex-end; gap:1px;">
+                            <div style="display:flex; gap:4px; align-items:center;">${releaseBtn}${attackHtml}</div>
+                            <span style="color:#666; font-size:0.65em; white-space:nowrap;">${targetCallRemainingLabel(call)}</span>
+                        </div>`;
+                    }
+                    const callBtn = `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">📣</span>`;
                     return `<div style="display:flex; gap:4px; align-items:center;">${callBtn}${attackHtml}</div>`;
                 };
 
