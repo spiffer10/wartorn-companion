@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.17.2
+// @version      2.17.3
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1059,13 +1059,27 @@
                         const tag = abbreviateStatus(m.state, m.until, m.desc);
                         const actionHtml = isEnemy ? buildTargetActionHtml(m) : '';
                         const star = isFavorited(m.id) ? '⭐ ' : '';
-                        const odIcon = isEnemy ? odBadgeHtml(m.last_od) : '';
-                        return `<div style="display:flex; align-items:center; gap:3px; padding:3px 0; border-bottom:1px solid #1f2229; font-size:0.72em; overflow:hidden;">
-                            ${onlineDotHtml(m.online_status)}
-                            <a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" style="color:#fff; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; min-width:0;">${star}${m.name}</a>
-                            ${odIcon}
-                            <span style="color:${tag.color}; white-space:nowrap; flex-shrink:0;">${tag.label}</span>
-                            ${actionHtml}
+                        // OD cooldown matters for our own side just as much as
+                        // the enemy's - knowing one of our own is still weak
+                        // (can't stack) is exactly the "are they weak now"
+                        // info this was built for, not just an enemy tell.
+                        const odIcon = odBadgeHtml(m.last_od);
+                        // Two rows here too (name+dot+OD icon on row 1, status
+                        // and any call/attack actions on row 2) - this is the
+                        // side-by-side "our faction too" view, and it's the
+                        // narrowest one (half-width column plus a second
+                        // column beside it), so a single crammed row is where
+                        // the tag/action squeeze actually happened.
+                        return `<div style="padding:3px 0; border-bottom:1px solid #1f2229; font-size:0.72em; overflow:hidden;">
+                            <div style="display:flex; align-items:center; gap:3px; overflow:hidden;">
+                                ${onlineDotHtml(m.online_status)}
+                                <a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" style="color:#fff; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; min-width:0;">${star}${m.name}</a>
+                                ${odIcon}
+                            </div>
+                            <div style="display:flex; align-items:center; justify-content:space-between; gap:4px; margin-top:1px;">
+                                <span style="color:${tag.color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${tag.label}</span>
+                                ${actionHtml}
+                            </div>
                         </div>`;
                     };
                     // Same descending-by-stat sort as the enemy side, so
