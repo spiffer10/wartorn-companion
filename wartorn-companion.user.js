@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.16.1
+// @version      2.16.2
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -926,6 +926,14 @@
 
                 const chainHtml = data.chain ? `<div style="margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid #333; color:#FF9800; font-weight:bold;">⛓️ Chain: ${data.chain.current || 0}${data.chain.timeout ? ` · ${formatDuration(data.chain.timeout)} left` : ''}</div>` : '';
 
+                // Same start_time/end_time check the dashboard's own roster
+                // uses to disable attacking before a queued war actually
+                // starts - this panel had no such check at all, so its
+                // attack button stayed live (and clickable) the whole time a
+                // war was merely queued, not yet active.
+                const nowSecsForWar = Math.floor(Date.now() / 1000);
+                const warIsActive = data.start_time > 0 && data.start_time <= nowSecsForWar && data.end_time === 0;
+
                 // Same call/attack markup for both view modes - lets someone
                 // claim a target (📣) or attack (⚔️) directly from either,
                 // instead of the compact 2-column view being read-only.
@@ -940,7 +948,13 @@
                         const callBtn = mine
                             ? `<span class="wt-release-target-btn" data-tid="${m.id}" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">✅</span>`
                             : `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">📣</span>`;
-                        return `<div style="display:flex; gap:4px; align-items:center;">${callBtn}${attackButtonHtml(m.id)}</div>`;
+                        // Target-calling (harmless pre-war coordination) stays
+                        // available regardless - only the real attack button
+                        // is gated on the war actually being active.
+                        const attackHtml = warIsActive
+                            ? attackButtonHtml(m.id)
+                            : `<span style="color:#666; font-size:0.75em;" title="War hasn't started yet">⏳</span>`;
+                        return `<div style="display:flex; gap:4px; align-items:center;">${callBtn}${attackHtml}</div>`;
                     }
                     return '';
                 };
