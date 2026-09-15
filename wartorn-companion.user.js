@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.16.3
+// @version      2.16.4
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -941,13 +941,6 @@
                     const okay = m.state === 'Okay';
                     const call = companionTargetCalls.calls ? companionTargetCalls.calls[m.id] : null;
                     const mine = call && call.callerId === companionTargetCalls.myPlayerId;
-                    if (call && !mine) {
-                        return `<span style="color:#FF9800; font-size:0.7em; white-space:nowrap;">📣 ${call.callerName}</span>`;
-                    }
-                    const safeName = String(m.name || '').replace(/"/g, '&quot;');
-                    const callBtn = mine
-                        ? `<span class="wt-release-target-btn" data-tid="${m.id}" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">✅</span>`
-                        : `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">📣</span>`;
                     // Calling dibs works regardless of their current state -
                     // factions often want to claim a target BEFORE they land
                     // or get released from hospital/jail so nobody else grabs
@@ -959,6 +952,22 @@
                     // regardless of a call existing.
                     let attackHtml = '';
                     if (okay) attackHtml = warIsActive ? attackButtonHtml(m.id) : `<span style="color:#666; font-size:0.75em;" title="War hasn't started yet">⏳</span>`;
+                    if (call && !mine) {
+                        // Someone else already called this - warn, don't
+                        // block (same philosophy as the dashboard's own
+                        // shouldWarnAboutTargetCall): a caller may be wrong,
+                        // AFK, or a double-team may be intended. The attack
+                        // button stays available; openAttackPopup() below
+                        // nags before actually opening the attack window.
+                        return `<div style="display:flex; gap:4px; align-items:center;">
+                            <span style="color:#FF9800; font-size:0.7em; white-space:nowrap;">📣 ${call.callerName}</span>
+                            ${attackHtml}
+                        </div>`;
+                    }
+                    const safeName = String(m.name || '').replace(/"/g, '&quot;');
+                    const callBtn = mine
+                        ? `<span class="wt-release-target-btn" data-tid="${m.id}" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">✅</span>`
+                        : `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">📣</span>`;
                     return `<div style="display:flex; gap:4px; align-items:center;">${callBtn}${attackHtml}</div>`;
                 };
 
