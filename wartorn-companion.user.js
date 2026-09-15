@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.16.4
+// @version      2.16.5
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -938,20 +938,21 @@
                 // claim a target (📣) or attack (⚔️) directly from either,
                 // instead of the compact 2-column view being read-only.
                 const buildTargetActionHtml = (m) => {
-                    const okay = m.state === 'Okay';
                     const call = companionTargetCalls.calls ? companionTargetCalls.calls[m.id] : null;
                     const mine = call && call.callerId === companionTargetCalls.myPlayerId;
                     // Calling dibs works regardless of their current state -
                     // factions often want to claim a target BEFORE they land
                     // or get released from hospital/jail so nobody else grabs
-                    // the first hit the instant they become available, not
-                    // only once they're already Okay. The real attack button
-                    // is still gated on Torn actually allowing the hit
-                    // (Okay) and the war being active - Torn won't let
-                    // anyone attack someone hospitalized/traveling/abroad
-                    // regardless of a call existing.
-                    let attackHtml = '';
-                    if (okay) attackHtml = warIsActive ? attackButtonHtml(m.id) : `<span style="color:#666; font-size:0.75em;" title="War hasn't started yet">⏳</span>`;
+                    // the first hit the instant they become available. The
+                    // attack button now shows for every state too, not just
+                    // Okay - people often want the attack window already
+                    // open and waiting on a hospitalized/traveling target so
+                    // the hit lands the instant they become available,
+                    // rather than losing time opening it fresh at that
+                    // moment. Torn's own attack page handles a not-yet-
+                    // attackable target gracefully; only whether the WAR
+                    // itself has started is checked here.
+                    const attackHtml = warIsActive ? attackButtonHtml(m.id) : `<span style="color:#666; font-size:0.75em;" title="War hasn't started yet">⏳</span>`;
                     if (call && !mine) {
                         // Someone else already called this - warn, don't
                         // block (same philosophy as the dashboard's own
