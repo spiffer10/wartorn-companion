@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.15
+// @version      2.15.1
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -168,6 +168,16 @@
         place('wt-edge-toggle', -9, 0);
         place('wt-link-notice', 140, 1);
         place('wt-link-manual', 195, 1);
+        // Side panel (War Targets/Chain Targets/etc, if one's open right
+        // now) isn't in this scope's element list above since it's built
+        // by the gated panel module further down - reposition it directly
+        // by the same +47px offset getPanelBaseStyle() uses there, so it
+        // follows a live drag instead of staying put until next opened.
+        const panel = document.getElementById('wt-side-panel');
+        if (panel) {
+            panel.style.top = companionAnchorTop + 'px';
+            panel.style.left = (companionAnchorLeft + 47) + 'px';
+        }
     }
     // Re-clamp (not re-center) on resize, so shrinking the window can't
     // strand a dragged position somewhere off-screen and unreachable.
@@ -721,7 +731,11 @@
         }
 
         function getPanelBaseStyle() {
-            return `position:fixed; top:25vh; left:56px; width:${panelWidthSetting}px; max-height:${panelHeightVhSetting}vh; overflow-y:auto; background:rgba(21,23,28,${opacitySetting}); border:1px solid #3a3f4b; border-left:3px solid #00e5ff; border-radius:0 6px 6px 0; box-shadow:0 10px 30px rgba(0,0,0,0.8); z-index:9999998; font-family:sans-serif; color:#ccc; font-size:${fontSizeSetting}px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.15) transparent;`;
+            // 47px right of the logo's own left edge (56 - 9, the original
+            // hardcoded values before dragging existed) so the panel opens
+            // right next to the button stack wherever it's been dragged to,
+            // instead of always at the default top-left position.
+            return `position:fixed; top:${companionAnchorTop}px; left:${companionAnchorLeft + 47}px; width:${panelWidthSetting}px; max-height:${panelHeightVhSetting}vh; overflow-y:auto; background:rgba(21,23,28,${opacitySetting}); border:1px solid #3a3f4b; border-left:3px solid #00e5ff; border-radius:0 6px 6px 0; box-shadow:0 10px 30px rgba(0,0,0,0.8); z-index:9999998; font-family:sans-serif; color:#ccc; font-size:${fontSizeSetting}px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.15) transparent;`;
         }
         // Applies current settings to whichever panel is open right now,
         // for live feedback while dragging a slider in Settings - a fresh
