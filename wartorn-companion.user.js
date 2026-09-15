@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.13
+// @version      2.13.1
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -602,9 +602,18 @@
                     { id: 'sim_ally1', name: 'Test Ally', state: 'Hospital', color: 'red', desc: 'In hospital for 4 mins', until: nowSecs + 240, sort_stat: 40000, online_status: 'Idle' }
                 ],
                 them: [
-                    { id: 'sim_enemy1', name: 'Strong Enemy (Online)', state: 'Okay', color: 'green', desc: '', until: 0, sort_stat: 70000, online_status: 'Online' },
+                    // Below current_user_stat (50000) and Okay/Online - passes
+                    // the default "beatable only" filter and shows attack/call
+                    // buttons, so there's always something clickable to test
+                    // without needing to touch any other setting first.
+                    { id: 'sim_enemy1', name: 'Beatable Enemy (Online)', state: 'Okay', color: 'green', desc: '', until: 0, sort_stat: 45000, online_status: 'Online' },
                     { id: 'sim_enemy2', name: 'Weak Enemy (Idle)', state: 'Okay', color: 'green', desc: '', until: 0, sort_stat: 20000, online_status: 'Idle' },
-                    { id: 'sim_enemy3', name: 'Traveling Enemy', state: 'Traveling', color: 'blue', desc: 'Traveling to Mexico', until: nowSecs + 300, sort_stat: 80000, online_status: 'Online' }
+                    // Above current_user_stat - hidden by the default
+                    // "beatable only" filter, appears (with buttons, Torn
+                    // doesn't block attacking someone stronger) once that's
+                    // turned off in Settings - a way to test the filter itself.
+                    { id: 'sim_enemy3', name: 'Too-Strong Enemy (Online)', state: 'Okay', color: 'green', desc: '', until: 0, sort_stat: 90000, online_status: 'Online' },
+                    { id: 'sim_enemy4', name: 'Traveling Enemy', state: 'Traveling', color: 'blue', desc: 'Traveling to Mexico', until: nowSecs + 300, sort_stat: 80000, online_status: 'Online' }
                 ]
             };
         }
@@ -676,11 +685,14 @@
             const color = onlineStatus === 'Online' ? '#4CAF50' : (onlineStatus === 'Idle' ? '#FF9800' : '#666');
             return `<span style="color:${color}; font-size:0.7em; margin-right:4px;" title="${onlineStatus || 'Offline'}">●</span>`;
         }
-        function rowHtml(name, subtitleHtml, actionHtml, onlineStatus) {
+        function rowHtml(name, subtitleHtml, actionHtml, onlineStatus, profileId) {
             const dot = onlineStatus !== undefined ? onlineDotHtml(onlineStatus) : '';
+            const nameHtml = profileId
+                ? `<a href="https://www.torn.com/profiles.php?XID=${profileId}" target="_blank" style="color:#fff; text-decoration:none;">${name}</a>`
+                : name;
             return `<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0; border-bottom:1px solid #1f2229;">
                 <div style="min-width:0;">
-                    <div style="color:#fff; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${dot}${name}</div>
+                    <div style="color:#fff; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${dot}${nameHtml}</div>
                     <div style="font-size:0.8em;">${subtitleHtml}</div>
                 </div>
                 ${actionHtml || ''}
@@ -752,7 +764,8 @@
                         t.name,
                         `<span style="color:#888;">Lv ${t.level || 0}</span> · <span style="color:#00e5ff;">FF ${t.fair_fight ? t.fair_fight.toFixed(2) : '-'}</span> · <span style="color:${tag.color};">${tag.label}</span>`,
                         okay ? attackButtonHtml(t.player_id) : '',
-                        t.online_status
+                        t.online_status,
+                        t.player_id
                     );
                 }).join('');
                 wireAttackButtons(body);
@@ -823,7 +836,7 @@
                         const tag = abbreviateStatus(m.state, m.until, m.desc);
                         return `<div style="display:flex; align-items:center; gap:3px; padding:3px 0; border-bottom:1px solid #1f2229; font-size:0.72em; overflow:hidden;">
                             ${onlineDotHtml(m.online_status)}
-                            <span style="color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; min-width:0;">${m.name}</span>
+                            <a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" style="color:#fff; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; min-width:0;">${m.name}</a>
                             <span style="color:${tag.color}; white-space:nowrap; flex-shrink:0;">${tag.label}</span>
                         </div>`;
                     };
@@ -861,7 +874,7 @@
                                 : `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">📣</span>`;
                             actionHtml = `<div style="display:flex; gap:4px; align-items:center;">${callBtn}${attackButtonHtml(m.id)}</div>`;
                         }
-                        return rowHtml(m.name, `<span style="color:${tag.color};">${tag.label}</span>`, actionHtml, m.online_status);
+                        return rowHtml(m.name, `<span style="color:${tag.color};">${tag.label}</span>`, actionHtml, m.online_status, m.id);
                     }).join('');
                     contentHtml = rowsHtml || `<div style="color:#888;">${beatableOnlyFilter ? 'No valid targets found under your stats.' : 'No enemy members found.'}</div>`;
                 }
