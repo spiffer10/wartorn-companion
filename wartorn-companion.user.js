@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.17.3
+// @version      2.17.4
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -686,7 +686,7 @@
         // wouldn't resolve. Buttons instead carry a data-attack-id and get
         // wired up via wireAttackButtons() after every render.
         function attackButtonHtml(id) {
-            return `<span class="wt-attack-btn" data-attack-id="${id}" style="background:#4CAF50; color:#fff; padding:4px 9px; border-radius:3px; font-size:0.85em; font-weight:bold; white-space:nowrap; cursor:pointer;">⚔️</span>`;
+            return `<span class="wt-attack-btn" data-attack-id="${id}" style="background:#4CAF50; color:#fff; padding:6px 12px; border-radius:4px; font-size:1.05em; font-weight:bold; white-space:nowrap; cursor:pointer;">⚔️</span>`;
         }
         // Populated by renderWarTargetsPanel() from /api/companion/target-calls -
         // shared here so EVERY attack button (War Targets and Chain Targets
@@ -1036,13 +1036,13 @@
                     }
                     const safeName = String(m.name || '').replace(/"/g, '&quot;');
                     if (mine) {
-                        const releaseBtn = `<span class="wt-release-target-btn" data-tid="${m.id}" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">✅</span>`;
+                        const releaseBtn = `<span class="wt-release-target-btn" data-tid="${m.id}" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:5px 9px; border-radius:4px; font-size:1em; cursor:pointer;">✅</span>`;
                         return `<div style="display:flex; gap:4px; align-items:center;">
                             <span style="color:#666; font-size:0.65em; white-space:nowrap;">${targetCallRemainingLabel(call)}</span>
                             ${releaseBtn}${attackHtml}
                         </div>`;
                     }
-                    const callBtn = `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">📣</span>`;
+                    const callBtn = `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:5px 9px; border-radius:4px; font-size:1em; cursor:pointer;">📣</span>`;
                     return `<div style="display:flex; gap:4px; align-items:center;">${callBtn}${attackHtml}</div>`;
                 };
 
@@ -1073,7 +1073,7 @@
                         return `<div style="padding:3px 0; border-bottom:1px solid #1f2229; font-size:0.72em; overflow:hidden;">
                             <div style="display:flex; align-items:center; gap:3px; overflow:hidden;">
                                 ${onlineDotHtml(m.online_status)}
-                                <a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" style="color:#fff; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; min-width:0;">${star}${m.name}</a>
+                                <a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" style="color:#fff; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:0 1 auto;">${star}${m.name}</a>
                                 ${odIcon}
                             </div>
                             <div style="display:flex; align-items:center; justify-content:space-between; gap:4px; margin-top:1px;">
@@ -1090,7 +1090,7 @@
                     const usRows = usList.map(m => compactRow(m, false)).join('') || '<div style="color:#666; font-size:0.75em;">No data</div>';
                     const themRows = validTargets.map(m => compactRow(m, true)).join('') || '<div style="color:#666; font-size:0.75em;">No data</div>';
                     contentHtml = `<div style="display:flex; gap:8px;">
-                        <div style="flex:1; min-width:0;">
+                        <div style="flex:0 0 38%; min-width:0;">
                             <div style="color:#4CAF50; font-weight:bold; font-size:0.7em; margin-bottom:4px; text-align:center;">OUR FACTION</div>
                             ${usRows}
                         </div>
