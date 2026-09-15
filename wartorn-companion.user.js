@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.13.1
+// @version      2.14
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -824,20 +824,42 @@
 
                 const chainHtml = data.chain ? `<div style="margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid #333; color:#FF9800; font-weight:bold;">⛓️ Chain: ${data.chain.current || 0}${data.chain.timeout ? ` · ${formatDuration(data.chain.timeout)} left` : ''}</div>` : '';
 
+                // Same call/attack markup for both view modes - lets someone
+                // claim a target (📣) or attack (⚔️) directly from either,
+                // instead of the compact 2-column view being read-only.
+                const buildTargetActionHtml = (m) => {
+                    const okay = m.state === 'Okay';
+                    const call = companionTargetCalls.calls ? companionTargetCalls.calls[m.id] : null;
+                    const mine = call && call.callerId === companionTargetCalls.myPlayerId;
+                    if (call && !mine) {
+                        return `<span style="color:#FF9800; font-size:0.7em; white-space:nowrap;">📣 ${call.callerName}</span>`;
+                    } else if (okay) {
+                        const safeName = String(m.name || '').replace(/"/g, '&quot;');
+                        const callBtn = mine
+                            ? `<span class="wt-release-target-btn" data-tid="${m.id}" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">✅</span>`
+                            : `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">📣</span>`;
+                        return `<div style="display:flex; gap:4px; align-items:center;">${callBtn}${attackButtonHtml(m.id)}</div>`;
+                    }
+                    return '';
+                };
+
                 // "Show our faction too" and "Beatable only" now live in the
                 // ⚙️ Settings panel instead of inline checkboxes here - one
                 // place for both this panel's view and everything else.
                 let contentHtml;
                 if (showFactionStatusPanel) {
-                    // Compact 2-column overview: no action buttons, just
-                    // name + online dot + abbreviated status, so both sides
-                    // fit side by side in the panel.
-                    const compactRow = (m) => {
+                    // Compact 2-column overview: name + online dot + status,
+                    // plus call/attack actions on the enemy side only (can't
+                    // attack your own faction) so both sides still fit
+                    // side by side in the panel.
+                    const compactRow = (m, isEnemy) => {
                         const tag = abbreviateStatus(m.state, m.until, m.desc);
+                        const actionHtml = isEnemy ? buildTargetActionHtml(m) : '';
                         return `<div style="display:flex; align-items:center; gap:3px; padding:3px 0; border-bottom:1px solid #1f2229; font-size:0.72em; overflow:hidden;">
                             ${onlineDotHtml(m.online_status)}
                             <a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" style="color:#fff; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; min-width:0;">${m.name}</a>
                             <span style="color:${tag.color}; white-space:nowrap; flex-shrink:0;">${tag.label}</span>
+                            ${actionHtml}
                         </div>`;
                     };
                     // Same descending-by-stat sort as the enemy side, so
@@ -845,8 +867,8 @@
                     // instead of whatever raw order war-status happened to
                     // return "our faction" in.
                     const usList = (data.us || []).slice().sort((a, b) => (b.sort_stat || 0) - (a.sort_stat || 0));
-                    const usRows = usList.map(compactRow).join('') || '<div style="color:#666; font-size:0.75em;">No data</div>';
-                    const themRows = validTargets.map(compactRow).join('') || '<div style="color:#666; font-size:0.75em;">No data</div>';
+                    const usRows = usList.map(m => compactRow(m, false)).join('') || '<div style="color:#666; font-size:0.75em;">No data</div>';
+                    const themRows = validTargets.map(m => compactRow(m, true)).join('') || '<div style="color:#666; font-size:0.75em;">No data</div>';
                     contentHtml = `<div style="display:flex; gap:8px;">
                         <div style="flex:1; min-width:0;">
                             <div style="color:#4CAF50; font-weight:bold; font-size:0.7em; margin-bottom:4px; text-align:center;">OUR FACTION</div>
@@ -859,36 +881,20 @@
                     </div>`;
                 } else {
                     const rowsHtml = validTargets.map(m => {
-                        const okay = m.state === 'Okay';
                         const tag = abbreviateStatus(m.state, m.until, m.desc);
-                        const call = companionTargetCalls.calls ? companionTargetCalls.calls[m.id] : null;
-                        const mine = call && call.callerId === companionTargetCalls.myPlayerId;
-
-                        let actionHtml = '';
-                        if (call && !mine) {
-                            actionHtml = `<span style="color:#FF9800; font-size:0.7em; white-space:nowrap;">📣 ${call.callerName}</span>`;
-                        } else if (okay) {
-                            const safeName = String(m.name || '').replace(/"/g, '&quot;');
-                            const callBtn = mine
-                                ? `<span class="wt-release-target-btn" data-tid="${m.id}" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">✅</span>`
-                                : `<span class="wt-call-target-btn" data-tid="${m.id}" data-tname="${safeName}" style="background:#252525; border:1px solid #444; color:#ccc; padding:3px 6px; border-radius:3px; font-size:0.8em; cursor:pointer;">📣</span>`;
-                            actionHtml = `<div style="display:flex; gap:4px; align-items:center;">${callBtn}${attackButtonHtml(m.id)}</div>`;
-                        }
-                        return rowHtml(m.name, `<span style="color:${tag.color};">${tag.label}</span>`, actionHtml, m.online_status, m.id);
+                        return rowHtml(m.name, `<span style="color:${tag.color};">${tag.label}</span>`, buildTargetActionHtml(m), m.online_status, m.id);
                     }).join('');
                     contentHtml = rowsHtml || `<div style="color:#888;">${beatableOnlyFilter ? 'No valid targets found under your stats.' : 'No enemy members found.'}</div>`;
                 }
 
                 document.getElementById('wt-panel-body').innerHTML = chainHtml + contentHtml;
-                if (!showFactionStatusPanel) {
-                    wireAttackButtons(document.getElementById('wt-panel-body'));
-                    document.querySelectorAll('.wt-call-target-btn').forEach(btn => {
-                        btn.addEventListener('click', () => callTargetCompanion(parseInt(btn.dataset.tid, 10), btn.dataset.tname));
-                    });
-                    document.querySelectorAll('.wt-release-target-btn').forEach(btn => {
-                        btn.addEventListener('click', () => releaseTargetCompanion(parseInt(btn.dataset.tid, 10)));
-                    });
-                }
+                wireAttackButtons(document.getElementById('wt-panel-body'));
+                document.querySelectorAll('.wt-call-target-btn').forEach(btn => {
+                    btn.addEventListener('click', () => callTargetCompanion(parseInt(btn.dataset.tid, 10), btn.dataset.tname));
+                });
+                document.querySelectorAll('.wt-release-target-btn').forEach(btn => {
+                    btn.addEventListener('click', () => releaseTargetCompanion(parseInt(btn.dataset.tid, 10)));
+                });
             } catch (e) {
                 if (activePanelKey === 'war' && document.getElementById('wt-panel-body')) {
                     document.getElementById('wt-panel-body').innerHTML = '<div style="color:#f44336;">Failed to load - check your Wartorn key is still valid.</div>';
