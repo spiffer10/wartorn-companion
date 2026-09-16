@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.22
+// @version      2.23
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -371,12 +371,12 @@
             <div style="font-size:0.8em; color:#ccc; margin-bottom:12px; line-height:1.4;">Your Wartorn access has expired. Send Xanax directly to the developer in Torn to automate activation.</div>
             ${trialBox}
             <div style="background:#111; border:1px solid #333; padding:10px; border-radius:6px; margin-bottom:10px; font-size:0.78em;">
-                <div style="color:#00e5ff; font-weight:bold; margin-bottom:3px;">👤 Individual (30 Days)</div>
-                <div style="color:#aaa;">Send exactly <b>${data.individualPrice} Xanax</b> to <a href="https://www.torn.com/profiles.php?XID=${data.adminId}" target="_blank" style="color:#4CAF50;">[${data.adminId}]</a></div>
+                <div style="color:#00e5ff; font-weight:bold; margin-bottom:3px;">👤 Individual</div>
+                <div style="color:#aaa;">Send any amount of Xanax to <a href="https://www.torn.com/profiles.php?XID=${data.adminId}" target="_blank" style="color:#4CAF50;">[${data.adminId}]</a> - each one is worth <b>${data.individualDaysPerXanax} days</b>.</div>
             </div>
             <div style="background:#111; border:1px solid #333; padding:10px; border-radius:6px; margin-bottom:14px; font-size:0.78em;">
-                <div style="color:#00e5ff; font-weight:bold; margin-bottom:3px;">🛡️ Faction (30 Days)</div>
-                <div style="color:#aaa;">Send exactly <b>${data.factionPrice} Xanax</b> to <a href="https://www.torn.com/profiles.php?XID=${data.adminId}" target="_blank" style="color:#4CAF50;">[${data.adminId}]</a>. All members of your faction gain access.</div>
+                <div style="color:#00e5ff; font-weight:bold; margin-bottom:3px;">🛡️ Faction (${data.factionDays} Days)</div>
+                <div style="color:#aaa;">Send exactly <b>${data.factionPrice} Xanax</b> to <a href="https://www.torn.com/profiles.php?XID=${data.adminId}" target="_blank" style="color:#4CAF50;">[${data.adminId}]</a> with <b>"faction"</b> in the attached message. All members of your faction gain access.</div>
             </div>
             <div style="display:flex; gap:8px;">
                 <button id="wt-manual-retry-btn" style="flex:1; background:#252525; border:1px solid #444; color:#fff; padding:8px; border-radius:4px; cursor:pointer;">I've sent it (Retry)</button>
