@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.21
-// @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
+// @version      2.22
+// @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
 // @match        https://wartorn.spiffer10.com/*
@@ -326,6 +326,93 @@
         window.open(`${WARTORN_HOST}/login`, '_blank');
     }
 
+    // Posts a candidate key straight to the unauthenticated bootstrap
+    // endpoint (no x-wartorn-key header - there's no known-good key yet,
+    // that's the whole point) instead of postToWartorn's authenticated
+    // pattern further below. Shares /api/login's exact verification/TOS/
+    // subscription logic server-side (verifyAndUpsertTornUser), so this
+    // works standalone for both an existing account (new device) and a
+    // brand new signup, entirely from torn.com.
+    function registerWithWartorn(payload) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: `${WARTORN_HOST}/api/companion/register`,
+                headers: { 'Content-Type': 'application/json' },
+                data: JSON.stringify(payload),
+                timeout: 15000,
+                onload: (res) => {
+                    let data = {};
+                    try { data = JSON.parse(res.responseText); } catch (e) {}
+                    resolve({ status: res.status, data });
+                },
+                onerror: () => reject(new Error('network error')),
+                ontimeout: () => reject(new Error('timeout'))
+            });
+        });
+    }
+
+    // Swaps the panel to the same subscription-required view login.html
+    // shows (same wording/pricing fields) when verifyAndUpsertTornUser
+    // reports requiresPayment - reachable both on the first submit and
+    // again after a trial/retry attempt that still isn't paid up.
+    function renderPaywallView(panel, data, apiKeyVal, tosChecked) {
+        let trialBox = '';
+        if (data.offerTrial) {
+            trialBox = `
+            <div style="background:#111; border:1px solid #4CAF50; padding:12px; border-radius:6px; margin-bottom:14px; text-align:left;">
+                <div style="color:#4CAF50; font-weight:bold; margin-bottom:4px; font-size:0.95em;">🎁 7-Day Free Trial</div>
+                <div style="color:#aaa; font-size:0.78em; margin-bottom:10px; line-height:1.4;">Activate a one-time free week of Individual Access. No payment required.</div>
+                <button id="wt-manual-trial-btn" style="background:#4CAF50; color:#fff; border:none; padding:8px; border-radius:4px; font-weight:bold; cursor:pointer; width:100%;">Start Free Trial</button>
+            </div>`;
+        }
+        panel.innerHTML = `
+            <div style="color:#FF9800; font-weight:bold; font-size:1.05em; margin-bottom:10px;">Subscription Required</div>
+            <div style="font-size:0.8em; color:#ccc; margin-bottom:12px; line-height:1.4;">Your Wartorn access has expired. Send Xanax directly to the developer in Torn to automate activation.</div>
+            ${trialBox}
+            <div style="background:#111; border:1px solid #333; padding:10px; border-radius:6px; margin-bottom:10px; font-size:0.78em;">
+                <div style="color:#00e5ff; font-weight:bold; margin-bottom:3px;">👤 Individual (30 Days)</div>
+                <div style="color:#aaa;">Send exactly <b>${data.individualPrice} Xanax</b> to <a href="https://www.torn.com/profiles.php?XID=${data.adminId}" target="_blank" style="color:#4CAF50;">[${data.adminId}]</a></div>
+            </div>
+            <div style="background:#111; border:1px solid #333; padding:10px; border-radius:6px; margin-bottom:14px; font-size:0.78em;">
+                <div style="color:#00e5ff; font-weight:bold; margin-bottom:3px;">🛡️ Faction (30 Days)</div>
+                <div style="color:#aaa;">Send exactly <b>${data.factionPrice} Xanax</b> to <a href="https://www.torn.com/profiles.php?XID=${data.adminId}" target="_blank" style="color:#4CAF50;">[${data.adminId}]</a>. All members of your faction gain access.</div>
+            </div>
+            <div style="display:flex; gap:8px;">
+                <button id="wt-manual-retry-btn" style="flex:1; background:#252525; border:1px solid #444; color:#fff; padding:8px; border-radius:4px; cursor:pointer;">I've sent it (Retry)</button>
+                <button id="wt-manual-key-cancel2" style="background:#252525; color:#ccc; border:1px solid #444; padding:8px 12px; border-radius:4px; cursor:pointer;">Close</button>
+            </div>
+            <div id="wt-manual-key-msg2" style="font-size:0.8em; margin-top:8px; min-height:1.2em;"></div>
+        `;
+        const attempt = async (claimTrial) => {
+            const msg2 = document.getElementById('wt-manual-key-msg2');
+            msg2.style.color = '#aaa'; msg2.innerText = 'Verifying...';
+            try {
+                const res = await registerWithWartorn({ apiKey: apiKeyVal, ffscouterKey: apiKeyVal, tosAccepted: tosChecked, claimTrial });
+                if (res.data && res.data.success) {
+                    userApiKey = apiKeyVal;
+                    safeGmSet('wt_api_key', userApiKey);
+                    msg2.style.color = '#4CAF50';
+                    msg2.innerText = 'Linked! Reloading...';
+                    setTimeout(() => location.reload(), 700);
+                    return;
+                }
+                if (res.data && res.data.requiresPayment) { renderPaywallView(panel, res.data, apiKeyVal, tosChecked); return; }
+                msg2.style.color = '#f44336';
+                msg2.innerHTML = (res.data && res.data.error) || 'Still not available. Please try again.';
+            } catch (e) {
+                msg2.style.color = '#f44336';
+                msg2.innerText = 'Network error - please try again.';
+            }
+        };
+        if (data.offerTrial) document.getElementById('wt-manual-trial-btn').addEventListener('click', () => attempt(true));
+        document.getElementById('wt-manual-retry-btn').addEventListener('click', () => attempt(false));
+        document.getElementById('wt-manual-key-cancel2').addEventListener('click', () => {
+            panel.style.transform = 'translateX(-100%)';
+            setTimeout(() => { const el = document.getElementById('wt-manual-link-panel'); if (el) el.remove(); }, 250);
+        });
+    }
+
     // A real slide-out panel instead of a plain prompt() dialog - prompt()
     // is exactly the kind of native browser UI that can render oddly, get
     // silently blocked, or just be easy to miss/dismiss inside an embedded
@@ -333,6 +420,13 @@
     // system further below) since it has to work even when nothing else in
     // this file has run yet - see the early `return` right after this
     // block for someone who isn't linked at all.
+    //
+    // This is the PRIMARY onboarding path (see the floating buttons below)
+    // - it actually creates/links the Wartorn account itself via
+    // registerWithWartorn, entirely from torn.com. Auto-linking from an
+    // existing dashboard session (linkWartorn) is the secondary, optional
+    // shortcut - it's just a link at the bottom of this panel now, not a
+    // separate primary flow.
     function showManualLinkPanel() {
         if (document.getElementById('wt-manual-link-panel')) return;
 
@@ -344,13 +438,20 @@
         panel.style.cssText = 'background:#15171c; border:1px solid #3a3f4b; border-left:3px solid #00e5ff; width:280px; max-width:85vw; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,0.8); font-family:sans-serif; color:#ccc; box-sizing:border-box; transform:translateX(-100%); transition:transform 0.25s ease;';
         panel.innerHTML = `
             <div style="color:#00e5ff; font-weight:bold; font-size:1.05em; margin-bottom:10px;">🔑 Link Wartorn</div>
-            <div style="font-size:0.85em; color:#aaa; margin-bottom:12px; line-height:1.4;">Paste the same Torn API key you use to log into the Wartorn dashboard.</div>
+            <div style="font-size:0.85em; color:#aaa; margin-bottom:12px; line-height:1.4;">Paste your Torn API key - works whether you already have a Wartorn account or you're signing up for the first time. No need to visit the dashboard.</div>
             <input id="wt-manual-key-input" type="text" placeholder="Torn API key" style="width:100%; box-sizing:border-box; padding:8px; background:#0b0c10; border:1px solid #3a3f4b; border-radius:4px; color:#fff; font-size:0.9em; margin-bottom:10px;">
+            <label style="display:flex; align-items:flex-start; gap:6px; font-size:0.78em; color:#aaa; margin-bottom:12px; cursor:pointer; line-height:1.3;">
+                <input type="checkbox" id="wt-manual-tos" style="margin-top:2px; cursor:pointer;">
+                <span>I agree to the <a href="${WARTORN_HOST}/login" target="_blank" style="color:#00e5ff;">Terms of Service</a></span>
+            </label>
             <div style="display:flex; gap:8px;">
                 <button id="wt-manual-key-save" style="flex:1; background:#00e5ff; color:#111; border:none; padding:8px; border-radius:4px; font-weight:bold; cursor:pointer;">Save &amp; Link</button>
                 <button id="wt-manual-key-cancel" style="background:#252525; color:#ccc; border:1px solid #444; padding:8px 12px; border-radius:4px; cursor:pointer;">Cancel</button>
             </div>
             <div id="wt-manual-key-msg" style="font-size:0.8em; margin-top:8px; min-height:1.2em;"></div>
+            <div style="margin-top:12px; padding-top:10px; border-top:1px solid #2a2d35; font-size:0.75em; text-align:center;">
+                <a href="#" id="wt-manual-autolink" style="color:#888;">Already logged into the dashboard elsewhere? Auto-link instead</a>
+            </div>
         `;
 
         overlay.appendChild(panel);
@@ -363,60 +464,93 @@
         };
         overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
         document.getElementById('wt-manual-key-cancel').addEventListener('click', close);
+        document.getElementById('wt-manual-autolink').addEventListener('click', (e) => {
+            e.preventDefault();
+            close();
+            linkWartorn();
+        });
 
         const input = document.getElementById('wt-manual-key-input');
         input.value = userApiKey || '';
+        // Pre-check for a returning user re-opening this to change their
+        // key - they've already agreed once to get this far.
+        document.getElementById('wt-manual-tos').checked = !!userApiKey;
         input.focus();
 
-        const save = () => {
+        const saveBtn = document.getElementById('wt-manual-key-save');
+        const save = async () => {
             const val = input.value.trim();
+            const tosChecked = document.getElementById('wt-manual-tos').checked;
             const msg = document.getElementById('wt-manual-key-msg');
             if (!val) { msg.style.color = '#f44336'; msg.innerText = 'Please paste a key first.'; return; }
-            userApiKey = val;
-            safeGmSet('wt_api_key', userApiKey);
-            msg.style.color = '#4CAF50';
-            msg.innerText = 'Linked! Reloading...';
-            setTimeout(() => location.reload(), 700);
+            // No hard client-side TOS gate here - a returning user who
+            // already accepted it shouldn't have to recheck the box just
+            // to change their key. The server is the real source of truth
+            // (same as /api/login): it only actually requires tosAccepted
+            // for an account that hasn't accepted the CURRENT version yet,
+            // and its "Please accept..." message surfaces below via the
+            // generic error branch if that's genuinely still needed.
+            saveBtn.disabled = true;
+            saveBtn.innerText = 'Verifying...';
+            msg.style.color = '#aaa';
+            msg.innerText = '';
+            try {
+                const res = await registerWithWartorn({ apiKey: val, ffscouterKey: val, tosAccepted: tosChecked, claimTrial: false });
+                if (res.data && res.data.success) {
+                    userApiKey = val;
+                    safeGmSet('wt_api_key', userApiKey);
+                    msg.style.color = '#4CAF50';
+                    msg.innerText = 'Linked! Reloading...';
+                    setTimeout(() => location.reload(), 700);
+                    return;
+                }
+                if (res.data && res.data.requiresPayment) { renderPaywallView(panel, res.data, val, tosChecked); return; }
+                msg.style.color = '#f44336';
+                msg.innerHTML = (res.data && res.data.error) || 'Something went wrong. Please try again.';
+            } catch (e) {
+                msg.style.color = '#f44336';
+                msg.innerText = 'Network error - please try again.';
+            } finally {
+                saveBtn.disabled = false;
+                saveBtn.innerText = 'Save & Link';
+            }
         };
-        document.getElementById('wt-manual-key-save').addEventListener('click', save);
+        saveBtn.addEventListener('click', save);
         input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
     }
     function linkWartornManually() {
         showManualLinkPanel();
     }
 
-    safeRegisterMenuCommand(userApiKey ? '✅ Wartorn Linked (re-link)' : '⚙️ Link Wartorn Account', linkWartorn);
-    safeRegisterMenuCommand('🔑 Link Wartorn Manually (paste key)', linkWartornManually);
+    safeRegisterMenuCommand(userApiKey ? '✅ Wartorn Linked (re-link)' : '🔑 Link Wartorn Account', linkWartornManually);
+    safeRegisterMenuCommand('🔗 Auto-link from dashboard session', linkWartorn);
 
-    // A browser blocks window.open() unless it's a direct result of a user
-    // gesture, so this can't pop the login page open on its own - instead,
-    // this is a small clickable notice next to the (now hard to miss)
-    // logo, since the Tampermonkey extension menu above is easy to never
-    // notice at all. Clicking it is a real gesture, so that window.open()
-    // always goes through.
+    // Pasting a key directly (linkWartornManually) is the PRIMARY path now -
+    // it works standalone, entirely from torn.com, for both an existing
+    // account (re-linking a new device) and a brand new signup (see
+    // registerWithWartorn/showManualLinkPanel below). Auto-link
+    // (linkWartorn, opening the dashboard's login page) still exists as an
+    // optional secondary shortcut for anyone who's already got the
+    // dashboard open elsewhere and just wants to reuse that session - it's
+    // the smaller, second button below, not the main entry point.
     if (!userApiKey) {
         const notice = document.createElement('div');
         notice.id = 'wt-link-notice';
         notice.style.cssText = 'position: fixed; z-index: 9999999; width: 60px; background: #15171c; border: 1px solid #00e5ff; border-radius: 6px; padding: 8px 6px; text-align: center; cursor: pointer; box-shadow: 0 4px 15px rgba(0,0,0,0.6);';
-        notice.innerHTML = '<div style="font-size:1.3em; line-height:1;">🔗</div><div style="color:#00e5ff; font-size:0.65em; font-weight:bold; margin-top:4px; line-height:1.2;">Link Wartorn</div>';
-        notice.addEventListener('click', linkWartorn);
+        notice.innerHTML = '<div style="font-size:1.3em; line-height:1;">🔑</div><div style="color:#00e5ff; font-size:0.65em; font-weight:bold; margin-top:4px; line-height:1.2;">Link Wartorn</div>';
+        notice.title = 'Link or create your Wartorn account with your Torn API key.';
+        notice.addEventListener('click', linkWartornManually);
         document.body.appendChild(notice);
 
-        // Always-visible manual fallback right below it, for whenever the
-        // automatic dashboard-login link doesn't actually work (TornPDA,
-        // or anywhere else GM storage doesn't bridge origins the standard
-        // way) - no environment detection to get wrong, just a second
-        // option that's always reliable regardless of why the first one
-        // didn't work. Styled as a real button matching the notice above
-        // it (was tiny gray underlined text, reported as hard to see -
-        // this is the one thing standing between a stuck new install and
-        // actually getting linked, so it needs to be impossible to miss).
+        // Secondary/optional shortcut for someone who already has an active
+        // dashboard login elsewhere and would rather reuse that session
+        // than re-paste their key here.
         const manualLink = document.createElement('div');
         manualLink.id = 'wt-link-manual';
-        manualLink.style.cssText = 'position: fixed; z-index: 9999999; width: 60px; background: #15171c; border: 1px solid #666; border-radius: 6px; padding: 6px 4px; text-align: center; color: #00e5ff; font-size: 0.68em; font-weight: bold; cursor: pointer; line-height: 1.25; box-shadow: 0 4px 15px rgba(0,0,0,0.6);';
-        manualLink.innerHTML = '<div style="font-size:1.1em; line-height:1;">🔑</div><div style="margin-top:3px;">Paste Key</div>';
-        manualLink.title = 'Auto-link not working? Click to paste your key manually.';
-        manualLink.addEventListener('click', linkWartornManually);
+        manualLink.style.cssText = 'position: fixed; z-index: 9999999; width: 60px; background: #15171c; border: 1px solid #666; border-radius: 6px; padding: 6px 4px; text-align: center; color: #888; font-size: 0.68em; font-weight: bold; cursor: pointer; line-height: 1.25; box-shadow: 0 4px 15px rgba(0,0,0,0.6);';
+        manualLink.innerHTML = '<div style="font-size:1.1em; line-height:1;">🔗</div><div style="margin-top:3px;">Auto-link</div>';
+        manualLink.title = 'Already logged into the Wartorn dashboard elsewhere? Auto-link from that session instead.';
+        manualLink.addEventListener('click', linkWartorn);
         document.body.appendChild(manualLink);
         applyCompanionAnchor();
 
