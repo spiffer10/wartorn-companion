@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.20
+// @version      2.21
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -768,11 +768,12 @@
         // behavior - turning it off is what's new, not the other way
         // around, so nobody who never touches this setting sees a change.
         let beatableOnlyFilter = safeGmGet('wt_beatable_only', true);
-        // FF and Level next to the name in War Targets - both default on
-        // (matches how they already rendered before this became optional),
-        // hideable since they add clutter some people don't want.
-        let showFfScore = safeGmGet('wt_show_ff', true);
-        let showEnemyLevel = safeGmGet('wt_show_level', true);
+        // FF, Level, and status next to the name/status line in War
+        // Targets - FF and Level default OFF (opt-in clutter), status
+        // defaults ON since hiding it is the new behavior, not showing it.
+        let showFfScore = safeGmGet('wt_show_ff', false);
+        let showEnemyLevel = safeGmGet('wt_show_level', false);
+        let showStatus = safeGmGet('wt_show_status', true);
 
         // All settings below live in one place (the ⚙️ Settings panel) -
         // these are just the persisted values, all defaulting to whatever
@@ -1160,7 +1161,7 @@
                                     ${ffBadge}
                                     ${odIcon}
                                 </div>
-                                <span style="color:${tag.color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${tag.label}</span>
+                                ${showStatus ? `<span style="color:${tag.color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${tag.label}</span>` : ''}
                             </div>
                             ${actionHtml}
                         </div>`;
@@ -1186,7 +1187,7 @@
                     const rowsHtml = validTargets.map(m => {
                         const tag = abbreviateStatus(m.state, m.until, m.desc);
                         const name = (isFavorited(m.id) ? `⭐ ${m.name}` : m.name) + (showEnemyLevel ? levelTextHtml(m.level) : '') + (showFfScore ? ffBadgeHtml(m.ff_score) : '');
-                        return rowHtml(name, `<span style="color:${tag.color};">${tag.label}</span>`, buildTargetActionHtml(m), m.online_status, m.id, odBadgeHtml(m.last_od));
+                        return rowHtml(name, showStatus ? `<span style="color:${tag.color};">${tag.label}</span>` : '', buildTargetActionHtml(m), m.online_status, m.id, odBadgeHtml(m.last_od));
                     }).join('');
                     contentHtml = rowsHtml || `<div style="color:#888;">${beatableOnlyFilter ? 'No valid targets found under your stats.' : 'No enemy members found.'}</div>`;
                 }
@@ -1310,6 +1311,10 @@
                             Show enemy level (War Targets)
                         </label>
                         <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
+                            <input type="checkbox" id="wt-set-showstatus" ${showStatus ? 'checked' : ''} style="cursor:pointer;">
+                            Show status (War Targets)
+                        </label>
+                        <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
                             <input type="checkbox" id="wt-set-flightsound" ${flightSoundEnabled ? 'checked' : ''} style="cursor:pointer;">
                             ✈️ Flight landing sound (30s warning)
                         </label>
@@ -1362,6 +1367,10 @@
             document.getElementById('wt-set-showlevel').addEventListener('change', (e) => {
                 showEnemyLevel = e.target.checked;
                 safeGmSet('wt_show_level', showEnemyLevel);
+            });
+            document.getElementById('wt-set-showstatus').addEventListener('change', (e) => {
+                showStatus = e.target.checked;
+                safeGmSet('wt_show_status', showStatus);
             });
             document.getElementById('wt-set-flightsound').addEventListener('change', (e) => {
                 flightSoundEnabled = e.target.checked;
@@ -1668,12 +1677,10 @@
             const CLUSTER_TRANSITION = 'transform 0.3s ease';
             let edgeCollapsed = safeGmGet('wt_edge_collapsed', false);
 
-            const TOGGLE_OPACITY_EXPANDED = '0.9';
-            // Was 0.2 (near-invisible until hovered) - but hover doesn't
-            // exist on touch, so on mobile it just stayed nearly invisible
-            // and hard to hit. Still recedes a bit so it's not competing for
-            // attention, but stays clearly visible without a hover state.
-            const TOGGLE_OPACITY_COLLAPSED = '0.55';
+            // One opacity for both states, not two - it used to dim further
+            // when collapsed (0.2, then 0.55), but that made it fade right
+            // when it's most useful to still be able to see it.
+            const TOGGLE_OPACITY = '0.9';
 
             const toggle = document.createElement('div');
             toggle.id = 'wt-edge-toggle';
@@ -1686,11 +1693,11 @@
             // mobile it was both hard to see and hard to tap accurately.
             toggle.style.cssText = 'position:fixed; z-index:9999999; width:40px; height:24px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-bottom:none; border-radius:4px 4px 0 0; cursor:pointer; font-size:16px; line-height:1; color:#00e5ff; opacity:0.9; transition:0.15s; pointer-events:auto;';
             toggle.addEventListener('mouseenter', () => { toggle.style.opacity = '1'; });
-            toggle.addEventListener('mouseleave', () => { toggle.style.opacity = edgeCollapsed ? TOGGLE_OPACITY_COLLAPSED : TOGGLE_OPACITY_EXPANDED; });
+            toggle.addEventListener('mouseleave', () => { toggle.style.opacity = TOGGLE_OPACITY; });
 
             function applyEdgeCollapsed(animate) {
                 toggle.innerText = edgeCollapsed ? '›' : '‹'; // › : ‹
-                toggle.style.opacity = edgeCollapsed ? TOGGLE_OPACITY_COLLAPSED : TOGGLE_OPACITY_EXPANDED;
+                toggle.style.opacity = TOGGLE_OPACITY;
                 if (edgeCollapsed) {
                     wrap.style.pointerEvents = 'none';
                     wrap.style.opacity = '0';
@@ -1715,18 +1722,20 @@
             document.body.appendChild(toggle);
             applyCompanionAnchor();
 
-            // Apply a persisted collapsed state instantly on page load,
-            // skipping the transition - only an actual click should animate,
-            // not every fresh page load landing back in the same state.
-            if (edgeCollapsed) {
-                cluster.style.transition = 'none';
-                wrap.style.transition = 'none';
-                applyEdgeCollapsed(false);
-                requestAnimationFrame(() => {
-                    cluster.style.transition = CLUSTER_TRANSITION;
-                    wrap.style.transition = WRAP_TRANSITION;
-                });
-            }
+            // Apply the persisted state instantly on page load, skipping the
+            // transition (only an actual click should animate, not every
+            // fresh page load landing back in the same state) - and always,
+            // not just when starting collapsed. It used to only run in the
+            // collapsed branch, so the toggle's glyph/opacity were never set
+            // at all when starting expanded (the default) - the toggle sat
+            // there blank until the first click.
+            cluster.style.transition = 'none';
+            wrap.style.transition = 'none';
+            applyEdgeCollapsed(false);
+            requestAnimationFrame(() => {
+                cluster.style.transition = CLUSTER_TRANSITION;
+                wrap.style.transition = WRAP_TRANSITION;
+            });
         }
 
         injectSidePanels();
