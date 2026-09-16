@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.19
+// @version      2.19.1
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -692,7 +692,10 @@
         function ffBadgeHtml(ffScore) {
             if (!ffScore || ffScore <= 0) return '';
             const ffColor = getFFColour(ffScore);
-            return `<span style="color:${ffColor}; border:1px solid ${ffColor}; border-radius:3px; padding:0 4px; font-size:0.85em; margin-right:4px;" title="Fair Fight">FF ${Number(ffScore).toFixed(2)}</span>`;
+            // Text only, no box - sits beside the name rather than on the
+            // status line, which got cluttered next to a long travel status
+            // ("TRN > USA 00:27") when this was a bordered badge there.
+            return `<span style="color:${ffColor}; font-size:0.85em; font-weight:normal; margin-left:5px;" title="Fair Fight">FF ${Number(ffScore).toFixed(2)}</span>`;
         }
         // H:MM:SS - hospital/jail countdowns run down to the second.
         function formatHMS(totalSecs) {
@@ -1135,19 +1138,17 @@
                         // status row.
                         // FF is a measure of how fair a fight would be FOR YOU
                         // against them - meaningless against your own
-                        // faction, so only the enemy side ever gets a badge.
+                        // faction, so only the enemy side ever gets one.
                         const ffBadge = isEnemy ? ffBadgeHtml(m.ff_score) : '';
                         return `<div style="display:flex; align-items:stretch; gap:4px; padding:3px 0; border-bottom:1px solid #1f2229; font-size:0.72em; overflow:hidden;">
                             <div style="flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; gap:1px; overflow:hidden;">
                                 <div style="display:flex; align-items:center; gap:3px; overflow:hidden;">
                                     ${onlineDotHtml(m.online_status)}
                                     <a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" style="color:#fff; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:0 1 auto;">${star}${m.name}</a>
+                                    ${ffBadge}
                                     ${odIcon}
                                 </div>
-                                <div style="display:flex; align-items:center; gap:0; overflow:hidden;">
-                                    ${ffBadge}
-                                    <span style="color:${tag.color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${tag.label}</span>
-                                </div>
+                                <span style="color:${tag.color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${tag.label}</span>
                             </div>
                             ${actionHtml}
                         </div>`;
@@ -1172,8 +1173,8 @@
                 } else {
                     const rowsHtml = validTargets.map(m => {
                         const tag = abbreviateStatus(m.state, m.until, m.desc);
-                        const name = isFavorited(m.id) ? `⭐ ${m.name}` : m.name;
-                        return rowHtml(name, `${ffBadgeHtml(m.ff_score)}<span style="color:${tag.color};">${tag.label}</span>`, buildTargetActionHtml(m), m.online_status, m.id, odBadgeHtml(m.last_od));
+                        const name = (isFavorited(m.id) ? `⭐ ${m.name}` : m.name) + ffBadgeHtml(m.ff_score);
+                        return rowHtml(name, `<span style="color:${tag.color};">${tag.label}</span>`, buildTargetActionHtml(m), m.online_status, m.id, odBadgeHtml(m.last_od));
                     }).join('');
                     contentHtml = rowsHtml || `<div style="color:#888;">${beatableOnlyFilter ? 'No valid targets found under your stats.' : 'No enemy members found.'}</div>`;
                 }
