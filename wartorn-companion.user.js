@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.19.1
+// @version      2.20
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -697,6 +697,10 @@
             // ("TRN > USA 00:27") when this was a bordered badge there.
             return `<span style="color:${ffColor}; font-size:0.85em; font-weight:normal; margin-left:5px;" title="Fair Fight">FF ${Number(ffScore).toFixed(2)}</span>`;
         }
+        function levelTextHtml(level) {
+            if (!level || level <= 0) return '';
+            return `<span style="color:#888; font-size:0.85em; font-weight:normal; margin-left:5px;" title="Level">Lv ${level}</span>`;
+        }
         // H:MM:SS - hospital/jail countdowns run down to the second.
         function formatHMS(totalSecs) {
             if (totalSecs == null || totalSecs <= 0) return null;
@@ -764,6 +768,11 @@
         // behavior - turning it off is what's new, not the other way
         // around, so nobody who never touches this setting sees a change.
         let beatableOnlyFilter = safeGmGet('wt_beatable_only', true);
+        // FF and Level next to the name in War Targets - both default on
+        // (matches how they already rendered before this became optional),
+        // hideable since they add clutter some people don't want.
+        let showFfScore = safeGmGet('wt_show_ff', true);
+        let showEnemyLevel = safeGmGet('wt_show_level', true);
 
         // All settings below live in one place (the ⚙️ Settings panel) -
         // these are just the persisted values, all defaulting to whatever
@@ -1136,15 +1145,18 @@
                         // row, so align-items:stretch on the outer row lets
                         // it span BOTH lines instead of only the shorter
                         // status row.
-                        // FF is a measure of how fair a fight would be FOR YOU
-                        // against them - meaningless against your own
-                        // faction, so only the enemy side ever gets one.
-                        const ffBadge = isEnemy ? ffBadgeHtml(m.ff_score) : '';
+                        // FF and Level are a measure of how tough THEY are -
+                        // meaningless against your own faction, so only the
+                        // enemy side ever gets them, and only if not hidden
+                        // via the ⚙️ Settings toggles.
+                        const levelBadge = (isEnemy && showEnemyLevel) ? levelTextHtml(m.level) : '';
+                        const ffBadge = (isEnemy && showFfScore) ? ffBadgeHtml(m.ff_score) : '';
                         return `<div style="display:flex; align-items:stretch; gap:4px; padding:3px 0; border-bottom:1px solid #1f2229; font-size:0.72em; overflow:hidden;">
                             <div style="flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; gap:1px; overflow:hidden;">
                                 <div style="display:flex; align-items:center; gap:3px; overflow:hidden;">
                                     ${onlineDotHtml(m.online_status)}
                                     <a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" style="color:#fff; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:0 1 auto;">${star}${m.name}</a>
+                                    ${levelBadge}
                                     ${ffBadge}
                                     ${odIcon}
                                 </div>
@@ -1173,7 +1185,7 @@
                 } else {
                     const rowsHtml = validTargets.map(m => {
                         const tag = abbreviateStatus(m.state, m.until, m.desc);
-                        const name = (isFavorited(m.id) ? `⭐ ${m.name}` : m.name) + ffBadgeHtml(m.ff_score);
+                        const name = (isFavorited(m.id) ? `⭐ ${m.name}` : m.name) + (showEnemyLevel ? levelTextHtml(m.level) : '') + (showFfScore ? ffBadgeHtml(m.ff_score) : '');
                         return rowHtml(name, `<span style="color:${tag.color};">${tag.label}</span>`, buildTargetActionHtml(m), m.online_status, m.id, odBadgeHtml(m.last_od));
                     }).join('');
                     contentHtml = rowsHtml || `<div style="color:#888;">${beatableOnlyFilter ? 'No valid targets found under your stats.' : 'No enemy members found.'}</div>`;
@@ -1290,6 +1302,14 @@
                             Beatable targets only
                         </label>
                         <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
+                            <input type="checkbox" id="wt-set-showff" ${showFfScore ? 'checked' : ''} style="cursor:pointer;">
+                            Show FF score (War Targets)
+                        </label>
+                        <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
+                            <input type="checkbox" id="wt-set-showlevel" ${showEnemyLevel ? 'checked' : ''} style="cursor:pointer;">
+                            Show enemy level (War Targets)
+                        </label>
+                        <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
                             <input type="checkbox" id="wt-set-flightsound" ${flightSoundEnabled ? 'checked' : ''} style="cursor:pointer;">
                             ✈️ Flight landing sound (30s warning)
                         </label>
@@ -1334,6 +1354,14 @@
             document.getElementById('wt-set-beatable').addEventListener('change', (e) => {
                 beatableOnlyFilter = e.target.checked;
                 safeGmSet('wt_beatable_only', beatableOnlyFilter);
+            });
+            document.getElementById('wt-set-showff').addEventListener('change', (e) => {
+                showFfScore = e.target.checked;
+                safeGmSet('wt_show_ff', showFfScore);
+            });
+            document.getElementById('wt-set-showlevel').addEventListener('change', (e) => {
+                showEnemyLevel = e.target.checked;
+                safeGmSet('wt_show_level', showEnemyLevel);
             });
             document.getElementById('wt-set-flightsound').addEventListener('change', (e) => {
                 flightSoundEnabled = e.target.checked;
