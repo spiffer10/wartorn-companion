@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.18.1
+// @version      2.19
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Auto-links from an active Wartorn login.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -142,7 +142,7 @@
 
     function clampCompanionAnchor() {
         // Rough total footprint of the cluster below the anchor (toggle
-        // sits 9px above it, the manual-link button's bottom edge is the
+        // sits 23px above it, the manual-link button's bottom edge is the
         // lowest point at +195+~50px) - just enough to stop it being
         // dragged somewhere entirely unreachable, not pixel-perfect.
         const maxTop = Math.max(0, window.innerHeight - 260);
@@ -165,7 +165,7 @@
         };
         place('wt-ghost-logo', 0, 0);
         place('wt-side-buttons', 129, 1);
-        place('wt-edge-toggle', -9, 0);
+        place('wt-edge-toggle', -23, 0); // toggle is 24px tall now - keep its bottom edge flush against the logo
         place('wt-link-notice', 140, 1);
         place('wt-link-manual', 195, 1);
         // Side panel (War Targets/Chain Targets/etc, if one's open right
@@ -672,6 +672,28 @@
             const rMins = Math.floor((remainingMs % 3600000) / 60000);
             return `<span style="font-size:1.1em; margin-left:4px; cursor:help; filter: drop-shadow(0 0 3px rgba(233,30,99,0.5));" title="OD cooldown: ${rHrs}h ${rMins}m left - can't stack energy/drugs until this clears">💊</span>`;
         }
+
+        // Same continuous blue->green->red gradient as the dashboard's own
+        // getFFColour() (frontend/index.html) - ported here rather than
+        // shared, since this is a standalone userscript with no access to
+        // that file. Keep these two in sync if the dashboard's ever tuned.
+        function getFFColour(value) {
+            let r, g, b;
+            if (value <= 1) { r = 0x28; g = 0x28; b = 0xc6; }
+            else if (value <= 3) {
+                const t = (value - 1) / 2;
+                r = 0x28; g = Math.round(0x28 + (0xc6 - 0x28) * t); b = Math.round(0xc6 - (0xc6 - 0x28) * t);
+            } else if (value <= 5) {
+                const t = (value - 3) / 2;
+                r = Math.round(0x28 + (0xc6 - 0x28) * t); g = Math.round(0xc6 - (0xc6 - 0x28) * t); b = 0x28;
+            } else { r = 0xc6; g = 0x28; b = 0x28; }
+            return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase()}`;
+        }
+        function ffBadgeHtml(ffScore) {
+            if (!ffScore || ffScore <= 0) return '';
+            const ffColor = getFFColour(ffScore);
+            return `<span style="color:${ffColor}; border:1px solid ${ffColor}; border-radius:3px; padding:0 4px; font-size:0.85em; margin-right:4px;" title="Fair Fight">FF ${Number(ffScore).toFixed(2)}</span>`;
+        }
         // H:MM:SS - hospital/jail countdowns run down to the second.
         function formatHMS(totalSecs) {
             if (totalSecs == null || totalSecs <= 0) return null;
@@ -1111,6 +1133,10 @@
                         // row, so align-items:stretch on the outer row lets
                         // it span BOTH lines instead of only the shorter
                         // status row.
+                        // FF is a measure of how fair a fight would be FOR YOU
+                        // against them - meaningless against your own
+                        // faction, so only the enemy side ever gets a badge.
+                        const ffBadge = isEnemy ? ffBadgeHtml(m.ff_score) : '';
                         return `<div style="display:flex; align-items:stretch; gap:4px; padding:3px 0; border-bottom:1px solid #1f2229; font-size:0.72em; overflow:hidden;">
                             <div style="flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; gap:1px; overflow:hidden;">
                                 <div style="display:flex; align-items:center; gap:3px; overflow:hidden;">
@@ -1118,7 +1144,10 @@
                                     <a href="https://www.torn.com/profiles.php?XID=${m.id}" target="_blank" style="color:#fff; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:0 1 auto;">${star}${m.name}</a>
                                     ${odIcon}
                                 </div>
-                                <span style="color:${tag.color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${tag.label}</span>
+                                <div style="display:flex; align-items:center; gap:0; overflow:hidden;">
+                                    ${ffBadge}
+                                    <span style="color:${tag.color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${tag.label}</span>
+                                </div>
                             </div>
                             ${actionHtml}
                         </div>`;
@@ -1144,7 +1173,7 @@
                     const rowsHtml = validTargets.map(m => {
                         const tag = abbreviateStatus(m.state, m.until, m.desc);
                         const name = isFavorited(m.id) ? `⭐ ${m.name}` : m.name;
-                        return rowHtml(name, `<span style="color:${tag.color};">${tag.label}</span>`, buildTargetActionHtml(m), m.online_status, m.id, odBadgeHtml(m.last_od));
+                        return rowHtml(name, `${ffBadgeHtml(m.ff_score)}<span style="color:${tag.color};">${tag.label}</span>`, buildTargetActionHtml(m), m.online_status, m.id, odBadgeHtml(m.last_od));
                     }).join('');
                     contentHtml = rowsHtml || `<div style="color:#888;">${beatableOnlyFilter ? 'No valid targets found under your stats.' : 'No enemy members found.'}</div>`;
                 }
@@ -1610,8 +1639,12 @@
             const CLUSTER_TRANSITION = 'transform 0.3s ease';
             let edgeCollapsed = safeGmGet('wt_edge_collapsed', false);
 
-            const TOGGLE_OPACITY_EXPANDED = '0.85';
-            const TOGGLE_OPACITY_COLLAPSED = '0.2'; // nearly hidden away, not competing for attention
+            const TOGGLE_OPACITY_EXPANDED = '0.9';
+            // Was 0.2 (near-invisible until hovered) - but hover doesn't
+            // exist on touch, so on mobile it just stayed nearly invisible
+            // and hard to hit. Still recedes a bit so it's not competing for
+            // attention, but stays clearly visible without a hover state.
+            const TOGGLE_OPACITY_COLLAPSED = '0.55';
 
             const toggle = document.createElement('div');
             toggle.id = 'wt-edge-toggle';
@@ -1619,8 +1652,10 @@
             // Sits just above the logo rather than between the logo and the
             // button stack - that gap was thin enough that it visually ran
             // into the War Targets button below it. Position applied below
-            // via applyCompanionAnchor().
-            toggle.style.cssText = 'position:fixed; z-index:9999999; width:40px; height:10px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-bottom:none; border-radius:4px 4px 0 0; cursor:pointer; font-size:8px; line-height:1; color:#00e5ff; opacity:0.85; transition:0.15s; pointer-events:auto;';
+            // via applyCompanionAnchor(). Was a 40x10px sliver with an 8px
+            // glyph - well under any reasonable touch-target size, so on
+            // mobile it was both hard to see and hard to tap accurately.
+            toggle.style.cssText = 'position:fixed; z-index:9999999; width:40px; height:24px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-bottom:none; border-radius:4px 4px 0 0; cursor:pointer; font-size:16px; line-height:1; color:#00e5ff; opacity:0.9; transition:0.15s; pointer-events:auto;';
             toggle.addEventListener('mouseenter', () => { toggle.style.opacity = '1'; });
             toggle.addEventListener('mouseleave', () => { toggle.style.opacity = edgeCollapsed ? TOGGLE_OPACITY_COLLAPSED : TOGGLE_OPACITY_EXPANDED; });
 
