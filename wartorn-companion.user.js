@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.23
+// @version      2.24
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -21,6 +21,27 @@
 (function() {
     'use strict';
     const WARTORN_HOST = 'https://wartorn.spiffer10.com';
+
+    // A real, positive signal instead of inferring TornPDA indirectly from
+    // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
+    // as a defensive fallback regardless - this is for behavior that
+    // genuinely differs, like knowing an option is definitely broken here
+    // rather than just possibly broken). Three independent markers: the
+    // script manager self-reporting as TornPDA, TornPDA's Flutter WebView
+    // JS bridge, and TornPDA's own injected API helper. Any one of them
+    // being present is enough.
+    function isTornPDA() {
+        try {
+            if (typeof GM_info !== 'undefined' && GM_info.scriptHandler && /pda/i.test(GM_info.scriptHandler)) return true;
+        } catch (e) {}
+        try {
+            if (typeof window.flutter_inappwebview !== 'undefined') return true;
+        } catch (e) {}
+        try {
+            if (typeof window.PDA_httpGet !== 'undefined') return true;
+        } catch (e) {}
+        return false;
+    }
 
     // Defensive wrappers around Tampermonkey's GM_* storage/menu API.
     // Leading theory for why TornPDA's embedded browser only ever showed
@@ -544,14 +565,22 @@
 
         // Secondary/optional shortcut for someone who already has an active
         // dashboard login elsewhere and would rather reuse that session
-        // than re-paste their key here.
-        const manualLink = document.createElement('div');
-        manualLink.id = 'wt-link-manual';
-        manualLink.style.cssText = 'position: fixed; z-index: 9999999; width: 60px; background: #15171c; border: 1px solid #666; border-radius: 6px; padding: 6px 4px; text-align: center; color: #888; font-size: 0.68em; font-weight: bold; cursor: pointer; line-height: 1.25; box-shadow: 0 4px 15px rgba(0,0,0,0.6);';
-        manualLink.innerHTML = '<div style="font-size:1.1em; line-height:1;">🔗</div><div style="margin-top:3px;">Auto-link</div>';
-        manualLink.title = 'Already logged into the Wartorn dashboard elsewhere? Auto-link from that session instead.';
-        manualLink.addEventListener('click', linkWartorn);
-        document.body.appendChild(manualLink);
+        // than re-paste their key here. Skipped entirely on a confirmed
+        // TornPDA run - it depends on GM storage bridging the key across
+        // origins, which doesn't reliably work there (see isTornPDA above),
+        // so showing it would just be a dead end that looks like it should
+        // work. Everywhere else this is still unconditional (unverified,
+        // not just "maybe TornPDA") since a false negative here only costs
+        // an extra button, not a broken flow.
+        if (!isTornPDA()) {
+            const manualLink = document.createElement('div');
+            manualLink.id = 'wt-link-manual';
+            manualLink.style.cssText = 'position: fixed; z-index: 9999999; width: 60px; background: #15171c; border: 1px solid #666; border-radius: 6px; padding: 6px 4px; text-align: center; color: #888; font-size: 0.68em; font-weight: bold; cursor: pointer; line-height: 1.25; box-shadow: 0 4px 15px rgba(0,0,0,0.6);';
+            manualLink.innerHTML = '<div style="font-size:1.1em; line-height:1;">🔗</div><div style="margin-top:3px;">Auto-link</div>';
+            manualLink.title = 'Already logged into the Wartorn dashboard elsewhere? Auto-link from that session instead.';
+            manualLink.addEventListener('click', linkWartorn);
+            document.body.appendChild(manualLink);
+        }
         applyCompanionAnchor();
 
         // This page's own script instance already decided "no key" at load
@@ -1107,13 +1136,33 @@
             }
         }
 
+        // Optimistic: patch the cached call state and repaint immediately
+        // instead of waiting on the POST round trip AND THEN a full
+        // re-fetch (the old delete-cache-then-refetch approach made two
+        // network round trips happen before anything visibly changed).
+        // Overwriting panelCache.targetCalls with a fresh timestamp makes
+        // the getPanelData() call inside renderWarTargetsPanel resolve from
+        // cache (near-instant) instead of hitting the network again right
+        // away. Either way, both caches are cleared once the real request
+        // settles so the final render always reflects server truth -
+        // that's what "rolls back" a rejected call, rather than a separate
+        // explicit rollback step.
         async function callTargetCompanion(id, name) {
+            const optimisticCalls = { ...companionTargetCalls.calls, [id]: { callerId: companionTargetCalls.myPlayerId, callerName: 'You', calledAt: Date.now() } };
+            companionTargetCalls = { ...companionTargetCalls, calls: optimisticCalls };
+            panelCache.targetCalls = { data: companionTargetCalls, ts: Date.now() };
+            renderWarTargetsPanel();
             try { await postToWartorn('target-calls/call', { target_id: id, target_name: name }); } catch (e) {}
             delete panelCache.war;
             delete panelCache.targetCalls;
             renderWarTargetsPanel();
         }
         async function releaseTargetCompanion(id) {
+            const optimisticCalls = { ...companionTargetCalls.calls };
+            delete optimisticCalls[id];
+            companionTargetCalls = { ...companionTargetCalls, calls: optimisticCalls };
+            panelCache.targetCalls = { data: companionTargetCalls, ts: Date.now() };
+            renderWarTargetsPanel();
             try { await postToWartorn('target-calls/release', { target_id: id }); } catch (e) {}
             delete panelCache.war;
             delete panelCache.targetCalls;
