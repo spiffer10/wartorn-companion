@@ -1848,8 +1848,9 @@
             });
 
             // --- Radio: Tesseract (tesseract.on-air.fm) ---
-            // Not a side panel (nothing to render/tick) - just a toggle
-            // button that plays/pauses a direct stream, same button
+            // Not a side panel (nothing to render/tick) - opens a
+            // separate popup window that keeps playing across Torn page
+            // navigations (see openRadioPopup() below), same button
             // styling as the panel buttons above for visual consistency.
             // Restricted to Tesseract's own faction (53940) for now, per
             // the user's explicit ask - checked server-side (whoami reads
@@ -1866,14 +1867,14 @@
                 radioBtn.addEventListener('mouseenter', () => {
                     radioBtn.style.opacity = '1';
                     radioBtn.style.transform = 'scale(1.05)';
-                    if (!isRadioPlaying()) radioBtn.style.background = 'rgba(10,11,14,0.95)';
+                    radioBtn.style.background = 'rgba(10,11,14,0.95)';
                 });
                 radioBtn.addEventListener('mouseleave', () => {
-                    radioBtn.style.opacity = isRadioPlaying() ? '1' : '0.85';
+                    radioBtn.style.opacity = '0.85';
                     radioBtn.style.transform = 'scale(1)';
-                    if (!isRadioPlaying()) radioBtn.style.background = 'rgba(21,23,28,0.9)';
+                    radioBtn.style.background = 'rgba(21,23,28,0.9)';
                 });
-                radioBtn.addEventListener('click', () => toggleRadio(radioBtn));
+                radioBtn.addEventListener('click', () => openRadioPopup());
                 wrap.appendChild(radioBtn);
             }).catch(() => {});
 
@@ -1956,49 +1957,21 @@
         }
 
         // --- Radio: Tesseract (tesseract.on-air.fm) ---
-        // Direct Shoutcast MP3 stream, found via myradiostream.com's own
-        // embed widget (its iframe calls a json.php config endpoint that
-        // hands back this URL) - used directly with a plain <audio>
-        // element rather than injecting myradiostream's own iframe/script
-        // into Torn's page, since that widget's CSS/CSP behavior inside a
-        // foreign page isn't something this script controls, while a bare
-        // <audio src> is just an ordinary cross-origin media fetch (the
-        // stream itself sends Access-Control-Allow-Origin: *). One
-        // instance shared across the whole page rather than recreated on
-        // every click, so pause/resume doesn't restart the stream from
-        // scratch.
-        const RADIO_STREAM_URL = 'https://s12.myradiostream.com:20014/;';
-        let radioAudioEl = null;
-        function getRadioAudioEl() {
-            if (!radioAudioEl) {
-                radioAudioEl = document.createElement('audio');
-                radioAudioEl.preload = 'none';
-                radioAudioEl.src = RADIO_STREAM_URL;
-            }
-            return radioAudioEl;
-        }
-        function isRadioPlaying() {
-            return !!radioAudioEl && !radioAudioEl.paused;
-        }
-        function setRadioBtnState(btn, playing) {
-            btn.innerText = playing ? '⏸️' : '🎵';
-            btn.style.background = playing ? 'rgba(10,11,14,0.95)' : 'rgba(21,23,28,0.9)';
-            btn.style.opacity = playing ? '1' : '0.85';
-        }
-        function toggleRadio(btn) {
-            const audio = getRadioAudioEl();
-            if (audio.paused) {
-                audio.play().catch(() => {});
-            } else {
-                audio.pause();
-            }
-            // Synced via the audio element's own play/pause events (below)
-            // rather than trusting the click branch above - play() is
-            // async and can still be buffering/rejected, so this reflects
-            // what actually happened, not what was requested.
-            audio.onplay = () => setRadioBtnState(btn, true);
-            audio.onpause = () => setRadioBtnState(btn, false);
-            audio.onerror = () => setRadioBtnState(btn, false);
+        // Originally an <audio> element injected straight into the Torn
+        // page - but Torn navigates with real page loads, not SPA
+        // routing, so every click to a new page destroyed the script's
+        // whole DOM (audio included) and killed playback. Opening the
+        // stream in its own separate popup window instead fixes that: a
+        // popup is an independent top-level browsing context, so
+        // navigating the main Torn tab afterward doesn't touch it at all
+        // - it keeps playing regardless of where the opener tab goes.
+        // The popup loads a tiny page the backend serves (GET
+        // /radio-player) with a plain <audio autoplay controls>, so
+        // pause/resume/volume live there natively rather than needing to
+        // be mirrored back into this button.
+        function openRadioPopup() {
+            const win = window.open(`${WARTORN_HOST}/radio-player`, 'wt_radio_player', 'width=340,height=130,resizable=yes,scrollbars=no');
+            if (win) win.focus();
         }
 
         injectSidePanels();
