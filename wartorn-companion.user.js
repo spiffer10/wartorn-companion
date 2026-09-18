@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.24
+// @version      2.25
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -21,6 +21,9 @@
 (function() {
     'use strict';
     const WARTORN_HOST = 'https://wartorn.spiffer10.com';
+    // Gates the radio button (see MODULE: LEFT-EDGE CONDENSED PANELS below)
+    // to Tesseract's own faction for now, per an explicit ask.
+    const TESSERACT_FACTION_ID = 53940;
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1843,6 +1846,37 @@
                 btn.addEventListener('click', () => openSidePanel(key));
                 wrap.appendChild(btn);
             });
+
+            // --- Radio: Tesseract (tesseract.on-air.fm) ---
+            // Not a side panel (nothing to render/tick) - just a toggle
+            // button that plays/pauses a direct stream, same button
+            // styling as the panel buttons above for visual consistency.
+            // Restricted to Tesseract's own faction (53940) for now, per
+            // the user's explicit ask - checked server-side (whoami reads
+            // req.user.factionId from the caller's own authenticated key,
+            // not anything the client could spoof) so it only appears
+            // once that's confirmed, rather than showing then hiding.
+            fetchFromWartorn('whoami').then(data => {
+                if (!data || data.factionId !== TESSERACT_FACTION_ID) return;
+                const radioBtn = document.createElement('div');
+                radioBtn.className = 'wt-side-btn';
+                radioBtn.title = 'Tesseract Radio';
+                radioBtn.innerText = '🎵';
+                radioBtn.style.cssText = 'width:34px; height:34px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.1em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
+                radioBtn.addEventListener('mouseenter', () => {
+                    radioBtn.style.opacity = '1';
+                    radioBtn.style.transform = 'scale(1.05)';
+                    if (!isRadioPlaying()) radioBtn.style.background = 'rgba(10,11,14,0.95)';
+                });
+                radioBtn.addEventListener('mouseleave', () => {
+                    radioBtn.style.opacity = isRadioPlaying() ? '1' : '0.85';
+                    radioBtn.style.transform = 'scale(1)';
+                    if (!isRadioPlaying()) radioBtn.style.background = 'rgba(21,23,28,0.9)';
+                });
+                radioBtn.addEventListener('click', () => toggleRadio(radioBtn));
+                wrap.appendChild(radioBtn);
+            }).catch(() => {});
+
             const cluster = getOrCreateEdgeCluster();
             cluster.appendChild(wrap);
 
@@ -1919,6 +1953,52 @@
                 cluster.style.transition = CLUSTER_TRANSITION;
                 wrap.style.transition = WRAP_TRANSITION;
             });
+        }
+
+        // --- Radio: Tesseract (tesseract.on-air.fm) ---
+        // Direct Shoutcast MP3 stream, found via myradiostream.com's own
+        // embed widget (its iframe calls a json.php config endpoint that
+        // hands back this URL) - used directly with a plain <audio>
+        // element rather than injecting myradiostream's own iframe/script
+        // into Torn's page, since that widget's CSS/CSP behavior inside a
+        // foreign page isn't something this script controls, while a bare
+        // <audio src> is just an ordinary cross-origin media fetch (the
+        // stream itself sends Access-Control-Allow-Origin: *). One
+        // instance shared across the whole page rather than recreated on
+        // every click, so pause/resume doesn't restart the stream from
+        // scratch.
+        const RADIO_STREAM_URL = 'https://s12.myradiostream.com:20014/;';
+        let radioAudioEl = null;
+        function getRadioAudioEl() {
+            if (!radioAudioEl) {
+                radioAudioEl = document.createElement('audio');
+                radioAudioEl.preload = 'none';
+                radioAudioEl.src = RADIO_STREAM_URL;
+            }
+            return radioAudioEl;
+        }
+        function isRadioPlaying() {
+            return !!radioAudioEl && !radioAudioEl.paused;
+        }
+        function setRadioBtnState(btn, playing) {
+            btn.innerText = playing ? '⏸️' : '🎵';
+            btn.style.background = playing ? 'rgba(10,11,14,0.95)' : 'rgba(21,23,28,0.9)';
+            btn.style.opacity = playing ? '1' : '0.85';
+        }
+        function toggleRadio(btn) {
+            const audio = getRadioAudioEl();
+            if (audio.paused) {
+                audio.play().catch(() => {});
+            } else {
+                audio.pause();
+            }
+            // Synced via the audio element's own play/pause events (below)
+            // rather than trusting the click branch above - play() is
+            // async and can still be buffering/rejected, so this reflects
+            // what actually happened, not what was requested.
+            audio.onplay = () => setRadioBtnState(btn, true);
+            audio.onpause = () => setRadioBtnState(btn, false);
+            audio.onerror = () => setRadioBtnState(btn, false);
         }
 
         injectSidePanels();
