@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.30
+// @version      2.31
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2287,6 +2287,43 @@
         }
 
         injectSidePanels();
+
+        // --- MODULE: TRAVEL SCREEN OC NAG ---
+        // Warns big and loud if the player's organized crime will become
+        // ready to execute within the time it'd take them to fly to
+        // their farthest destination - a plane ride can't be cut short,
+        // so they'd otherwise only find out it went stale (or someone
+        // else stepped in) after landing. Checked once per Travel-screen
+        // page load (see /api/companion/oc-nag-check, which does the
+        // real work server-side) - Torn does a real page navigation for
+        // every click to a new page, so there's no continuous poll to
+        // stop here and no risk of re-nagging the same visit.
+        if (/sid=travel/.test(window.location.href)) {
+            fetchFromWartorn('oc-nag-check').then(data => {
+                if (!data || !data.nag) return;
+                showOcNagModal(data);
+            }).catch(() => {});
+        }
+        function showOcNagModal(data) {
+            if (document.getElementById('wt-oc-nag-modal')) return;
+            const overlay = document.createElement('div');
+            overlay.id = 'wt-oc-nag-modal';
+            overlay.style.cssText = 'position:fixed; inset:0; z-index:999999999; background:rgba(0,0,0,0.75); display:flex; align-items:center; justify-content:center; padding:20px;';
+            const readyIn = formatHMS(data.secsUntilReady) || 'soon';
+            overlay.innerHTML = `
+                <div style="background:#15171c; border:2px solid #f44336; border-radius:10px; max-width:420px; width:100%; padding:26px; text-align:center; box-shadow:0 8px 40px rgba(0,0,0,0.8); font-family:sans-serif;">
+                    <div style="font-size:2.4em; margin-bottom:8px;">🚨</div>
+                    <div style="color:#f44336; font-weight:bold; font-size:1.4em; margin-bottom:14px;">Don't fly yet!</div>
+                    <div style="color:#ddd; font-size:1em; line-height:1.6; margin-bottom:18px;">
+                        <b>${data.crimeName}</b> will be ready to execute in <b style="color:#00e5ff;">${readyIn}</b> -
+                        that's within the time it'd take to reach your farthest destination. You could land to find it's gone stale, or someone else stepped in while you were in the air.
+                    </div>
+                    <span id="wt-oc-nag-dismiss" style="display:inline-block; background:#252525; border:1px solid #555; color:#fff; padding:9px 24px; border-radius:6px; cursor:pointer; font-weight:bold; font-size:0.95em;">Got it</span>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+            document.getElementById('wt-oc-nag-dismiss').addEventListener('click', () => overlay.remove());
+        }
 
         // --- 6. MODULE: SOUND ALERTS ---
         // Same two alerts the dashboard itself has (Flight Alert, chain
