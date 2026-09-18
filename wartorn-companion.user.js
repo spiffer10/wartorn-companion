@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.27
+// @version      2.29
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1987,6 +1987,46 @@
         // has to go through GM_xmlhttpRequest rather than a page fetch().
         const RADIO_STATS_URL = 'https://s12.myradiostream.com:20014/stats?json=1';
         const RADIO_RESUME_WINDOW_MS = 5 * 60 * 1000;
+        const RADIO_LOCK_RENEW_MS = 10000;
+        // One per script load (so effectively one per tab/page), used to
+        // tell the backend's lock apart from any other tab or device on
+        // the same account trying to claim it at the same time.
+        const radioInstanceId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+        // Cross-tab/cross-device mutex, backed by the server (see
+        // /api/companion/radio/heartbeat - GM storage alone can't see
+        // across separate browsers/devices on the same account, and has
+        // no reach into the pop-out's own page at all). Every place that
+        // actually starts playback - the in-page toggle, auto-resume, and
+        // the pop-out - claims first and refuses to play if denied,
+        // rather than trusting local state alone.
+        function claimRadioLock() {
+            return postToWartorn('radio/heartbeat', { instanceId: radioInstanceId })
+                .then(r => !!(r.data && r.data.ok))
+                .catch(() => true); // a network hiccup shouldn't block solo use
+        }
+        function releaseRadioLock() {
+            postToWartorn('radio/release', { instanceId: radioInstanceId }).catch(() => {});
+        }
+        let radioLockRenewInterval = null;
+        function ensureRadioLockRenewal() {
+            if (radioLockRenewInterval) return;
+            radioLockRenewInterval = setInterval(() => {
+                const stillActive = (radioAudioEl && !radioAudioEl.paused) || isRadioPoppedOut();
+                if (!stillActive) {
+                    clearInterval(radioLockRenewInterval);
+                    radioLockRenewInterval = null;
+                    return;
+                }
+                claimRadioLock().then(granted => {
+                    // Only a real, explicit denial (someone else's fresh
+                    // claim) stops in-page playback here - a dropped
+                    // request already defaults to true above, so this
+                    // only ever fires on a genuine handoff to elsewhere.
+                    if (!granted && radioAudioEl && !radioAudioEl.paused) radioAudioEl.pause();
+                });
+            }, RADIO_LOCK_RENEW_MS);
+        }
 
         let radioAudioEl = null;
         function getRadioAudioEl() {
@@ -2007,6 +2047,7 @@
                     safeGmSet('wt_radio_playing', true);
                     touchRadioHeartbeat();
                     ensureRadioHeartbeat();
+                    ensureRadioLockRenewal();
                 });
                 radioAudioEl.addEventListener('pause', () => {
                     safeGmSet('wt_radio_playing', false);
@@ -2036,7 +2077,12 @@
             const lastActive = safeGmGet('wt_radio_last_active_ts', 0);
             if (!wasPlaying || (Date.now() - lastActive) >= RADIO_RESUME_WINDOW_MS) return;
             const audio = getRadioAudioEl();
-            const tryResume = () => audio.play().catch(() => {});
+            // Claims before resuming, same as every other place that
+            // starts playback - if another tab/device already won the
+            // claim (e.g. it auto-resumed first, or someone's actively
+            // listening there), this one quietly stays paused instead of
+            // doubling up.
+            const tryResume = () => claimRadioLock().then(granted => { if (granted) audio.play().catch(() => {}); });
             tryResume();
             // Browsers can block autoplay on a fresh page load with no
             // gesture yet on THIS specific page - same situation
@@ -2045,6 +2091,55 @@
             // whatever gesture happens first.
             ['click', 'keydown', 'mousedown', 'touchstart'].forEach(evt =>
                 document.addEventListener(evt, tryResume, { once: true, passive: true }));
+        }
+
+        // Pop-out: hands playback off to a real separate window (see
+        // GET /radio-player) for anyone who'd rather have it survive
+        // Torn navigation directly instead of relying on the in-page
+        // player's reconnect-on-reload trick above. Only one of the two
+        // is ever meant to be making sound at a time - opening the
+        // pop-out pauses the in-page element first (which also flips
+        // wt_radio_playing to false via its own pause listener, so a
+        // later Torn page load won't try to auto-resume the in-page
+        // copy and end up with both playing at once).
+        let radioPopoutWin = null;
+        let radioPopoutPoll = null;
+        let radioNpInterval = null;
+        function isRadioPoppedOut() {
+            return !!radioPopoutWin && !radioPopoutWin.closed;
+        }
+        // onStateChange(deniedMsg) - called with a message string if the
+        // claim was refused (nothing opened), or with no argument on a
+        // real state change (opened, or later closed).
+        function openRadioPopout(onStateChange) {
+            if (isRadioPoppedOut()) { radioPopoutWin.focus(); return; }
+            claimRadioLock().then(granted => {
+                if (!granted) {
+                    if (onStateChange) onStateChange('Already playing on another tab/device');
+                    return;
+                }
+                const audio = getRadioAudioEl();
+                // Paused, not released - the claim stays held on this
+                // instance's behalf for as long as the pop-out stays
+                // open (ensureRadioLockRenewal treats isRadioPoppedOut()
+                // as "still active" too), so nothing else can start
+                // playing elsewhere while this window is up.
+                audio.pause();
+                const vol = Math.round(audio.volume * 100);
+                radioPopoutWin = window.open(`${WARTORN_HOST}/radio-player?volume=${vol}`, 'wt_radio_player', 'width=340,height=150,resizable=yes,scrollbars=no');
+                if (radioPopoutWin) radioPopoutWin.focus();
+                ensureRadioLockRenewal();
+                if (onStateChange) onStateChange();
+                if (radioPopoutPoll) clearInterval(radioPopoutPoll);
+                radioPopoutPoll = setInterval(() => {
+                    if (!isRadioPoppedOut()) {
+                        clearInterval(radioPopoutPoll);
+                        radioPopoutPoll = null;
+                        releaseRadioLock();
+                        if (onStateChange) onStateChange();
+                    }
+                }, 1000);
+            });
         }
         function fetchRadioStats(cb) {
             try {
@@ -2067,23 +2162,35 @@
             if (!body) return;
             const audio = getRadioAudioEl();
             const volume = Math.round(audio.volume * 100);
+            const poppedOut = isRadioPoppedOut();
             body.innerHTML = `<div style="display:flex; flex-direction:column; gap:14px; align-items:center; padding:10px 0;">
                 <div id="wt-radio-nowplaying" style="color:#aaa; font-size:0.85em; text-align:center; min-height:1.2em;">Loading…</div>
-                <span id="wt-radio-toggle" style="width:56px; height:56px; border-radius:50%; background:#252525; border:2px solid #00e5ff; display:flex; align-items:center; justify-content:center; font-size:1.6em; cursor:pointer;">${audio.paused ? '▶️' : '⏸️'}</span>
+                <span id="wt-radio-toggle" style="width:56px; height:56px; border-radius:50%; background:#252525; border:2px solid #00e5ff; display:flex; align-items:center; justify-content:center; font-size:1.6em; cursor:pointer; opacity:${poppedOut ? '0.4' : '1'};">${audio.paused ? '▶️' : '⏸️'}</span>
                 <div style="display:flex; align-items:center; gap:8px; width:100%;">
                     <span style="font-size:0.9em;">🔉</span>
                     <input id="wt-radio-volume" type="range" min="0" max="100" value="${volume}" style="flex:1;">
                     <span id="wt-radio-volume-label" style="color:#888; font-size:0.8em; width:32px; text-align:right;">${volume}%</span>
                 </div>
+                <span id="wt-radio-popout" style="color:#00e5ff; font-size:0.8em; cursor:pointer; text-decoration:underline; opacity:0.85;">${poppedOut ? '↗ Playing in pop-out window' : '↗ Pop out'}</span>
             </div>`;
 
             const toggleBtn = document.getElementById('wt-radio-toggle');
             toggleBtn.addEventListener('click', () => {
+                if (isRadioPoppedOut()) return;
                 if (audio.paused) {
                     toggleBtn.innerText = '⏳';
-                    audio.play().catch(() => { toggleBtn.innerText = '▶️'; });
+                    claimRadioLock().then(granted => {
+                        if (!granted) {
+                            toggleBtn.innerText = '▶️';
+                            const npEl = document.getElementById('wt-radio-nowplaying');
+                            if (npEl) npEl.innerText = 'Already playing on another tab/device';
+                            return;
+                        }
+                        audio.play().catch(() => { toggleBtn.innerText = '▶️'; });
+                    });
                 } else {
                     audio.pause();
+                    releaseRadioLock();
                 }
             });
             const volumeSlider = document.getElementById('wt-radio-volume');
@@ -2094,15 +2201,31 @@
                 const label = document.getElementById('wt-radio-volume-label');
                 if (label) label.innerText = v + '%';
             });
+            const popoutBtn = document.getElementById('wt-radio-popout');
+            popoutBtn.addEventListener('click', () => {
+                openRadioPopout((deniedMsg) => {
+                    if (deniedMsg) {
+                        const npEl = document.getElementById('wt-radio-nowplaying');
+                        if (npEl) npEl.innerText = deniedMsg;
+                        return;
+                    }
+                    // Fired both right after opening and again once the
+                    // pop-out window is later closed - re-render is cheap
+                    // here (unlike the ticking case above) since it's only
+                    // ever triggered by an actual state change, not a timer.
+                    renderRadioPanel();
+                });
+            });
 
             // Reflects buffering/playing/paused/error state on the one
             // button in place, rather than a full re-render (this panel
             // is ticking:false specifically so an active drag on the
             // volume slider above never gets wiped out mid-gesture).
-            audio.onwaiting = () => { toggleBtn.innerText = '⏳'; };
-            audio.onplaying = () => { toggleBtn.innerText = '⏸️'; };
-            audio.onpause = () => { toggleBtn.innerText = '▶️'; };
+            audio.onwaiting = () => { if (!isRadioPoppedOut()) toggleBtn.innerText = '⏳'; };
+            audio.onplaying = () => { if (!isRadioPoppedOut()) toggleBtn.innerText = '⏸️'; };
+            audio.onpause = () => { if (!isRadioPoppedOut()) toggleBtn.innerText = '▶️'; };
             audio.onerror = () => {
+                if (isRadioPoppedOut()) return;
                 toggleBtn.innerText = '▶️';
                 const npEl = document.getElementById('wt-radio-nowplaying');
                 if (npEl) npEl.innerText = 'Stream error - try again';
@@ -2110,14 +2233,18 @@
 
             // Self-terminates once the panel closes (its own body node
             // stops existing) rather than needing closeSidePanel() to
-            // know about every panel's own extra timers.
-            let npInterval = null;
+            // know about every panel's own extra timers. Also cleared and
+            // restarted here on every render (not just the first), since
+            // the pop-out toggle re-renders this same open panel in place -
+            // without clearing the old one first, each toggle would stack
+            // another redundant polling interval on top of it.
+            if (radioNpInterval) clearInterval(radioNpInterval);
             function refreshNowPlaying() {
                 const npEl = document.getElementById('wt-radio-nowplaying');
-                if (!npEl) { if (npInterval) clearInterval(npInterval); return; }
+                if (!npEl) { if (radioNpInterval) clearInterval(radioNpInterval); return; }
                 fetchRadioStats((stats) => {
                     const npEl2 = document.getElementById('wt-radio-nowplaying');
-                    if (!npEl2) { if (npInterval) clearInterval(npInterval); return; }
+                    if (!npEl2) { if (radioNpInterval) clearInterval(radioNpInterval); return; }
                     if (stats && stats.songtitle) {
                         npEl2.innerText = '🔴 ' + stats.songtitle;
                     } else if (stats && stats.currentlisteners !== undefined) {
@@ -2128,7 +2255,7 @@
                 });
             }
             refreshNowPlaying();
-            npInterval = setInterval(refreshNowPlaying, 30000);
+            radioNpInterval = setInterval(refreshNowPlaying, 30000);
         }
 
         injectSidePanels();
