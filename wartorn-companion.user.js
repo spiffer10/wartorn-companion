@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.31
+// @version      2.32
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -14,6 +14,7 @@
 // @connect      wartorn.spiffer10.com
 // @connect      api.torn.com
 // @connect      s12.myradiostream.com
+// @connect      itunes.apple.com
 // @downloadURL  https://update.greasyfork.org/scripts/595166/Wartorn%20Companion.user.js
 // @updateURL    https://update.greasyfork.org/scripts/595166/Wartorn%20Companion.meta.js
 // @license MIT
@@ -2184,6 +2185,38 @@
                 });
             } catch (e) { cb(null); }
         }
+        // Cover art via Apple's public iTunes Search API - free, no key,
+        // no rate-limit concern here (nothing to do with Torn/FFScouter's
+        // budgets). songtitle from the stats endpoint comes as
+        // "Artist - Track" (confirmed against this station live) - split
+        // on the first " - " rather than assuming a fixed word count,
+        // since either side can itself contain a hyphen (e.g. a remix
+        // tag). Falls back to searching the whole string as one term if
+        // there's no dash to split on at all.
+        function fetchAlbumArt(songtitle, cb) {
+            const dashIdx = songtitle.indexOf(' - ');
+            const term = dashIdx > 0 ? songtitle.slice(0, dashIdx) + ' ' + songtitle.slice(dashIdx + 3) : songtitle;
+            try {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&media=music&entity=song&limit=1`,
+                    timeout: 8000,
+                    onload: (res) => {
+                        try {
+                            const data = JSON.parse(res.responseText);
+                            const hit = data.results && data.results[0];
+                            // iTunes' own convention: the 100x100 URL always
+                            // ends in exactly "100x100bb.jpg" - swapping the
+                            // digits for a size iTunes also serves gets a
+                            // sharper thumbnail without a second lookup.
+                            cb(hit ? hit.artworkUrl100.replace('100x100bb', '300x300bb') : null);
+                        } catch (e) { cb(null); }
+                    },
+                    onerror: () => cb(null),
+                    ontimeout: () => cb(null)
+                });
+            } catch (e) { cb(null); }
+        }
 
         function renderRadioPanel() {
             const body = document.getElementById('wt-panel-body');
@@ -2192,6 +2225,7 @@
             const volume = Math.round(audio.volume * 100);
             const poppedOut = isRadioPoppedOut();
             body.innerHTML = `<div style="display:flex; flex-direction:column; gap:14px; align-items:center; padding:10px 0;">
+                <div id="wt-radio-art-wrap" style="width:72px; height:72px; border-radius:8px; overflow:hidden; background:#252525; display:flex; align-items:center; justify-content:center; font-size:1.6em; box-shadow:0 2px 10px rgba(0,0,0,0.5);">🎵</div>
                 <div id="wt-radio-nowplaying" style="color:#aaa; font-size:0.85em; text-align:center; min-height:1.2em;">Loading…</div>
                 <span id="wt-radio-toggle" style="width:56px; height:56px; border-radius:50%; background:#252525; border:2px solid #00e5ff; display:flex; align-items:center; justify-content:center; font-size:1.6em; cursor:pointer; opacity:${poppedOut ? '0.4' : '1'};">${audio.paused ? '▶️' : '⏸️'}</span>
                 <div style="display:flex; align-items:center; gap:8px; width:100%;">
@@ -2267,18 +2301,44 @@
             // without clearing the old one first, each toggle would stack
             // another redundant polling interval on top of it.
             if (radioNpInterval) clearInterval(radioNpInterval);
+            // Only re-queries iTunes when the song actually changes, not
+            // on every 30s stats poll - the title is usually unchanged
+            // between polls, and there's no reason to repeat the same
+            // art lookup for a song already showing.
+            let lastArtTitle = null;
+            function setArt(url) {
+                const artWrap = document.getElementById('wt-radio-art-wrap');
+                if (!artWrap) return;
+                artWrap.innerHTML = url ? `<img src="${url}" style="width:100%; height:100%; object-fit:cover;">` : '🎵';
+            }
             function refreshNowPlaying() {
                 const npEl = document.getElementById('wt-radio-nowplaying');
                 if (!npEl) { if (radioNpInterval) clearInterval(radioNpInterval); return; }
                 fetchRadioStats((stats) => {
                     const npEl2 = document.getElementById('wt-radio-nowplaying');
                     if (!npEl2) { if (radioNpInterval) clearInterval(radioNpInterval); return; }
-                    if (stats && stats.songtitle) {
-                        npEl2.innerText = '🔴 ' + stats.songtitle;
+                    const title = stats && stats.songtitle;
+                    if (title) {
+                        npEl2.innerText = '🔴 ' + title;
+                        if (title !== lastArtTitle) {
+                            lastArtTitle = title;
+                            fetchAlbumArt(title, (artUrl) => {
+                                // Bail if the song (or panel) has already
+                                // moved on by the time this resolves -
+                                // an in-flight lookup for the PREVIOUS
+                                // song shouldn't overwrite newer art.
+                                if (lastArtTitle !== title || !document.getElementById('wt-radio-art-wrap')) return;
+                                setArt(artUrl);
+                            });
+                        }
                     } else if (stats && stats.currentlisteners !== undefined) {
                         npEl2.innerText = `🔴 LIVE · ${stats.currentlisteners} listening`;
+                        lastArtTitle = null;
+                        setArt(null);
                     } else {
                         npEl2.innerText = '🔴 LIVE';
+                        lastArtTitle = null;
+                        setArt(null);
                     }
                 });
             }
