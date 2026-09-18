@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.26
+// @version      2.27
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -13,6 +13,7 @@
 // @grant        unsafeWindow
 // @connect      wartorn.spiffer10.com
 // @connect      api.torn.com
+// @connect      s12.myradiostream.com
 // @downloadURL  https://update.greasyfork.org/scripts/595166/Wartorn%20Companion.user.js
 // @updateURL    https://update.greasyfork.org/scripts/595166/Wartorn%20Companion.meta.js
 // @license MIT
@@ -1848,34 +1849,41 @@
             });
 
             // --- Radio: Tesseract (tesseract.on-air.fm) ---
-            // Not a side panel (nothing to render/tick) - opens a
-            // separate popup window that keeps playing across Torn page
-            // navigations (see openRadioPopup() below), same button
-            // styling as the panel buttons above for visual consistency.
-            // Restricted to Tesseract's own faction (53940) for now, per
-            // the user's explicit ask - checked server-side (whoami reads
-            // req.user.factionId from the caller's own authenticated key,
-            // not anything the client could spoof) so it only appears
-            // once that's confirmed, rather than showing then hiding.
+            // Slides open the same way every other panel does (registered
+            // into PANEL_DEFS below, opened via the normal openSidePanel()
+            // path) - same button styling as the panel buttons above for
+            // visual consistency. Restricted to Tesseract's own faction
+            // (53940) for now, per the user's explicit ask - checked
+            // server-side (whoami reads req.user.factionId from the
+            // caller's own authenticated key, not anything the client
+            // could spoof) so it only appears once that's confirmed,
+            // rather than showing then hiding.
             fetchFromWartorn('whoami').then(data => {
                 if (!data || data.factionId !== TESSERACT_FACTION_ID) return;
+                PANEL_DEFS.radio = { icon: '🎵', title: 'Tesseract Radio', render: renderRadioPanel, ticking: false };
                 const radioBtn = document.createElement('div');
                 radioBtn.className = 'wt-side-btn';
+                radioBtn.dataset.key = 'radio';
                 radioBtn.title = 'Tesseract Radio';
                 radioBtn.innerText = '🎵';
                 radioBtn.style.cssText = 'width:34px; height:34px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.1em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
                 radioBtn.addEventListener('mouseenter', () => {
                     radioBtn.style.opacity = '1';
                     radioBtn.style.transform = 'scale(1.05)';
-                    radioBtn.style.background = 'rgba(10,11,14,0.95)';
+                    if (activePanelKey !== 'radio') radioBtn.style.background = 'rgba(10,11,14,0.95)';
                 });
                 radioBtn.addEventListener('mouseleave', () => {
-                    radioBtn.style.opacity = '0.85';
+                    radioBtn.style.opacity = activePanelKey === 'radio' ? '1' : '0.85';
                     radioBtn.style.transform = 'scale(1)';
-                    radioBtn.style.background = 'rgba(21,23,28,0.9)';
+                    if (activePanelKey !== 'radio') radioBtn.style.background = 'rgba(21,23,28,0.9)';
                 });
-                radioBtn.addEventListener('click', () => openRadioPopup());
+                radioBtn.addEventListener('click', () => openSidePanel('radio'));
                 wrap.appendChild(radioBtn);
+
+                // Reconnect automatically on this fresh page load if it was
+                // still playing recently (see maybeAutoResumeRadio below) -
+                // only for Tesseract members, same as the button itself.
+                maybeAutoResumeRadio();
             }).catch(() => {});
 
             const cluster = getOrCreateEdgeCluster();
@@ -1957,21 +1965,170 @@
         }
 
         // --- Radio: Tesseract (tesseract.on-air.fm) ---
-        // Originally an <audio> element injected straight into the Torn
-        // page - but Torn navigates with real page loads, not SPA
-        // routing, so every click to a new page destroyed the script's
-        // whole DOM (audio included) and killed playback. Opening the
-        // stream in its own separate popup window instead fixes that: a
-        // popup is an independent top-level browsing context, so
-        // navigating the main Torn tab afterward doesn't touch it at all
-        // - it keeps playing regardless of where the opener tab goes.
-        // The popup loads a tiny page the backend serves (GET
-        // /radio-player) with a plain <audio autoplay controls>, so
-        // pause/resume/volume live there natively rather than needing to
-        // be mirrored back into this button.
-        function openRadioPopup() {
-            const win = window.open(`${WARTORN_HOST}/radio-player`, 'wt_radio_player', 'width=340,height=130,resizable=yes,scrollbars=no');
-            if (win) win.focus();
+        // A plain <audio> element, same as every other in-page element
+        // here - a real Torn page navigation destroys it just like it
+        // destroys the rest of this script's DOM (Torn does real page
+        // loads, not SPA routing, so a fresh script instance runs on
+        // every click to a new page). Rather than fighting that with a
+        // separate popup window, this leans into it: since it's a LIVE
+        // stream (not a seekable file), reconnecting on the next page's
+        // fresh script instance is imperceptible - a brief buffering gap,
+        // not lost playback position. "Was this playing a moment ago"
+        // persists via GM storage across that reload, so it can
+        // reconnect on its own instead of forcing a re-click every time -
+        // see maybeAutoResumeRadio() and the 5-minute window below.
+        const RADIO_STREAM_URL = 'https://s12.myradiostream.com:20014/;';
+        // Shoutcast's own JSON stats endpoint on the same stream server -
+        // found alongside the stream URL itself. songtitle comes back
+        // empty for this station (looks like it doesn't set per-track
+        // metadata), so "Now Playing" falls back to a live listener
+        // count instead, still real data rather than a static label.
+        // No CORS header on this one (unlike the stream itself), so it
+        // has to go through GM_xmlhttpRequest rather than a page fetch().
+        const RADIO_STATS_URL = 'https://s12.myradiostream.com:20014/stats?json=1';
+        const RADIO_RESUME_WINDOW_MS = 5 * 60 * 1000;
+
+        let radioAudioEl = null;
+        function getRadioAudioEl() {
+            if (!radioAudioEl) {
+                radioAudioEl = document.createElement('audio');
+                radioAudioEl.preload = 'none';
+                radioAudioEl.src = RADIO_STREAM_URL;
+                radioAudioEl.volume = (safeGmGet('wt_radio_volume', 80)) / 100;
+                // wt_radio_playing tracks INTENT (did the user ask for
+                // this to be on), separately from whatever the element's
+                // own .paused happens to be at a given instant (buffering,
+                // a dropped connection, etc. all report as effectively
+                // paused/stalled without the user having asked for that) -
+                // maybeAutoResumeRadio() below only ever reads the
+                // intent flag, so a stream hiccup doesn't cancel the
+                // auto-reconnect on the next page.
+                radioAudioEl.addEventListener('play', () => {
+                    safeGmSet('wt_radio_playing', true);
+                    touchRadioHeartbeat();
+                    ensureRadioHeartbeat();
+                });
+                radioAudioEl.addEventListener('pause', () => {
+                    safeGmSet('wt_radio_playing', false);
+                    touchRadioHeartbeat();
+                });
+            }
+            return radioAudioEl;
+        }
+        function touchRadioHeartbeat() {
+            safeGmSet('wt_radio_last_active_ts', Date.now());
+        }
+        let radioHeartbeatInterval = null;
+        function ensureRadioHeartbeat() {
+            if (radioHeartbeatInterval) return;
+            // Keeps the "still playing" timestamp fresh while audio
+            // actually keeps flowing, so "more than 5 minutes since it
+            // was closed" (the user's own words) measures time since
+            // playback genuinely stopped updating - i.e. the tab/browser
+            // was closed outright - not just time since the last click.
+            radioHeartbeatInterval = setInterval(() => {
+                if (radioAudioEl && !radioAudioEl.paused) touchRadioHeartbeat();
+                else { clearInterval(radioHeartbeatInterval); radioHeartbeatInterval = null; }
+            }, 30000);
+        }
+        function maybeAutoResumeRadio() {
+            const wasPlaying = safeGmGet('wt_radio_playing', false);
+            const lastActive = safeGmGet('wt_radio_last_active_ts', 0);
+            if (!wasPlaying || (Date.now() - lastActive) >= RADIO_RESUME_WINDOW_MS) return;
+            const audio = getRadioAudioEl();
+            const tryResume = () => audio.play().catch(() => {});
+            tryResume();
+            // Browsers can block autoplay on a fresh page load with no
+            // gesture yet on THIS specific page - same situation
+            // unlockAudioContext() already handles for the sound alerts,
+            // so this piggybacks on the identical fallback: resume on
+            // whatever gesture happens first.
+            ['click', 'keydown', 'mousedown', 'touchstart'].forEach(evt =>
+                document.addEventListener(evt, tryResume, { once: true, passive: true }));
+        }
+        function fetchRadioStats(cb) {
+            try {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: RADIO_STATS_URL,
+                    timeout: 8000,
+                    onload: (res) => {
+                        try { cb(JSON.parse(res.responseText)); }
+                        catch (e) { cb(null); }
+                    },
+                    onerror: () => cb(null),
+                    ontimeout: () => cb(null)
+                });
+            } catch (e) { cb(null); }
+        }
+
+        function renderRadioPanel() {
+            const body = document.getElementById('wt-panel-body');
+            if (!body) return;
+            const audio = getRadioAudioEl();
+            const volume = Math.round(audio.volume * 100);
+            body.innerHTML = `<div style="display:flex; flex-direction:column; gap:14px; align-items:center; padding:10px 0;">
+                <div id="wt-radio-nowplaying" style="color:#aaa; font-size:0.85em; text-align:center; min-height:1.2em;">Loading…</div>
+                <span id="wt-radio-toggle" style="width:56px; height:56px; border-radius:50%; background:#252525; border:2px solid #00e5ff; display:flex; align-items:center; justify-content:center; font-size:1.6em; cursor:pointer;">${audio.paused ? '▶️' : '⏸️'}</span>
+                <div style="display:flex; align-items:center; gap:8px; width:100%;">
+                    <span style="font-size:0.9em;">🔉</span>
+                    <input id="wt-radio-volume" type="range" min="0" max="100" value="${volume}" style="flex:1;">
+                    <span id="wt-radio-volume-label" style="color:#888; font-size:0.8em; width:32px; text-align:right;">${volume}%</span>
+                </div>
+            </div>`;
+
+            const toggleBtn = document.getElementById('wt-radio-toggle');
+            toggleBtn.addEventListener('click', () => {
+                if (audio.paused) {
+                    toggleBtn.innerText = '⏳';
+                    audio.play().catch(() => { toggleBtn.innerText = '▶️'; });
+                } else {
+                    audio.pause();
+                }
+            });
+            const volumeSlider = document.getElementById('wt-radio-volume');
+            volumeSlider.addEventListener('input', (e) => {
+                const v = parseInt(e.target.value, 10);
+                audio.volume = v / 100;
+                safeGmSet('wt_radio_volume', v);
+                const label = document.getElementById('wt-radio-volume-label');
+                if (label) label.innerText = v + '%';
+            });
+
+            // Reflects buffering/playing/paused/error state on the one
+            // button in place, rather than a full re-render (this panel
+            // is ticking:false specifically so an active drag on the
+            // volume slider above never gets wiped out mid-gesture).
+            audio.onwaiting = () => { toggleBtn.innerText = '⏳'; };
+            audio.onplaying = () => { toggleBtn.innerText = '⏸️'; };
+            audio.onpause = () => { toggleBtn.innerText = '▶️'; };
+            audio.onerror = () => {
+                toggleBtn.innerText = '▶️';
+                const npEl = document.getElementById('wt-radio-nowplaying');
+                if (npEl) npEl.innerText = 'Stream error - try again';
+            };
+
+            // Self-terminates once the panel closes (its own body node
+            // stops existing) rather than needing closeSidePanel() to
+            // know about every panel's own extra timers.
+            let npInterval = null;
+            function refreshNowPlaying() {
+                const npEl = document.getElementById('wt-radio-nowplaying');
+                if (!npEl) { if (npInterval) clearInterval(npInterval); return; }
+                fetchRadioStats((stats) => {
+                    const npEl2 = document.getElementById('wt-radio-nowplaying');
+                    if (!npEl2) { if (npInterval) clearInterval(npInterval); return; }
+                    if (stats && stats.songtitle) {
+                        npEl2.innerText = '🔴 ' + stats.songtitle;
+                    } else if (stats && stats.currentlisteners !== undefined) {
+                        npEl2.innerText = `🔴 LIVE · ${stats.currentlisteners} listening`;
+                    } else {
+                        npEl2.innerText = '🔴 LIVE';
+                    }
+                });
+            }
+            refreshNowPlaying();
+            npInterval = setInterval(refreshNowPlaying, 30000);
         }
 
         injectSidePanels();
