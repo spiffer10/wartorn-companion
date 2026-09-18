@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.29
+// @version      2.30
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1988,10 +1988,38 @@
         const RADIO_STATS_URL = 'https://s12.myradiostream.com:20014/stats?json=1';
         const RADIO_RESUME_WINDOW_MS = 5 * 60 * 1000;
         const RADIO_LOCK_RENEW_MS = 10000;
-        // One per script load (so effectively one per tab/page), used to
-        // tell the backend's lock apart from any other tab or device on
-        // the same account trying to claim it at the same time.
-        const radioInstanceId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+        // Identifies this TAB to the backend's lock, kept stable across
+        // Torn's own page navigations rather than regenerated on every
+        // script load. Torn navigates with real page loads (a fresh
+        // script instance runs on every click to a new page), so a
+        // brand-new random id here every time made ordinary browsing
+        // look identical to a second tab trying to steal the lock - the
+        // server denies a claim from a DIFFERENT id while the previous
+        // one is still fresh (see /api/companion/radio/heartbeat), and
+        // the previous page's script had no chance to release before its
+        // whole JS context was torn down mid-navigation - so playback
+        // stayed refused until that old claim finally went stale (up to
+        // RADIO_LOCK_STALE_MS server-side). sessionStorage is the fix:
+        // unlike GM storage/localStorage (shared across every tab of this
+        // browser profile), it's scoped to this one tab and survives
+        // same-tab navigation, so a fresh Torn page picks up the SAME id
+        // its previous page already held - a plain renewal, not a
+        // competing claim - while a genuinely separate tab (its own,
+        // empty sessionStorage) still gets its own distinct id and has to
+        // win the claim normally.
+        function getRadioInstanceId() {
+            try {
+                let id = sessionStorage.getItem('wt_radio_instance_id');
+                if (!id) {
+                    id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+                    sessionStorage.setItem('wt_radio_instance_id', id);
+                }
+                return id;
+            } catch (e) {
+                return Math.random().toString(36).slice(2) + Date.now().toString(36);
+            }
+        }
+        const radioInstanceId = getRadioInstanceId();
 
         // Cross-tab/cross-device mutex, backed by the server (see
         // /api/companion/radio/heartbeat - GM storage alone can't see
