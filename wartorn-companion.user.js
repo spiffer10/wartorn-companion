@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.2
+// @version      3.3
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1012,6 +1012,13 @@
                 if (!confirm(`${call.callerName} already called this target - attack anyway?`)) return;
             }
             window.open(`https://www.torn.com/page.php?sid=attack&user2ID=${id}`, 'attack_window', 'width=450,height=750,left=150,top=100,popup=yes,scrollbars=yes');
+            // Fire-and-forget - tells the backend someone's about to attack,
+            // so it briefly (WAR_BURST_WINDOW_MS server-side) allows the
+            // shared war-data cache to go down to 500ms fresh instead of the
+            // usual 4s, right when a target's status is most likely to
+            // actually change. Faction-wide, not just for this viewer - see
+            // getSharedWarData's inBurst.
+            sendToWartorn('attack-burst', {});
         }
         function wireAttackButtons(container) {
             container.querySelectorAll('.wt-attack-btn').forEach(btn => {
