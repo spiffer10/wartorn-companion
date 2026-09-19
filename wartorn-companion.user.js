@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.34
+// @version      2.35
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2066,6 +2066,17 @@
             if (!radioAudioEl) {
                 radioAudioEl = document.createElement('audio');
                 radioAudioEl.preload = 'none';
+                // Needed before the visualizer's Web Audio graph
+                // (createMediaElementSource) can read real frequency
+                // data - without it the stream still plays fine, but the
+                // analyser only ever sees silence (a "tainted" source).
+                // The stream itself already sends Access-Control-Allow-
+                // Origin: *, so this is just asking the browser to
+                // actually expose that CORS-cleared data to JS. Set at
+                // creation, before .src, since applying it after the
+                // element has already started loading doesn't reliably
+                // take effect.
+                radioAudioEl.crossOrigin = 'anonymous';
                 radioAudioEl.src = RADIO_STREAM_URL;
                 radioAudioEl.volume = (safeGmGet('wt_radio_volume', 80)) / 100;
                 // wt_radio_playing tracks INTENT (did the user ask for
@@ -2104,6 +2115,99 @@
                 if (radioAudioEl && !radioAudioEl.paused) touchRadioHeartbeat();
                 else { clearInterval(radioHeartbeatInterval); radioHeartbeatInterval = null; }
             }, 30000);
+        }
+        // --- Visualizer: reads real frequency/waveform data off the
+        // stream itself via the Web Audio API, drawn as an "old school"
+        // background behind the panel (classic spectrum bars, an
+        // oscilloscope-style waveform, or a dot-matrix EQ grid). The
+        // audio element can only ever be wired into a Web Audio graph
+        // ONCE (a second createMediaElementSource call on the same
+        // element throws), so this is set up lazily, once, and reused -
+        // same singleton pattern as radioAudioEl itself.
+        const RADIO_VIZ_STYLES = ['off', 'bars', 'wave', 'dots'];
+        let radioAudioCtx = null;
+        let radioAnalyser = null;
+        function ensureRadioAnalyser() {
+            if (radioAnalyser) return radioAnalyser;
+            try {
+                const audio = getRadioAudioEl();
+                radioAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const source = radioAudioCtx.createMediaElementSource(audio);
+                radioAnalyser = radioAudioCtx.createAnalyser();
+                radioAnalyser.fftSize = 128;
+                // Analyser sits between the element and real output -
+                // skipping this second connect would make the radio
+                // itself go silent the moment the graph is wired up,
+                // since createMediaElementSource reroutes the element's
+                // audio through Web Audio instead of straight to speakers.
+                source.connect(radioAnalyser);
+                radioAnalyser.connect(radioAudioCtx.destination);
+            } catch (e) { radioAnalyser = null; }
+            return radioAnalyser;
+        }
+        function getRadioVizStyleIndex() {
+            return safeGmGet('wt_radio_viz_style', 0);
+        }
+        let radioVizRunning = false;
+        function startRadioViz(canvas) {
+            if (radioVizRunning) return;
+            const analyser = ensureRadioAnalyser();
+            if (!analyser) return;
+            radioVizRunning = true;
+            const bufferLen = analyser.frequencyBinCount;
+            const freqData = new Uint8Array(bufferLen);
+            const timeData = new Uint8Array(bufferLen);
+            const ctx2d = canvas.getContext('2d');
+
+            function draw() {
+                // Self-terminates once the panel (and this exact canvas)
+                // is gone, same pattern as the other radio timers here.
+                if (!document.body.contains(canvas)) { radioVizRunning = false; return; }
+                requestAnimationFrame(draw);
+
+                const styleIdx = getRadioVizStyleIndex();
+                const audio = radioAudioEl;
+                ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+                if (styleIdx === 0 || !audio || audio.paused) return;
+
+                const style = RADIO_VIZ_STYLES[styleIdx];
+                if (style === 'bars') {
+                    analyser.getByteFrequencyData(freqData);
+                    const barW = canvas.width / bufferLen;
+                    for (let i = 0; i < bufferLen; i++) {
+                        const v = freqData[i] / 255;
+                        const h = v * canvas.height;
+                        ctx2d.fillStyle = `hsl(${180 + v * 90}, 85%, 55%)`;
+                        ctx2d.fillRect(i * barW, canvas.height - h, Math.max(1, barW - 1), h);
+                    }
+                } else if (style === 'wave') {
+                    analyser.getByteTimeDomainData(timeData);
+                    ctx2d.strokeStyle = '#00e5ff';
+                    ctx2d.lineWidth = 2;
+                    ctx2d.beginPath();
+                    const sliceW = canvas.width / bufferLen;
+                    for (let i = 0; i < bufferLen; i++) {
+                        const v = (timeData[i] / 128) - 1;
+                        const y = (canvas.height / 2) + v * (canvas.height / 2);
+                        if (i === 0) ctx2d.moveTo(0, y); else ctx2d.lineTo(i * sliceW, y);
+                    }
+                    ctx2d.stroke();
+                } else if (style === 'dots') {
+                    analyser.getByteFrequencyData(freqData);
+                    const cols = 16, rows = 8;
+                    const cw = canvas.width / cols, ch = canvas.height / rows;
+                    for (let c = 0; c < cols; c++) {
+                        const v = freqData[Math.floor(c * bufferLen / cols)] / 255;
+                        const litRows = Math.round(v * rows);
+                        for (let r = 0; r < rows; r++) {
+                            const lit = r >= rows - litRows;
+                            ctx2d.fillStyle = lit ? `hsl(${180 + (r / rows) * 130}, 85%, 55%)` : 'rgba(255,255,255,0.04)';
+                            ctx2d.fillRect(c * cw + 2, r * ch + 2, Math.max(1, cw - 4), Math.max(1, ch - 4));
+                        }
+                    }
+                }
+            }
+            draw();
         }
         function maybeAutoResumeRadio() {
             const wasPlaying = safeGmGet('wt_radio_playing', false);
@@ -2159,7 +2263,12 @@
                 // playing elsewhere while this window is up.
                 audio.pause();
                 const vol = Math.round(audio.volume * 100);
-                radioPopoutWin = window.open(`${WARTORN_HOST}/radio-player?volume=${vol}`, 'wt_radio_player', 'width=340,height=150,resizable=yes,scrollbars=no');
+                // No window-feature string (width/height/etc.) - that's
+                // what tells the browser to open a separate popup window
+                // rather than a normal tab. A bare window.open(url, name)
+                // opens as a tab, and still reuses the same one by name
+                // on a later click instead of opening duplicates.
+                radioPopoutWin = window.open(`${WARTORN_HOST}/radio-player?volume=${vol}`, 'wt_radio_player');
                 if (radioPopoutWin) radioPopoutWin.focus();
                 ensureRadioLockRenewal();
                 if (onStateChange) onStateChange();
@@ -2202,13 +2311,15 @@
                     url: `${WARTORN_HOST}/api/public/radio-art?title=${encodeURIComponent(songtitle)}`,
                     timeout: 8000,
                     onload: (res) => {
-                        try { cb((JSON.parse(res.responseText) || {}).url || null); }
-                        catch (e) { cb(null); }
+                        try {
+                            const data = JSON.parse(res.responseText) || {};
+                            cb({ url: data.url || null, year: data.year || null });
+                        } catch (e) { cb({ url: null, year: null }); }
                     },
-                    onerror: () => cb(null),
-                    ontimeout: () => cb(null)
+                    onerror: () => cb({ url: null, year: null }),
+                    ontimeout: () => cb({ url: null, year: null })
                 });
-            } catch (e) { cb(null); }
+            } catch (e) { cb({ url: null, year: null }); }
         }
 
         // Turns the stream's raw stats payload into a small label/value
@@ -2243,21 +2354,33 @@
             const audio = getRadioAudioEl();
             const volume = Math.round(audio.volume * 100);
             const poppedOut = isRadioPoppedOut();
-            body.innerHTML = `<div style="display:flex; flex-direction:column; gap:12px; padding:10px 0;">
-                <div style="display:flex; gap:12px; align-items:flex-start;">
-                    <div id="wt-radio-art-wrap" style="flex:0 0 100px; width:100px; height:100px; border-radius:8px; overflow:hidden; background:#252525; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 10px rgba(0,0,0,0.5);"><img src="${RADIO_LOGO_URL}" style="width:100%; height:100%; object-fit:cover;"></div>
-                    <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:8px; justify-content:center;">
-                        <div id="wt-radio-nowplaying" style="color:#ccc; font-size:0.85em; min-height:1.2em; line-height:1.4;">Loading…</div>
-                        <span id="wt-radio-toggle" style="align-self:flex-start; width:44px; height:44px; border-radius:50%; background:#252525; border:2px solid #00e5ff; display:flex; align-items:center; justify-content:center; font-size:1.3em; cursor:pointer; opacity:${poppedOut ? '0.4' : '1'};">${audio.paused ? '▶️' : '⏸️'}</span>
+            const vizStyleIdx = getRadioVizStyleIndex();
+            body.innerHTML = `<div style="position:relative; padding:10px 0;">
+                <canvas id="wt-radio-viz" style="position:absolute; inset:0; z-index:0; border-radius:8px; pointer-events:none;"></canvas>
+                <div style="position:relative; z-index:1; display:flex; flex-direction:column; gap:12px;">
+                    <div style="display:flex; gap:12px; align-items:flex-start;">
+                        <div id="wt-radio-art-wrap" style="flex:0 0 100px; width:100px; height:100px; border-radius:8px; overflow:hidden; background:#252525; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 10px rgba(0,0,0,0.5);"><img src="${RADIO_LOGO_URL}" style="width:100%; height:100%; object-fit:cover;"></div>
+                        <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; justify-content:center;">
+                            <div id="wt-radio-title" style="color:#fff; font-weight:bold; font-size:0.85em; line-height:1.3; min-height:1.2em;">Loading…</div>
+                            <div id="wt-radio-artist" style="color:#aaa; font-size:0.8em; line-height:1.3; min-height:1.1em;"></div>
+                            <div id="wt-radio-year" style="color:#666; font-size:0.75em; line-height:1.3; min-height:1.1em;"></div>
+                            <div style="display:flex; gap:6px; margin-top:6px;">
+                                <span id="wt-radio-toggle" style="width:38px; height:38px; border-radius:50%; background:#252525; border:2px solid #00e5ff; display:flex; align-items:center; justify-content:center; font-size:1.1em; cursor:pointer; opacity:${poppedOut ? '0.4' : '1'};">${audio.paused ? '▶️' : '⏸️'}</span>
+                                <span id="wt-radio-info-btn" title="Stream stats" style="width:38px; height:38px; border-radius:50%; background:#252525; border:1px solid #444; display:flex; align-items:center; justify-content:center; font-size:1em; cursor:pointer;">ℹ️</span>
+                                <span id="wt-radio-viz-btn" title="Visualizer: ${RADIO_VIZ_STYLES[vizStyleIdx]}" style="width:38px; height:38px; border-radius:50%; background:#252525; border:1px solid #444; display:flex; align-items:center; justify-content:center; font-size:1em; cursor:pointer;">📊</span>
+                            </div>
+                        </div>
                     </div>
+                    <div style="display:flex; align-items:center; gap:8px; width:100%;">
+                        <span style="font-size:0.9em;">🔉</span>
+                        <input id="wt-radio-volume" type="range" min="0" max="100" value="${volume}" style="flex:1;">
+                        <span id="wt-radio-volume-label" style="color:#888; font-size:0.8em; width:32px; text-align:right;">${volume}%</span>
+                    </div>
+                    <div id="wt-radio-meta-drawer" style="max-height:0; overflow:hidden; transition:max-height 0.25s ease;">
+                        <div id="wt-radio-meta" style="display:grid; grid-template-columns:1fr 1fr; gap:5px 12px; font-size:0.75em; color:#888; border-top:1px solid #2a2a2a; padding-top:10px;"></div>
+                    </div>
+                    <span id="wt-radio-popout" style="color:#00e5ff; font-size:0.8em; cursor:pointer; text-decoration:underline; opacity:0.85; text-align:center;">${poppedOut ? '↗ Playing in a tab' : '↗ Open in a tab'}</span>
                 </div>
-                <div style="display:flex; align-items:center; gap:8px; width:100%;">
-                    <span style="font-size:0.9em;">🔉</span>
-                    <input id="wt-radio-volume" type="range" min="0" max="100" value="${volume}" style="flex:1;">
-                    <span id="wt-radio-volume-label" style="color:#888; font-size:0.8em; width:32px; text-align:right;">${volume}%</span>
-                </div>
-                <div id="wt-radio-meta" style="display:grid; grid-template-columns:1fr 1fr; gap:5px 12px; font-size:0.75em; color:#888; border-top:1px solid #2a2a2a; padding-top:10px;"></div>
-                <span id="wt-radio-popout" style="color:#00e5ff; font-size:0.8em; cursor:pointer; text-decoration:underline; opacity:0.85; text-align:center;">${poppedOut ? '↗ Playing in pop-out window' : '↗ Pop out'}</span>
             </div>`;
 
             const toggleBtn = document.getElementById('wt-radio-toggle');
@@ -2268,8 +2391,8 @@
                     claimRadioLock().then(granted => {
                         if (!granted) {
                             toggleBtn.innerText = '▶️';
-                            const npEl = document.getElementById('wt-radio-nowplaying');
-                            if (npEl) npEl.innerText = 'Already playing on another tab/device';
+                            const titleEl = document.getElementById('wt-radio-title');
+                            if (titleEl) titleEl.innerText = 'Already playing on another tab/device';
                             return;
                         }
                         audio.play().catch(() => { toggleBtn.innerText = '▶️'; });
@@ -2287,12 +2410,46 @@
                 const label = document.getElementById('wt-radio-volume-label');
                 if (label) label.innerText = v + '%';
             });
+
+            // Info button slides the stats grid open/closed from the
+            // bottom - a fixed px height (not "auto"/none) since
+            // max-height only actually animates between two concrete
+            // values, comfortably tall enough for the 5 possible rows.
+            const infoBtn = document.getElementById('wt-radio-info-btn');
+            let metaOpen = false;
+            infoBtn.addEventListener('click', () => {
+                metaOpen = !metaOpen;
+                const drawer = document.getElementById('wt-radio-meta-drawer');
+                if (drawer) drawer.style.maxHeight = metaOpen ? '140px' : '0';
+                infoBtn.style.background = metaOpen ? 'rgba(0,229,255,0.15)' : '#252525';
+            });
+
+            // Visualizer button cycles off -> bars -> wave -> dots -> off.
+            // The canvas is sized here (once, on open) rather than on
+            // every frame - side panels don't resize while open.
+            const vizCanvas = document.getElementById('wt-radio-viz');
+            const vizBtn = document.getElementById('wt-radio-viz-btn');
+            function sizeVizCanvas() {
+                if (!vizCanvas || !vizCanvas.parentElement) return;
+                const rect = vizCanvas.parentElement.getBoundingClientRect();
+                vizCanvas.width = rect.width;
+                vizCanvas.height = rect.height;
+            }
+            sizeVizCanvas();
+            startRadioViz(vizCanvas);
+            vizBtn.addEventListener('click', () => {
+                const next = (getRadioVizStyleIndex() + 1) % RADIO_VIZ_STYLES.length;
+                safeGmSet('wt_radio_viz_style', next);
+                vizBtn.title = 'Visualizer: ' + RADIO_VIZ_STYLES[next];
+                vizBtn.style.background = next === 0 ? '#252525' : 'rgba(0,229,255,0.15)';
+            });
+
             const popoutBtn = document.getElementById('wt-radio-popout');
             popoutBtn.addEventListener('click', () => {
                 openRadioPopout((deniedMsg) => {
                     if (deniedMsg) {
-                        const npEl = document.getElementById('wt-radio-nowplaying');
-                        if (npEl) npEl.innerText = deniedMsg;
+                        const titleEl = document.getElementById('wt-radio-title');
+                        if (titleEl) titleEl.innerText = deniedMsg;
                         return;
                     }
                     // Fired both right after opening and again once the
@@ -2313,8 +2470,8 @@
             audio.onerror = () => {
                 if (isRadioPoppedOut()) return;
                 toggleBtn.innerText = '▶️';
-                const npEl = document.getElementById('wt-radio-nowplaying');
-                if (npEl) npEl.innerText = 'Stream error - try again';
+                const titleEl = document.getElementById('wt-radio-title');
+                if (titleEl) titleEl.innerText = 'Stream error - try again';
             };
 
             // Self-terminates once the panel closes (its own body node
@@ -2328,7 +2485,7 @@
             // Only re-queries iTunes when the song actually changes, not
             // on every 30s stats poll - the title is usually unchanged
             // between polls, and there's no reason to repeat the same
-            // art lookup for a song already showing.
+            // art/year lookup for a song already showing.
             let lastArtTitle = null;
             function setArt(url) {
                 const artWrap = document.getElementById('wt-radio-art-wrap');
@@ -2336,27 +2493,42 @@
                 artWrap.innerHTML = `<img src="${url || RADIO_LOGO_URL}" style="width:100%; height:100%; object-fit:cover;">`;
             }
             function refreshNowPlaying() {
-                const npEl = document.getElementById('wt-radio-nowplaying');
-                if (!npEl) { if (radioNpInterval) clearInterval(radioNpInterval); return; }
+                const titleEl = document.getElementById('wt-radio-title');
+                if (!titleEl) { if (radioNpInterval) clearInterval(radioNpInterval); return; }
                 fetchRadioStats((stats) => {
-                    const npEl2 = document.getElementById('wt-radio-nowplaying');
-                    if (!npEl2) { if (radioNpInterval) clearInterval(radioNpInterval); return; }
-                    const title = stats && stats.songtitle;
-                    if (title) {
-                        npEl2.innerText = '🔴 ' + title;
-                        if (title !== lastArtTitle) {
-                            lastArtTitle = title;
-                            fetchAlbumArt(title, (artUrl) => {
+                    const titleEl2 = document.getElementById('wt-radio-title');
+                    const artistEl = document.getElementById('wt-radio-artist');
+                    const yearEl = document.getElementById('wt-radio-year');
+                    if (!titleEl2) { if (radioNpInterval) clearInterval(radioNpInterval); return; }
+
+                    // songtitle comes as "Artist - Track" - swapped here
+                    // since the ask was title first, artist second.
+                    const raw = stats && stats.songtitle;
+                    const dashIdx = raw ? raw.indexOf(' - ') : -1;
+                    const artist = dashIdx > 0 ? raw.slice(0, dashIdx) : '';
+                    const track = dashIdx > 0 ? raw.slice(dashIdx + 3) : (raw || '');
+
+                    if (track) {
+                        titleEl2.innerText = track;
+                        if (artistEl) artistEl.innerText = artist;
+                        if (yearEl && raw !== lastArtTitle) yearEl.innerText = '';
+                        if (raw !== lastArtTitle) {
+                            lastArtTitle = raw;
+                            fetchAlbumArt(raw, (result) => {
                                 // Bail if the song (or panel) has already
                                 // moved on by the time this resolves -
                                 // an in-flight lookup for the PREVIOUS
-                                // song shouldn't overwrite newer art.
-                                if (lastArtTitle !== title || !document.getElementById('wt-radio-art-wrap')) return;
-                                setArt(artUrl);
+                                // song shouldn't overwrite newer art/year.
+                                if (lastArtTitle !== raw || !document.getElementById('wt-radio-art-wrap')) return;
+                                setArt(result.url);
+                                const yearEl2 = document.getElementById('wt-radio-year');
+                                if (yearEl2) yearEl2.innerText = result.year || '';
                             });
                         }
                     } else {
-                        npEl2.innerText = '🔴 LIVE';
+                        titleEl2.innerText = 'Tesseract Radio';
+                        if (artistEl) artistEl.innerText = '';
+                        if (yearEl) yearEl.innerText = '';
                         if (lastArtTitle !== null) { lastArtTitle = null; setArt(null); }
                     }
 
