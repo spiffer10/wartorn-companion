@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.0
+// @version      3.1
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1790,11 +1790,21 @@
             });
         }
 
+        // Which windows were open persists across Torn's full-page
+        // navigations too, not just each window's own position/size - so
+        // reopening the same set on every fresh load is a deliberate
+        // reversal of this feature's original "always start with nothing
+        // open" behavior, not an oversight.
+        function persistOpenWindowKeys() {
+            safeGmSet('wt_open_windows', Array.from(openWindows.keys()));
+        }
+
         function closePanelWindow(key) {
             stopWindowTick(key);
             const w = openWindows.get(key);
             if (w && w.el) w.el.remove();
             openWindows.delete(key);
+            persistOpenWindowKeys();
             refreshButtonHighlights();
         }
         // Used by the edge-cluster collapse toggle below, which used to
@@ -1946,6 +1956,7 @@
             `;
             document.body.appendChild(win);
             openWindows.set(key, { el: win, tickTimer: null, refreshTimer: null, locked });
+            persistOpenWindowKeys();
 
             const body = document.getElementById('wt-panel-body-' + key);
             body.style.scrollBehavior = 'smooth';
@@ -2000,6 +2011,14 @@
 
         function injectSidePanels() {
             if (document.getElementById('wt-side-buttons')) return;
+
+            // Snapshot once, up front - which windows were open right
+            // before this fresh page load. Reopened below once each key's
+            // button/PANEL_DEFS entry actually exists (immediately for
+            // the synchronous panels, later inside the whoami .then() for
+            // radio, which only registers once faction membership is
+            // confirmed).
+            const keysToReopen = safeGmGet('wt_open_windows', []);
 
             // Webkit scrollbar pseudo-elements can't be set via an inline
             // style attribute - needs a real stylesheet rule. Targets the
@@ -2058,6 +2077,13 @@
                 wrap.appendChild(btn);
             });
 
+            // Reopen whichever of these synchronous panels were open
+            // before this navigation - radio (async, faction-gated) is
+            // handled separately below once its own button exists.
+            keysToReopen.forEach(key => {
+                if (key !== 'radio' && PANEL_DEFS[key]) openPanelWindow(key);
+            });
+
             // --- Radio: Tesseract (tesseract.on-air.fm) ---
             // Slides open the same way every other panel does (registered
             // into PANEL_DEFS below, opened via the normal togglePanelWindow()
@@ -2089,6 +2115,8 @@
                 });
                 radioBtn.addEventListener('click', () => togglePanelWindow('radio'));
                 wrap.appendChild(radioBtn);
+
+                if (keysToReopen.includes('radio')) openPanelWindow('radio');
 
                 // Reconnect automatically on this fresh page load if it was
                 // still playing recently (see maybeAutoResumeRadio below) -
