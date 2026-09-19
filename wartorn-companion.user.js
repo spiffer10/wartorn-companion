@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.43
+// @version      2.44
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2644,6 +2644,15 @@
             audio.onwaiting = () => { if (!isRadioPoppedOut()) toggleBtn.innerText = '⏳'; };
             audio.onplaying = () => { if (!isRadioPoppedOut()) toggleBtn.innerText = '⏸️'; };
             audio.onpause = () => { if (!isRadioPoppedOut()) toggleBtn.innerText = '▶️'; };
+            // 'waiting' (buffering) doesn't always get a matching
+            // 'playing' afterward for a live stream once real data
+            // starts flowing again - leaving the icon stuck on the
+            // hourglass even though audio is genuinely playing fine
+            // underneath. 'timeupdate' only fires while currentTime is
+            // actually advancing, so it's a reliable way to self-correct
+            // a stale icon rather than trusting that one specific event
+            // always shows up.
+            audio.ontimeupdate = () => { if (!isRadioPoppedOut() && !audio.paused) toggleBtn.innerText = '⏸️'; };
             audio.onerror = () => {
                 if (isRadioPoppedOut()) return;
                 toggleBtn.innerText = '▶️';
