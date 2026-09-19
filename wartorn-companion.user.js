@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.40
+// @version      2.41
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2198,7 +2198,7 @@
             // particles to keep moving from wherever they were last
             // frame rather than resetting every tick.
             let plasmaTime = 0;
-            const TUNNEL_COUNT = 90;
+            const TUNNEL_COUNT = 60;
             const tunnelParticles = Array.from({ length: TUNNEL_COUNT }, () => ({
                 angle: Math.random() * Math.PI * 2,
                 dist: Math.random(),
@@ -2216,11 +2216,24 @@
                 return (sum / n) / 255;
             }
 
-            function draw() {
+            // Canvas drawing and audio decoding/output share the same
+            // main thread on a phone, and this was found to visibly
+            // stutter both the visuals AND the audio itself on a real
+            // device (Galaxy S23 Ultra) once running unthrottled at
+            // whatever refresh rate the display panel drives
+            // requestAnimationFrame at (many modern phones are 90-120Hz,
+            // not 60). A background visual effect doesn't need to match
+            // that - capping it to 30fps roughly halves (or more) the
+            // per-second drawing work with no real visual cost.
+            const RADIO_VIZ_FRAME_MS = 1000 / 30;
+            let lastVizDrawTs = 0;
+            function draw(ts) {
                 // Self-terminates once the panel (and this exact canvas)
                 // is gone, same pattern as the other radio timers here.
                 if (!document.body.contains(canvas)) { radioVizRunning = false; return; }
                 requestAnimationFrame(draw);
+                if (ts - lastVizDrawTs < RADIO_VIZ_FRAME_MS) return;
+                lastVizDrawTs = ts;
 
                 const styleIdx = getRadioVizStyleIndex();
                 const audio = radioAudioEl;
@@ -2333,7 +2346,12 @@
                     }
                 }
             }
-            draw();
+            // Always entered via rAF (never called directly) so the very
+            // first invocation already has a real timestamp to compare
+            // against - a bare draw() call would pass ts as undefined,
+            // and undefined - 0 is NaN, which fails every < comparison
+            // afterward and would leave the throttle permanently broken.
+            requestAnimationFrame(draw);
         }
         function maybeAutoResumeRadio() {
             const wasPlaying = safeGmGet('wt_radio_playing', false);
@@ -2555,11 +2573,19 @@
             // every frame - side panels don't resize while open.
             const vizCanvas = document.getElementById('wt-radio-viz');
             const vizBtn = document.getElementById('wt-radio-viz-btn');
+            // Drawn at half resolution and stretched to fill via CSS
+            // (position:absolute; inset:0 already does that regardless
+            // of the canvas's own internal pixel dimensions) - a quarter
+            // of the pixels/cells to touch every frame for a background
+            // effect that's already chunky/retro by design, so the
+            // softer upscale isn't really noticeable. Halves real
+            // drawing work on top of the 30fps cap above.
+            const RADIO_VIZ_RES_SCALE = 0.5;
             function sizeVizCanvas() {
                 if (!vizCanvas || !vizCanvas.parentElement) return;
                 const rect = vizCanvas.parentElement.getBoundingClientRect();
-                vizCanvas.width = rect.width;
-                vizCanvas.height = rect.height;
+                vizCanvas.width = rect.width * RADIO_VIZ_RES_SCALE;
+                vizCanvas.height = rect.height * RADIO_VIZ_RES_SCALE;
             }
             sizeVizCanvas();
             // Deferred until the button is actually clicked for the
