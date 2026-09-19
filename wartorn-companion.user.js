@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.3
+// @version      3.4
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -938,6 +938,12 @@
         // behavior - turning it off is what's new, not the other way
         // around, so nobody who never touches this setting sees a change.
         let beatableOnlyFilter = safeGmGet('wt_beatable_only', true);
+        // Same "Targets Only (Hide stats > effective)" toggle the dashboard
+        // has next to its own base-stat one - caps the beatable filter at
+        // effective_user_stat (temp modifiers applied, e.g. boosters)
+        // instead of the raw base total. Off by default, same as the
+        // dashboard's own default for this specific checkbox.
+        let beatableUseEffective = safeGmGet('wt_beatable_effective', false);
         // FF, Level, and status next to the name/status line in War
         // Targets - FF and Level default OFF (opt-in clutter), status
         // defaults ON since hiding it is the new behavior, not showing it.
@@ -1259,9 +1265,15 @@
                 // whether you could even beat them. Now user-toggleable
                 // (beatableOnlyFilter) instead of always-on, and shared by
                 // both view modes so it also scopes the 2-column enemy side.
-                const effectiveUserStat = data.current_user_stat || 0;
-                const enemyList = (beatableOnlyFilter && effectiveUserStat > 0)
-                    ? data.them.filter(m => m.sort_stat > 0 && m.sort_stat <= effectiveUserStat)
+                // beatableUseEffective swaps the cap to effective_user_stat
+                // (temp modifiers applied) instead of the raw base total -
+                // same "ignore base, use effective" priority as the
+                // dashboard's own pair of checkboxes.
+                const statCap = (beatableUseEffective && data.effective_user_stat > 0)
+                    ? data.effective_user_stat
+                    : (data.current_user_stat || 0);
+                const enemyList = (beatableOnlyFilter && statCap > 0)
+                    ? data.them.filter(m => m.sort_stat > 0 && m.sort_stat <= statCap)
                     : data.them.slice();
                 // Favorites first (matching Chain Targets/the dashboard's own
                 // behavior), then strongest-beatable-first within each group -
@@ -1546,6 +1558,10 @@
                             <input type="checkbox" id="wt-set-beatable" ${beatableOnlyFilter ? 'checked' : ''} style="cursor:pointer;">
                             Beatable targets only
                         </label>
+                        <label style="display:flex; align-items:center; gap:8px; color:#8BC34A; font-size:0.85em; cursor:pointer; padding-left:18px;">
+                            <input type="checkbox" id="wt-set-beatable-eff" ${beatableUseEffective ? 'checked' : ''} style="cursor:pointer;">
+                            ...using effective stats (not base)
+                        </label>
                         <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
                             <input type="checkbox" id="wt-set-showff" ${showFfScore ? 'checked' : ''} style="cursor:pointer;">
                             Show FF score (War Targets)
@@ -1606,6 +1622,10 @@
             document.getElementById('wt-set-beatable').addEventListener('change', (e) => {
                 beatableOnlyFilter = e.target.checked;
                 safeGmSet('wt_beatable_only', beatableOnlyFilter);
+            });
+            document.getElementById('wt-set-beatable-eff').addEventListener('change', (e) => {
+                beatableUseEffective = e.target.checked;
+                safeGmSet('wt_beatable_effective', beatableUseEffective);
             });
             document.getElementById('wt-set-showff').addEventListener('change', (e) => {
                 showFfScore = e.target.checked;
