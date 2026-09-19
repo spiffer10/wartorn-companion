@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.44
+// @version      2.45
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2065,7 +2065,15 @@
         function getRadioAudioEl() {
             if (!radioAudioEl) {
                 radioAudioEl = document.createElement('audio');
-                radioAudioEl.preload = 'none';
+                // 'auto' (not 'none') so the browser starts actually
+                // connecting to/buffering the live stream the moment
+                // this element exists (panel opened, or an auto-resume
+                // attempt), in parallel with the lock-claim network
+                // round trip below - rather than only starting that
+                // connection the instant .play() is finally called,
+                // which is what made the very first sound after opening
+                // the panel take noticeably longer than it needed to.
+                radioAudioEl.preload = 'auto';
                 // Needed before the visualizer's Web Audio graph
                 // (createMediaElementSource) can read real frequency
                 // data - without it the stream still plays fine, but the
