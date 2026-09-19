@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.35
+// @version      2.37
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1990,7 +1990,7 @@
         // where the station's owner uploaded it) - used as the art
         // fallback whenever there's no per-track art (between songs, or
         // iTunes doesn't have a given title).
-        const RADIO_LOGO_URL = 'https://myradiostream.com/station/uploads/logo/9c2556acdff82914d04d06dd8ba0081a38.jpg';
+        const RADIO_LOGO_URL = 'https://myradiostream.com/station/uploads/logo/9c2556acdff82914d47271d04d06dd8ba0081a38.jpg';
         const RADIO_RESUME_WINDOW_MS = 5 * 60 * 1000;
         const RADIO_LOCK_RENEW_MS = 10000;
         // Identifies this TAB to the backend's lock, kept stable across
@@ -2359,7 +2359,7 @@
                 <canvas id="wt-radio-viz" style="position:absolute; inset:0; z-index:0; border-radius:8px; pointer-events:none;"></canvas>
                 <div style="position:relative; z-index:1; display:flex; flex-direction:column; gap:12px;">
                     <div style="display:flex; gap:12px; align-items:flex-start;">
-                        <div id="wt-radio-art-wrap" style="flex:0 0 100px; width:100px; height:100px; border-radius:8px; overflow:hidden; background:#252525; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 10px rgba(0,0,0,0.5);"><img src="${RADIO_LOGO_URL}" style="width:100%; height:100%; object-fit:cover;"></div>
+                        <div id="wt-radio-art-wrap" style="flex:0 0 100px; width:100px; height:100px; border-radius:8px; overflow:hidden; background:#252525; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 10px rgba(0,0,0,0.5);"><img src="${RADIO_LOGO_URL}" style="width:100%; height:100%; object-fit:contain;"></div>
                         <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; justify-content:center;">
                             <div id="wt-radio-title" style="color:#fff; font-weight:bold; font-size:0.85em; line-height:1.3; min-height:1.2em;">Loading…</div>
                             <div id="wt-radio-artist" style="color:#aaa; font-size:0.8em; line-height:1.3; min-height:1.1em;"></div>
@@ -2490,7 +2490,14 @@
             function setArt(url) {
                 const artWrap = document.getElementById('wt-radio-art-wrap');
                 if (!artWrap) return;
-                artWrap.innerHTML = `<img src="${url || RADIO_LOGO_URL}" style="width:100%; height:100%; object-fit:cover;">`;
+                // The logo (used whenever there's no real track art) is a
+                // 400x100 wide banner, not a square icon like real cover
+                // art - cover would crop most of it away/distort it into
+                // this square box, so it gets "contain" (letterboxed,
+                // whole thing visible) while real art keeps "cover" (a
+                // clean full-bleed fill, since those are already ~square).
+                const isLogo = !url;
+                artWrap.innerHTML = `<img src="${url || RADIO_LOGO_URL}" style="width:100%; height:100%; object-fit:${isLogo ? 'contain' : 'cover'};">`;
             }
             function refreshNowPlaying() {
                 const titleEl = document.getElementById('wt-radio-title');
