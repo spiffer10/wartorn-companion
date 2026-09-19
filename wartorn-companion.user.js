@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.37
+// @version      2.39
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2124,7 +2124,7 @@
         // ONCE (a second createMediaElementSource call on the same
         // element throws), so this is set up lazily, once, and reused -
         // same singleton pattern as radioAudioEl itself.
-        const RADIO_VIZ_STYLES = ['off', 'bars', 'wave', 'dots'];
+        const RADIO_VIZ_STYLES = ['off', 'bars', 'wave', 'dots', 'plasma', 'kaleido', 'tunnel'];
         let radioAudioCtx = null;
         let radioAnalyser = null;
         function ensureRadioAnalyser() {
@@ -2142,6 +2142,16 @@
                 // audio through Web Audio instead of straight to speakers.
                 source.connect(radioAnalyser);
                 radioAnalyser.connect(radioAudioCtx.destination);
+                // A fresh AudioContext starts suspended until explicitly
+                // resumed - createMediaElementSource reroutes the audio
+                // element's OWN output through this graph, so a context
+                // stuck suspended silences the radio entirely (the
+                // element itself still reports .paused=false/advancing
+                // currentTime, it's just discarding audio into a
+                // suspended graph). Missing this call was the actual
+                // root cause of the pop-out's "stream never plays, no
+                // error" bug - not a network/CORS block on the stream.
+                if (radioAudioCtx.state === 'suspended') radioAudioCtx.resume();
             } catch (e) { radioAnalyser = null; }
             return radioAnalyser;
         }
@@ -2158,6 +2168,29 @@
             const freqData = new Uint8Array(bufferLen);
             const timeData = new Uint8Array(bufferLen);
             const ctx2d = canvas.getContext('2d');
+
+            // Persisted across frames (not re-created inside draw()) -
+            // plasma needs a running clock, and tunnel needs its
+            // particles to keep moving from wherever they were last
+            // frame rather than resetting every tick.
+            let plasmaTime = 0;
+            const TUNNEL_COUNT = 90;
+            const tunnelParticles = Array.from({ length: TUNNEL_COUNT }, () => ({
+                angle: Math.random() * Math.PI * 2,
+                dist: Math.random(),
+                hue: Math.random() * 360
+            }));
+            function avgEnergy(data) {
+                let sum = 0;
+                for (let i = 0; i < data.length; i++) sum += data[i];
+                return (sum / data.length) / 255;
+            }
+            function bassEnergy(data) {
+                const n = Math.max(1, Math.floor(data.length * 0.12));
+                let sum = 0;
+                for (let i = 0; i < n; i++) sum += data[i];
+                return (sum / n) / 255;
+            }
 
             function draw() {
                 // Self-terminates once the panel (and this exact canvas)
@@ -2204,6 +2237,75 @@
                             ctx2d.fillStyle = lit ? `hsl(${180 + (r / rows) * 130}, 85%, 55%)` : 'rgba(255,255,255,0.04)';
                             ctx2d.fillRect(c * cw + 2, r * ch + 2, Math.max(1, cw - 4), Math.max(1, ch - 4));
                         }
+                    }
+                } else if (style === 'plasma') {
+                    // Classic demoscene-style plasma - a sum of offset sine
+                    // waves mapped to hue, sped up by how loud the stream
+                    // currently is. Drawn on a chunky grid rather than
+                    // per-pixel (a full-res version would be thousands of
+                    // fillRect calls a frame) - the blockiness fits the
+                    // "old school" look anyway rather than fighting it.
+                    analyser.getByteFrequencyData(freqData);
+                    const energy = avgEnergy(freqData);
+                    plasmaTime += 0.02 + energy * 0.06;
+                    const cell = 22;
+                    for (let y = 0; y < canvas.height; y += cell) {
+                        for (let x = 0; x < canvas.width; x += cell) {
+                            const val = Math.sin(x * 0.018 + plasmaTime) +
+                                        Math.sin(y * 0.022 + plasmaTime * 1.3) +
+                                        Math.sin((x + y) * 0.012 + plasmaTime * 0.7) +
+                                        energy * 2.5;
+                            const hue = ((val * 60) + plasmaTime * 25) % 360;
+                            ctx2d.fillStyle = `hsl(${hue < 0 ? hue + 360 : hue}, 85%, ${40 + energy * 20}%)`;
+                            ctx2d.fillRect(x, y, cell, cell);
+                        }
+                    }
+                } else if (style === 'kaleido') {
+                    // A rotating radial burst - one wedge of spectrum bars
+                    // repeated/mirrored around the center, spinning faster
+                    // the louder the stream gets. Same frequency data as
+                    // "bars", just wrapped around a circle instead of laid
+                    // out in a line.
+                    analyser.getByteFrequencyData(freqData);
+                    const energy = avgEnergy(freqData);
+                    plasmaTime += 0.005 + energy * 0.03;
+                    const cx = canvas.width / 2, cy = canvas.height / 2;
+                    const maxR = Math.min(canvas.width, canvas.height) * 0.48;
+                    const spokes = 32;
+                    ctx2d.save();
+                    ctx2d.translate(cx, cy);
+                    ctx2d.rotate(plasmaTime);
+                    for (let i = 0; i < spokes; i++) {
+                        const v = freqData[Math.floor(i * bufferLen / spokes)] / 255;
+                        const len = 20 + v * maxR;
+                        ctx2d.rotate((Math.PI * 2) / spokes);
+                        ctx2d.fillStyle = `hsl(${(i / spokes) * 360}, 85%, 55%)`;
+                        ctx2d.fillRect(0, -6, len, 12);
+                    }
+                    ctx2d.restore();
+                } else if (style === 'tunnel') {
+                    // Warp-speed particle field - each dot crawls outward
+                    // from center every frame and snaps back to the middle
+                    // once it passes the edge, sized up as it "approaches"
+                    // for a rough sense of depth. Speed is tied to bass
+                    // energy specifically (not the whole spectrum) since
+                    // that's usually where a track's actual beat lives.
+                    analyser.getByteFrequencyData(freqData);
+                    const bassNow = bassEnergy(freqData);
+                    const cx = canvas.width / 2, cy = canvas.height / 2;
+                    const maxDist = Math.max(canvas.width, canvas.height) * 0.7;
+                    ctx2d.fillStyle = 'rgba(0,0,0,0.25)';
+                    ctx2d.fillRect(0, 0, canvas.width, canvas.height);
+                    for (const p of tunnelParticles) {
+                        p.dist += (2 + bassNow * 14) * (0.3 + p.dist / maxDist);
+                        if (p.dist > maxDist) { p.dist = 0; p.angle = Math.random() * Math.PI * 2; p.hue = Math.random() * 360; }
+                        const x = cx + Math.cos(p.angle) * p.dist;
+                        const y = cy + Math.sin(p.angle) * p.dist;
+                        const size = 1 + (p.dist / maxDist) * 5;
+                        ctx2d.fillStyle = `hsl(${p.hue}, 85%, 60%)`;
+                        ctx2d.beginPath();
+                        ctx2d.arc(x, y, size, 0, Math.PI * 2);
+                        ctx2d.fill();
                     }
                 }
             }
@@ -2436,12 +2538,21 @@
                 vizCanvas.height = rect.height;
             }
             sizeVizCanvas();
-            startRadioViz(vizCanvas);
+            // Deferred until the button is actually clicked for the
+            // first time, rather than run eagerly on every panel open -
+            // createMediaElementSource (inside ensureRadioAnalyser)
+            // permanently reroutes the radio's own audio output the
+            // moment it's called, which is exactly what put playback at
+            // the mercy of a freshly-created AudioContext's own
+            // suspended-by-default state (see the .resume() call added
+            // above). Nobody who never touches this button should have
+            // their audio graph touched at all.
             vizBtn.addEventListener('click', () => {
                 const next = (getRadioVizStyleIndex() + 1) % RADIO_VIZ_STYLES.length;
                 safeGmSet('wt_radio_viz_style', next);
                 vizBtn.title = 'Visualizer: ' + RADIO_VIZ_STYLES[next];
                 vizBtn.style.background = next === 0 ? '#252525' : 'rgba(0,229,255,0.15)';
+                if (next > 0) startRadioViz(vizCanvas);
             });
 
             const popoutBtn = document.getElementById('wt-radio-popout');
