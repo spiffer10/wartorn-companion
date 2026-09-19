@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.46
+// @version      3.0
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -196,10 +196,10 @@
         // Open panel windows (War Targets/Chain Targets/etc) used to follow
         // a drag of this anchor too, back when there was only ever one of
         // them and it had no independent position of its own. Now that
-        // each window is independently draggable/resizable (see
-        // openPanelWindow/makeWindowDraggableAndResizable further down),
-        // they intentionally stay wherever they were put - only the
-        // viewport-clamping on resize (clampAllWindowPositions, registered
+        // each window is independently draggable (see
+        // openPanelWindow/makeWindowDraggable further down), they
+        // intentionally stay wherever they were put - only the viewport-
+        // clamping on resize (clampAllWindowPositions, registered
         // separately once that module has loaded) still applies to them.
     }
     // Re-clamp (not re-center) on resize, so shrinking the window can't
@@ -271,23 +271,28 @@
         // treats it as a drag once the pointer has actually moved past a
         // small threshold - a real click never crosses that, and the
         // 'click' handler below suppresses navigation for the cases that do.
+        // Pointer Events (not separate mouse/touch handlers) so this works
+        // the same way on a touch device as with a mouse - the previous
+        // mouse-only version couldn't be dragged at all on mobile/TornPDA.
+        link.style.touchAction = 'none';
         let dragging = false;
         let dragMoved = false;
         let dragStartX = 0, dragStartY = 0;
         let dragStartAnchorTop = 0, dragStartAnchorLeft = 0;
         const DRAG_THRESHOLD_PX = 5;
 
-        link.addEventListener('mousedown', (e) => {
-            if (e.button !== 0) return; // left click only
+        link.addEventListener('pointerdown', (e) => {
+            if (e.button !== undefined && e.button !== 0) return; // left click only (touch/pen report button as 0 or -1)
             dragging = true;
             dragMoved = false;
             dragStartX = e.clientX;
             dragStartY = e.clientY;
             dragStartAnchorTop = companionAnchorTop;
             dragStartAnchorLeft = companionAnchorLeft;
+            link.setPointerCapture(e.pointerId);
             e.preventDefault(); // no text-selection/native image-drag ghost
         });
-        document.addEventListener('mousemove', (e) => {
+        link.addEventListener('pointermove', (e) => {
             if (!dragging) return;
             const dx = e.clientX - dragStartX;
             const dy = e.clientY - dragStartY;
@@ -300,7 +305,7 @@
             companionAnchorLeft = dragStartAnchorLeft + dx;
             applyCompanionAnchor();
         });
-        document.addEventListener('mouseup', () => {
+        link.addEventListener('pointerup', () => {
             if (!dragging) return;
             dragging = false;
             link.style.cursor = 'grab';
@@ -943,9 +948,11 @@
         // All settings below live in one place (the ⚙️ Settings panel) -
         // these are just the persisted values, all defaulting to whatever
         // the panel already looked/behaved like before this existed, so
-        // nobody who never opens Settings sees any change.
-        let panelWidthSetting = safeGmGet('wt_panel_width', 360);
-        let panelHeightVhSetting = safeGmGet('wt_panel_height_vh', 70);
+        // nobody who never opens Settings sees any change. Width/height
+        // are no longer settings at all - every window is individually
+        // resizable now (see makeWindowDraggable), so a global default
+        // only matters for a window's very first open (see
+        // getWindowGeometryStyle).
         let fontSizeSetting = safeGmGet('wt_font_size', 14);
         let opacitySetting = safeGmGet('wt_panel_opacity', 0.9);
         let chainFfSetting = safeGmGet('wt_chain_ff', 3.0);
@@ -964,22 +971,25 @@
             // pinned in place instead of scrolling away with the content.
             return `overflow:hidden; border:1px solid #3a3f4b; border-left:3px solid #00e5ff; border-radius:0 6px 6px 0; box-shadow:0 10px 30px rgba(0,0,0,0.8); font-family:sans-serif; color:#ccc;`;
         }
-        // Only for a window with no stored geometry yet (i.e. never
-        // manually dragged/resized) - cascades a fresh window's position a
-        // little further from the anchor cluster per already-open window,
-        // so opening several in a row doesn't stack them in an identical
-        // spot, and uses the Settings width/height sliders as the DEFAULT
-        // size. A window that HAS been manually dragged/resized skips this
-        // entirely and just reuses its saved {top,left,width,height} - see
-        // openPanelWindow.
+        // Default size/position for a window that's never been manually
+        // moved/resized before (see openPanelWindow, which prefers stored
+        // geometry over this once a window has been touched). Width is a
+        // fixed 320px. Height mimics the visual height of the ghost-logo +
+        // button-stack cluster on the left edge (#wt-side-buttons sits
+        // 129px below the logo itself - see the `place('wt-side-buttons',
+        // 129, 1)` call in applyCompanionAnchor - so the cluster's total
+        // height is that 129px offset plus however tall the button stack
+        // itself renders). Falls back to a sane fixed height if the
+        // button stack isn't in the DOM yet for some reason.
         function getWindowGeometryStyle() {
             const cascade = openWindows.size * 30;
             const maxTop = Math.max(0, window.innerHeight - 150);
             const maxLeft = Math.max(0, window.innerWidth - 150);
             const top = Math.min(Math.max(0, companionAnchorTop + cascade), maxTop);
             const left = Math.min(Math.max(0, companionAnchorLeft + 47 + cascade), maxLeft);
-            const width = panelWidthSetting;
-            const height = Math.round(window.innerHeight * panelHeightVhSetting / 100);
+            const width = 320;
+            const buttons = document.getElementById('wt-side-buttons');
+            const height = Math.round(buttons ? (129 + buttons.getBoundingClientRect().height) : 420);
             return { top, left, width, height };
         }
         // Font-size and opacity are the only two Settings sliders that
@@ -1506,8 +1516,6 @@
 
             body.innerHTML = `
                 <div style="display:flex; flex-direction:column; gap:12px;">
-                    ${slider('wt-set-width', 'Panel Width', panelWidthSetting, 280, 520, 10, 'px')}
-                    ${slider('wt-set-height', 'Panel Height', panelHeightVhSetting, 30, 90, 5, 'vh')}
                     ${slider('wt-set-font', 'Font Size', fontSizeSetting, 10, 18, 1, 'px')}
                     ${slider('wt-set-opacity', 'Opacity', Math.round(opacitySetting * 100), 50, 100, 5, '%')}
 
@@ -1556,25 +1564,23 @@
                 </div>
             `;
 
-            // liveApply: width/height now only change the DEFAULT size for
-            // the NEXT freshly-opened window (every already-open window has
-            // its own independent size, and there's no sane single size to
-            // force onto all of them at once) - only font-size/opacity
-            // still apply live to whatever's already on screen.
-            const bindSlider = (id, gmKey, setter, unit, isPercent, liveApply) => {
+            // Width/height no longer have sliders here at all - every
+            // window is individually resizable now (see
+            // makeWindowDraggableAndResizable), so there's no single
+            // global size worth exposing a setting for. Font-size/opacity
+            // still apply live to whatever's already open.
+            const bindSlider = (id, gmKey, setter, unit, isPercent) => {
                 document.getElementById(id).addEventListener('input', (e) => {
                     const raw = parseInt(e.target.value, 10);
                     const stored = isPercent ? raw / 100 : raw;
                     setter(stored);
                     safeGmSet(gmKey, stored);
                     document.getElementById(id + '-val').innerText = raw + unit;
-                    if (liveApply) applyLiveAppearanceToAllWindows();
+                    applyLiveAppearanceToAllWindows();
                 });
             };
-            bindSlider('wt-set-width', 'wt_panel_width', (v) => panelWidthSetting = v, 'px', false, false);
-            bindSlider('wt-set-height', 'wt_panel_height_vh', (v) => panelHeightVhSetting = v, 'vh', false, false);
-            bindSlider('wt-set-font', 'wt_font_size', (v) => fontSizeSetting = v, 'px', false, true);
-            bindSlider('wt-set-opacity', 'wt_panel_opacity', (v) => opacitySetting = v, '%', true, true);
+            bindSlider('wt-set-font', 'wt_font_size', (v) => fontSizeSetting = v, 'px', false);
+            bindSlider('wt-set-opacity', 'wt_panel_opacity', (v) => opacitySetting = v, '%', true);
 
             document.getElementById('wt-set-chainff').addEventListener('change', (e) => {
                 chainFfSetting = parseFloat(e.target.value) || 3.0;
@@ -1830,10 +1836,15 @@
         window.addEventListener('resize', clampAllWindowPositions);
 
         // Pointer Events (not the ghost logo's mouse-only drag, see
-        // injectGhostLogo above) so mouse, touch, and pen all go through
+        // injectGhostLogo above) so mouse, touch, and pen both go through
         // one code path - the companion also runs inside TornPDA's mobile
-        // webview, where real touch dragging/resizing matters.
-        function makeWindowDraggableAndResizable(key, winEl, titlebarEl, resizeHandleEl) {
+        // webview, where real touch dragging matters. Both drag (title
+        // bar) and resize (bottom-right corner handle) persist the full
+        // {top, left, width, height} together, since a resize needs to
+        // remember its new size the same way a drag needs to remember its
+        // new position - see openPanelWindow for how a window with saved
+        // geometry skips the fresh-open default entirely.
+        function makeWindowDraggable(key, winEl, titlebarEl, resizeHandleEl) {
             titlebarEl.style.touchAction = 'none';
             resizeHandleEl.style.touchAction = 'none';
 
@@ -1841,14 +1852,16 @@
                 safeGmSet('wt_window_' + key, {
                     top: parseInt(winEl.style.top, 10) || 0,
                     left: parseInt(winEl.style.left, 10) || 0,
-                    width: parseInt(winEl.style.width, 10) || 0,
-                    height: parseInt(winEl.style.height, 10) || 0
+                    width: parseInt(winEl.style.width, 10) || 320,
+                    height: parseInt(winEl.style.height, 10) || 420
                 });
             };
 
             let dragging = false;
             let dragStartX = 0, dragStartY = 0, dragStartTop = 0, dragStartLeft = 0;
             titlebarEl.addEventListener('pointerdown', (e) => {
+                const w = openWindows.get(key);
+                if (w && w.locked) return;
                 bringWindowToFront(key);
                 dragging = true;
                 dragStartX = e.clientX;
@@ -1869,27 +1882,27 @@
             });
 
             let resizing = false;
-            let resizeStartX = 0, resizeStartY = 0, resizeStartW = 0, resizeStartH = 0;
+            let resizeStartX = 0, resizeStartY = 0, resizeStartWidth = 0, resizeStartHeight = 0;
             resizeHandleEl.addEventListener('pointerdown', (e) => {
+                const w = openWindows.get(key);
+                if (w && w.locked) return;
                 bringWindowToFront(key);
                 resizing = true;
                 resizeStartX = e.clientX;
                 resizeStartY = e.clientY;
-                resizeStartW = parseInt(winEl.style.width, 10) || 0;
-                resizeStartH = parseInt(winEl.style.height, 10) || 0;
+                resizeStartWidth = parseInt(winEl.style.width, 10) || 320;
+                resizeStartHeight = parseInt(winEl.style.height, 10) || 420;
                 resizeHandleEl.setPointerCapture(e.pointerId);
                 e.stopPropagation();
             });
             resizeHandleEl.addEventListener('pointermove', (e) => {
                 if (!resizing) return;
-                winEl.style.width = Math.max(200, resizeStartW + (e.clientX - resizeStartX)) + 'px';
-                winEl.style.height = Math.max(150, resizeStartH + (e.clientY - resizeStartY)) + 'px';
+                winEl.style.width = Math.max(200, resizeStartWidth + (e.clientX - resizeStartX)) + 'px';
+                winEl.style.height = Math.max(150, resizeStartHeight + (e.clientY - resizeStartY)) + 'px';
             });
             resizeHandleEl.addEventListener('pointerup', () => {
                 if (!resizing) return;
                 resizing = false;
-                const w = openWindows.get(key);
-                if (w) w.resized = true;
                 persistGeometry();
             });
         }
@@ -1898,11 +1911,22 @@
             if (openWindows.has(key)) { bringWindowToFront(key); return; }
             const def = PANEL_DEFS[key];
 
-            const saved = safeGmGet('wt_window_' + key, null);
-            const hasSaved = saved && typeof saved.top === 'number' && typeof saved.left === 'number';
-            const geo = hasSaved ? saved : getWindowGeometryStyle();
+            // Full geometry (position AND size) is persisted per window -
+            // once a window's been dragged and/or resized even once, it
+            // keeps that exact geometry on every future reopen instead of
+            // falling back to the fresh-open default.
+            const savedGeo = safeGmGet('wt_window_' + key, null);
+            const hasSavedGeo = savedGeo && typeof savedGeo.top === 'number' && typeof savedGeo.left === 'number';
+            const defaultGeo = getWindowGeometryStyle();
+            const geo = {
+                top: hasSavedGeo ? savedGeo.top : defaultGeo.top,
+                left: hasSavedGeo ? savedGeo.left : defaultGeo.left,
+                width: (hasSavedGeo && typeof savedGeo.width === 'number') ? savedGeo.width : defaultGeo.width,
+                height: (hasSavedGeo && typeof savedGeo.height === 'number') ? savedGeo.height : defaultGeo.height
+            };
             const maxTop = Math.max(0, window.innerHeight - 60);
             const maxLeft = Math.max(0, window.innerWidth - 60);
+            const locked = safeGmGet('wt_window_locked_' + key, false);
 
             const win = document.createElement('div');
             win.id = 'wt-window-' + key;
@@ -1912,13 +1936,16 @@
             win.innerHTML = `
                 <div id="wt-window-titlebar-${key}" style="cursor:move; flex:0 0 auto; display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:#0b0c10; border-bottom:1px solid #333;">
                     <span style="color:#00e5ff; font-weight:bold; font-size:0.9em;">${def.icon} ${def.title}</span>
-                    <span id="wt-window-close-${key}" style="cursor:pointer; color:#888; font-size:1.2em; line-height:1; padding:0 4px;">&times;</span>
+                    <span style="display:flex; align-items:center; gap:8px;">
+                        <span id="wt-window-lock-${key}" title="Lock this window in place" style="cursor:pointer; color:#888; font-size:1em; line-height:1;">${locked ? '🔒' : '🔓'}</span>
+                        <span id="wt-window-close-${key}" style="cursor:pointer; color:#888; font-size:1.2em; line-height:1; padding:0 4px;">&times;</span>
+                    </span>
                 </div>
                 <div id="wt-panel-body-${key}" class="wt-window-body" style="flex:1 1 auto; overflow-y:auto; padding:10px 12px; font-size:0.85em;">Loading...</div>
                 <div id="wt-window-resize-${key}" title="Drag to resize" style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 50%, #3a3f4b 50%); border-radius:0 0 6px 0;"></div>
             `;
             document.body.appendChild(win);
-            openWindows.set(key, { el: win, tickTimer: null, refreshTimer: null, resized: hasSaved });
+            openWindows.set(key, { el: win, tickTimer: null, refreshTimer: null, locked });
 
             const body = document.getElementById('wt-panel-body-' + key);
             body.style.scrollBehavior = 'smooth';
@@ -1948,12 +1975,18 @@
             closeBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
             closeBtn.addEventListener('click', () => closePanelWindow(key));
 
+            const lockBtn = document.getElementById('wt-window-lock-' + key);
+            lockBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+            lockBtn.addEventListener('click', () => {
+                const w = openWindows.get(key);
+                if (!w) return;
+                w.locked = !w.locked;
+                lockBtn.innerText = w.locked ? '🔒' : '🔓';
+                safeGmSet('wt_window_locked_' + key, w.locked);
+            });
+
             win.addEventListener('pointerdown', () => bringWindowToFront(key));
-            makeWindowDraggableAndResizable(
-                key, win,
-                document.getElementById('wt-window-titlebar-' + key),
-                document.getElementById('wt-window-resize-' + key)
-            );
+            makeWindowDraggable(key, win, document.getElementById('wt-window-titlebar-' + key), document.getElementById('wt-window-resize-' + key));
 
             refreshButtonHighlights();
             def.render();
