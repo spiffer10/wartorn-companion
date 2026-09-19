@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.1
+// @version      3.2
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1127,14 +1127,20 @@
             // War status and milestone buildup both genuinely change while
             // a war/chain is active (members come out of hospital, hits get
             // called, votes come in) - force past the 20s client cache
-            // every 15s so these stay live while someone's actually
+            // every 5s so these stay live while someone's actually
             // watching, not just a snapshot from whenever the panel opened.
+            // Matches the backend's own roster/outer-cache TTL, which was
+            // tightened from 20s to 4s for an active war on the same
+            // request (that's one shared cache slot per faction, not one
+            // per viewer, so polling it this often costs nothing extra
+            // against Torn's own rate limit no matter how many people have
+            // this panel open).
             w.refreshTimer = setInterval(() => {
                 if (key !== 'war' && key !== 'milestone') return;
                 delete panelCache[key];
                 if (key === 'war') delete panelCache.targetCalls;
                 PANEL_DEFS[key].render();
-            }, 15000);
+            }, 5000);
         }
 
         async function renderTargetsPanel() {
