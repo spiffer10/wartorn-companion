@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.39
+// @version      2.40
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2127,6 +2127,7 @@
         const RADIO_VIZ_STYLES = ['off', 'bars', 'wave', 'dots', 'plasma', 'kaleido', 'tunnel'];
         let radioAudioCtx = null;
         let radioAnalyser = null;
+        let radioGainNode = null;
         function ensureRadioAnalyser() {
             if (radioAnalyser) return radioAnalyser;
             try {
@@ -2135,13 +2136,24 @@
                 const source = radioAudioCtx.createMediaElementSource(audio);
                 radioAnalyser = radioAudioCtx.createAnalyser();
                 radioAnalyser.fftSize = 128;
-                // Analyser sits between the element and real output -
-                // skipping this second connect would make the radio
-                // itself go silent the moment the graph is wired up,
-                // since createMediaElementSource reroutes the element's
-                // audio through Web Audio instead of straight to speakers.
+                // iOS Safari's HTMLMediaElement.volume setter is a
+                // documented no-op - only the phone's physical volume
+                // buttons actually change output there, audio.volume =
+                // x silently does nothing. A GainNode isn't subject to
+                // that same restriction, so it's the standard workaround
+                // - see setRadioVolume() below, which sets both (the
+                // plain .volume property still works fine everywhere
+                // else, so there's no reason to drop it).
+                radioGainNode = radioAudioCtx.createGain();
+                radioGainNode.gain.value = audio.volume;
+                // Gain sits after the analyser (not before) so the
+                // visualizer keeps reacting to the real signal regardless
+                // of the volume slider's position, rather than the whole
+                // visualization shrinking every time someone turns it
+                // down.
                 source.connect(radioAnalyser);
-                radioAnalyser.connect(radioAudioCtx.destination);
+                radioAnalyser.connect(radioGainNode);
+                radioGainNode.connect(radioAudioCtx.destination);
                 // A fresh AudioContext starts suspended until explicitly
                 // resumed - createMediaElementSource reroutes the audio
                 // element's OWN output through this graph, so a context
@@ -2152,8 +2164,20 @@
                 // root cause of the pop-out's "stream never plays, no
                 // error" bug - not a network/CORS block on the stream.
                 if (radioAudioCtx.state === 'suspended') radioAudioCtx.resume();
-            } catch (e) { radioAnalyser = null; }
+            } catch (e) { radioAnalyser = null; radioGainNode = null; }
             return radioAnalyser;
+        }
+        // v01 is 0-1. Always sets the native property (works everywhere
+        // except iOS, where it's silently ignored) and lazily wires up
+        // the GainNode workaround too (see ensureRadioAnalyser above) -
+        // the volume slider's own 'input' event is itself a real user
+        // gesture, same as the viz button, so it's just as safe a place
+        // to first touch the audio graph.
+        function setRadioVolume(v01) {
+            const audio = getRadioAudioEl();
+            audio.volume = v01;
+            ensureRadioAnalyser();
+            if (radioGainNode) radioGainNode.gain.value = v01;
         }
         function getRadioVizStyleIndex() {
             return safeGmGet('wt_radio_viz_style', 0);
@@ -2507,7 +2531,7 @@
             const volumeSlider = document.getElementById('wt-radio-volume');
             volumeSlider.addEventListener('input', (e) => {
                 const v = parseInt(e.target.value, 10);
-                audio.volume = v / 100;
+                setRadioVolume(v / 100);
                 safeGmSet('wt_radio_volume', v);
                 const label = document.getElementById('wt-radio-volume-label');
                 if (label) label.innerText = v + '%';
