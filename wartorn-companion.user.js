@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.33
+// @version      2.34
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1986,6 +1986,11 @@
         // No CORS header on this one (unlike the stream itself), so it
         // has to go through GM_xmlhttpRequest rather than a page fetch().
         const RADIO_STATS_URL = 'https://s12.myradiostream.com:20014/stats?json=1';
+        // Tesseract's own station logo (hosted on myradiostream.com,
+        // where the station's owner uploaded it) - used as the art
+        // fallback whenever there's no per-track art (between songs, or
+        // iTunes doesn't have a given title).
+        const RADIO_LOGO_URL = 'https://myradiostream.com/station/uploads/logo/9c2556acdff82914d04d06dd8ba0081a38.jpg';
         const RADIO_RESUME_WINDOW_MS = 5 * 60 * 1000;
         const RADIO_LOCK_RENEW_MS = 10000;
         // Identifies this TAB to the backend's lock, kept stable across
@@ -2206,22 +2211,53 @@
             } catch (e) { cb(null); }
         }
 
+        // Turns the stream's raw stats payload into a small label/value
+        // grid - listener counts, quality, and uptime are genuinely
+        // interesting to see live, unlike the more internal fields on
+        // that same payload (streampath, content-type, DNAS version)
+        // which wouldn't mean anything to someone just listening.
+        function formatRadioUptime(secs) {
+            secs = parseInt(secs, 10) || 0;
+            const h = Math.floor(secs / 3600);
+            const m = Math.floor((secs % 3600) / 60);
+            if (h > 0) return `${h}h ${m}m`;
+            return `${m}m`;
+        }
+        function renderRadioMeta(stats) {
+            const rows = [];
+            if (stats.currentlisteners !== undefined) {
+                rows.push(['Listeners', `${stats.currentlisteners}${stats.peaklisteners ? ' (peak ' + stats.peaklisteners + ')' : ''}`]);
+            }
+            if (stats.bitrate) rows.push(['Quality', `${stats.bitrate}kbps${stats.samplerate ? ' · ' + (stats.samplerate / 1000) + 'kHz' : ''}`]);
+            if (stats.servergenre) rows.push(['Genre', stats.servergenre]);
+            if (stats.streamuptime !== undefined) rows.push(['Uptime', formatRadioUptime(stats.streamuptime)]);
+            if (stats.uniquelisteners !== undefined) rows.push(['Unique today', stats.uniquelisteners]);
+            return rows.map(([label, value]) =>
+                `<div>${label}</div><div style="color:#ccc; text-align:right;">${value}</div>`
+            ).join('');
+        }
+
         function renderRadioPanel() {
             const body = document.getElementById('wt-panel-body');
             if (!body) return;
             const audio = getRadioAudioEl();
             const volume = Math.round(audio.volume * 100);
             const poppedOut = isRadioPoppedOut();
-            body.innerHTML = `<div style="display:flex; flex-direction:column; gap:14px; align-items:center; padding:10px 0;">
-                <div id="wt-radio-art-wrap" style="width:72px; height:72px; border-radius:8px; overflow:hidden; background:#252525; display:flex; align-items:center; justify-content:center; font-size:1.6em; box-shadow:0 2px 10px rgba(0,0,0,0.5);">🎵</div>
-                <div id="wt-radio-nowplaying" style="color:#aaa; font-size:0.85em; text-align:center; min-height:1.2em;">Loading…</div>
-                <span id="wt-radio-toggle" style="width:56px; height:56px; border-radius:50%; background:#252525; border:2px solid #00e5ff; display:flex; align-items:center; justify-content:center; font-size:1.6em; cursor:pointer; opacity:${poppedOut ? '0.4' : '1'};">${audio.paused ? '▶️' : '⏸️'}</span>
+            body.innerHTML = `<div style="display:flex; flex-direction:column; gap:12px; padding:10px 0;">
+                <div style="display:flex; gap:12px; align-items:flex-start;">
+                    <div id="wt-radio-art-wrap" style="flex:0 0 100px; width:100px; height:100px; border-radius:8px; overflow:hidden; background:#252525; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 10px rgba(0,0,0,0.5);"><img src="${RADIO_LOGO_URL}" style="width:100%; height:100%; object-fit:cover;"></div>
+                    <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:8px; justify-content:center;">
+                        <div id="wt-radio-nowplaying" style="color:#ccc; font-size:0.85em; min-height:1.2em; line-height:1.4;">Loading…</div>
+                        <span id="wt-radio-toggle" style="align-self:flex-start; width:44px; height:44px; border-radius:50%; background:#252525; border:2px solid #00e5ff; display:flex; align-items:center; justify-content:center; font-size:1.3em; cursor:pointer; opacity:${poppedOut ? '0.4' : '1'};">${audio.paused ? '▶️' : '⏸️'}</span>
+                    </div>
+                </div>
                 <div style="display:flex; align-items:center; gap:8px; width:100%;">
                     <span style="font-size:0.9em;">🔉</span>
                     <input id="wt-radio-volume" type="range" min="0" max="100" value="${volume}" style="flex:1;">
                     <span id="wt-radio-volume-label" style="color:#888; font-size:0.8em; width:32px; text-align:right;">${volume}%</span>
                 </div>
-                <span id="wt-radio-popout" style="color:#00e5ff; font-size:0.8em; cursor:pointer; text-decoration:underline; opacity:0.85;">${poppedOut ? '↗ Playing in pop-out window' : '↗ Pop out'}</span>
+                <div id="wt-radio-meta" style="display:grid; grid-template-columns:1fr 1fr; gap:5px 12px; font-size:0.75em; color:#888; border-top:1px solid #2a2a2a; padding-top:10px;"></div>
+                <span id="wt-radio-popout" style="color:#00e5ff; font-size:0.8em; cursor:pointer; text-decoration:underline; opacity:0.85; text-align:center;">${poppedOut ? '↗ Playing in pop-out window' : '↗ Pop out'}</span>
             </div>`;
 
             const toggleBtn = document.getElementById('wt-radio-toggle');
@@ -2297,7 +2333,7 @@
             function setArt(url) {
                 const artWrap = document.getElementById('wt-radio-art-wrap');
                 if (!artWrap) return;
-                artWrap.innerHTML = url ? `<img src="${url}" style="width:100%; height:100%; object-fit:cover;">` : '🎵';
+                artWrap.innerHTML = `<img src="${url || RADIO_LOGO_URL}" style="width:100%; height:100%; object-fit:cover;">`;
             }
             function refreshNowPlaying() {
                 const npEl = document.getElementById('wt-radio-nowplaying');
@@ -2319,15 +2355,13 @@
                                 setArt(artUrl);
                             });
                         }
-                    } else if (stats && stats.currentlisteners !== undefined) {
-                        npEl2.innerText = `🔴 LIVE · ${stats.currentlisteners} listening`;
-                        lastArtTitle = null;
-                        setArt(null);
                     } else {
                         npEl2.innerText = '🔴 LIVE';
-                        lastArtTitle = null;
-                        setArt(null);
+                        if (lastArtTitle !== null) { lastArtTitle = null; setArt(null); }
                     }
+
+                    const metaEl = document.getElementById('wt-radio-meta');
+                    if (metaEl && stats) metaEl.innerHTML = renderRadioMeta(stats);
                 });
             }
             refreshNowPlaying();
