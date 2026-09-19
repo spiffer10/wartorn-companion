@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.45
+// @version      2.46
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -193,16 +193,14 @@
         place('wt-edge-toggle', -23, 0); // toggle is 24px tall now - keep its bottom edge flush against the logo
         place('wt-link-notice', 140, 1);
         place('wt-link-manual', 195, 1);
-        // Side panel (War Targets/Chain Targets/etc, if one's open right
-        // now) isn't in this scope's element list above since it's built
-        // by the gated panel module further down - reposition it directly
-        // by the same +47px offset getPanelBaseStyle() uses there, so it
-        // follows a live drag instead of staying put until next opened.
-        const panel = document.getElementById('wt-side-panel');
-        if (panel) {
-            panel.style.top = companionAnchorTop + 'px';
-            panel.style.left = (companionAnchorLeft + 47) + 'px';
-        }
+        // Open panel windows (War Targets/Chain Targets/etc) used to follow
+        // a drag of this anchor too, back when there was only ever one of
+        // them and it had no independent position of its own. Now that
+        // each window is independently draggable/resizable (see
+        // openPanelWindow/makeWindowDraggableAndResizable further down),
+        // they intentionally stay wherever they were put - only the
+        // viewport-clamping on resize (clampAllWindowPositions, registered
+        // separately once that module has loaded) still applies to them.
     }
     // Re-clamp (not re-center) on resize, so shrinking the window can't
     // strand a dragged position somewhere off-screen and unreachable.
@@ -772,7 +770,7 @@
         // network latency.
         let serverClockOffsetMs = 0;
         function nowServerMs() { return Date.now() + serverClockOffsetMs; }
-        // War Targets' chain display re-renders every 1s (startPanelTick),
+        // War Targets' chain display re-renders every 1s (startWindowTick),
         // but getPanelData('war', ...) caches its response for 20s -
         // formatDuration(data.chain.timeout) on the raw cached value looked
         // frozen for stretches of ~20s at a time, then jumped, instead of
@@ -955,20 +953,47 @@
         // mid-browsing is worse than them having to turn it on once.
         let flightSoundEnabled = safeGmGet('wt_flight_sound', false);
         let chainSoundEnabled = safeGmGet('wt_chain_sound', false);
-        function getPanelBaseStyle() {
-            // 47px right of the logo's own left edge (56 - 9, the original
-            // hardcoded values before dragging existed) so the panel opens
-            // right next to the button stack wherever it's been dragged to,
-            // instead of always at the default top-left position.
-            return `position:fixed; top:${companionAnchorTop}px; left:${companionAnchorLeft + 47}px; width:${panelWidthSetting}px; max-height:${panelHeightVhSetting}vh; overflow-y:auto; background:rgba(21,23,28,${opacitySetting}); border:1px solid #3a3f4b; border-left:3px solid #00e5ff; border-radius:0 6px 6px 0; box-shadow:0 10px 30px rgba(0,0,0,0.8); z-index:9999998; font-family:sans-serif; color:#ccc; font-size:${fontSizeSetting}px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.15) transparent;`;
+        // Static chrome (border/shadow/font/colors/scrollbar) - identical
+        // for every window, set once at creation and never touched again.
+        // Geometry (top/left/width/height/z-index) is computed separately
+        // per window (see getWindowGeometryStyle below) since each one now
+        // has its own independent position and size instead of sharing one.
+        function getWindowChromeStyle() {
+            // No overflow here - that lives on the inner body div only
+            // (see openPanelWindow's markup), so the title bar stays
+            // pinned in place instead of scrolling away with the content.
+            return `overflow:hidden; border:1px solid #3a3f4b; border-left:3px solid #00e5ff; border-radius:0 6px 6px 0; box-shadow:0 10px 30px rgba(0,0,0,0.8); font-family:sans-serif; color:#ccc;`;
         }
-        // Applies current settings to whichever panel is open right now,
-        // for live feedback while dragging a slider in Settings - a fresh
-        // openSidePanel() call already picks these up via getPanelBaseStyle()
-        // on its own, this is only needed for the panel already on screen.
-        function applyLivePanelStyle() {
-            const p = document.getElementById('wt-side-panel');
-            if (p) p.style.cssText = getPanelBaseStyle();
+        // Only for a window with no stored geometry yet (i.e. never
+        // manually dragged/resized) - cascades a fresh window's position a
+        // little further from the anchor cluster per already-open window,
+        // so opening several in a row doesn't stack them in an identical
+        // spot, and uses the Settings width/height sliders as the DEFAULT
+        // size. A window that HAS been manually dragged/resized skips this
+        // entirely and just reuses its saved {top,left,width,height} - see
+        // openPanelWindow.
+        function getWindowGeometryStyle() {
+            const cascade = openWindows.size * 30;
+            const maxTop = Math.max(0, window.innerHeight - 150);
+            const maxLeft = Math.max(0, window.innerWidth - 150);
+            const top = Math.min(Math.max(0, companionAnchorTop + cascade), maxTop);
+            const left = Math.min(Math.max(0, companionAnchorLeft + 47 + cascade), maxLeft);
+            const width = panelWidthSetting;
+            const height = Math.round(window.innerHeight * panelHeightVhSetting / 100);
+            return { top, left, width, height };
+        }
+        // Font-size and opacity are the only two Settings sliders that
+        // still apply live to windows already on screen - width/height
+        // only change the DEFAULT for the next freshly-opened window (a
+        // manually-resized window keeps its own size regardless), since
+        // there's no sane single width/height to force onto every
+        // independently-sized open window at once.
+        function applyLiveAppearanceToAllWindows() {
+            openWindows.forEach((w) => {
+                if (!w.el) return;
+                w.el.style.background = `rgba(21,23,28,${opacitySetting})`;
+                w.el.style.fontSize = fontSizeSetting + 'px';
+            });
         }
 
         function openAttackPopup(id) {
@@ -1059,40 +1084,51 @@
             </div>`;
         }
 
-        let activePanelKey = null;
-        let panelTickTimer = null;
-        let panelRefreshTimer = null;
+        // Multi-window: every open panel gets its own entry here instead of
+        // there being one single "active" panel - key -> { el, tickTimer,
+        // refreshTimer, resized }. `resized` marks a window the user has
+        // manually dragged/resized, so a later Settings width/height slider
+        // change (which only sets the DEFAULT for a fresh window) leaves it
+        // alone. topZIndex is a shared, ever-increasing counter so clicking
+        // any open window (even one buried behind others) can raise it
+        // above the rest without needing to renumber every other window.
+        const openWindows = new Map();
+        let topZIndex = 9999998;
 
-        function stopPanelTick() {
-            if (panelTickTimer) clearInterval(panelTickTimer);
-            panelTickTimer = null;
-            if (panelRefreshTimer) clearInterval(panelRefreshTimer);
-            panelRefreshTimer = null;
+        function stopWindowTick(key) {
+            const w = openWindows.get(key);
+            if (!w) return;
+            if (w.tickTimer) clearInterval(w.tickTimer);
+            w.tickTimer = null;
+            if (w.refreshTimer) clearInterval(w.refreshTimer);
+            w.refreshTimer = null;
         }
-        function startPanelTick() {
-            stopPanelTick();
+        function startWindowTick(key) {
+            stopWindowTick(key);
+            const w = openWindows.get(key);
+            if (!w) return;
             // Cheap 1s re-render off the already-cached snapshot, purely to
             // keep countdown text (hosp/travel ETA, chain timeout) ticking
             // down smoothly without hitting the backend every second.
-            panelTickTimer = setInterval(() => {
-                if (!activePanelKey) { stopPanelTick(); return; }
-                PANEL_DEFS[activePanelKey].render();
+            w.tickTimer = setInterval(() => {
+                if (!openWindows.has(key)) { return; }
+                PANEL_DEFS[key].render();
             }, 1000);
             // War status and milestone buildup both genuinely change while
             // a war/chain is active (members come out of hospital, hits get
             // called, votes come in) - force past the 20s client cache
             // every 15s so these stay live while someone's actually
             // watching, not just a snapshot from whenever the panel opened.
-            panelRefreshTimer = setInterval(() => {
-                if (activePanelKey !== 'war' && activePanelKey !== 'milestone') return;
-                delete panelCache[activePanelKey];
-                if (activePanelKey === 'war') delete panelCache.targetCalls;
-                PANEL_DEFS[activePanelKey].render();
+            w.refreshTimer = setInterval(() => {
+                if (key !== 'war' && key !== 'milestone') return;
+                delete panelCache[key];
+                if (key === 'war') delete panelCache.targetCalls;
+                PANEL_DEFS[key].render();
             }, 15000);
         }
 
         async function renderTargetsPanel() {
-            const body = document.getElementById('wt-panel-body');
+            const body = document.getElementById('wt-panel-body-targets');
             if (!body) return;
             try {
                 // Exact 3.0 uses the same optimized "respect" preset the
@@ -1104,7 +1140,7 @@
                 const endpoint = ff === 3.0 ? 'targets?limit=30&preset=respect' : `targets?limit=30&minff=${ff}&maxff=${ff}&inactive=1`;
                 const data = await getPanelData('targets_' + ff, endpoint);
                 await refreshCompanionFavorites();
-                if (activePanelKey !== 'targets' || !document.getElementById('wt-panel-body')) return;
+                if (!openWindows.has('targets') || !document.getElementById('wt-panel-body-targets')) return;
                 if (data.error || !data.targets || !data.targets.length) {
                     body.innerHTML = `<div style="color:#888;">${data.error || 'No targets found.'}</div>`;
                     return;
@@ -1134,8 +1170,8 @@
                 }).join('');
                 wireAttackButtons(body);
             } catch (e) {
-                if (activePanelKey === 'targets' && document.getElementById('wt-panel-body')) {
-                    document.getElementById('wt-panel-body').innerHTML = '<div style="color:#f44336;">Failed to load - check your Wartorn key is still valid.</div>';
+                if (openWindows.has('targets') && document.getElementById('wt-panel-body-targets')) {
+                    document.getElementById('wt-panel-body-targets').innerHTML = '<div style="color:#f44336;">Failed to load - check your Wartorn key is still valid.</div>';
                 }
             }
         }
@@ -1174,14 +1210,14 @@
         }
 
         async function renderWarTargetsPanel() {
-            const body = document.getElementById('wt-panel-body');
+            const body = document.getElementById('wt-panel-body-war');
             if (!body) return;
             try {
                 const data = await getPanelData('war', 'war-status');
                 await refreshCompanionFavorites();
-                if (activePanelKey !== 'war' || !document.getElementById('wt-panel-body')) return;
+                if (!openWindows.has('war') || !document.getElementById('wt-panel-body-war')) return;
                 if (data.error || !data.them) {
-                    document.getElementById('wt-panel-body').innerHTML = `<div style="color:#888;">${data.error || 'No active war.'}</div>`;
+                    document.getElementById('wt-panel-body-war').innerHTML = `<div style="color:#888;">${data.error || 'No active war.'}</div>`;
                     return;
                 }
 
@@ -1277,7 +1313,7 @@
                         // underneath, with its own background/border so it
                         // actually reads as "claimed" at a glance instead of
                         // blending into the row. Re-renders every second
-                        // while the panel's open (startPanelTick), so the
+                        // while the panel's open (startWindowTick), so the
                         // countdown ticks down live.
                         return `<div style="display:flex; gap:4px; align-items:stretch;">
                             <div style="display:flex; flex-direction:column; justify-content:center; gap:1px; background:#2a1f0a; border:1px solid #FF9800; border-radius:4px; padding:2px 8px; min-width:0;">
@@ -1379,8 +1415,8 @@
                     contentHtml = rowsHtml || `<div style="color:#888;">${beatableOnlyFilter ? 'No valid targets found under your stats.' : 'No enemy members found.'}</div>`;
                 }
 
-                document.getElementById('wt-panel-body').innerHTML = chainHtml + contentHtml;
-                wireAttackButtons(document.getElementById('wt-panel-body'));
+                document.getElementById('wt-panel-body-war').innerHTML = chainHtml + contentHtml;
+                wireAttackButtons(document.getElementById('wt-panel-body-war'));
                 document.querySelectorAll('.wt-call-target-btn').forEach(btn => {
                     btn.addEventListener('click', () => callTargetCompanion(parseInt(btn.dataset.tid, 10), btn.dataset.tname));
                 });
@@ -1388,8 +1424,8 @@
                     btn.addEventListener('click', () => releaseTargetCompanion(parseInt(btn.dataset.tid, 10)));
                 });
             } catch (e) {
-                if (activePanelKey === 'war' && document.getElementById('wt-panel-body')) {
-                    document.getElementById('wt-panel-body').innerHTML = '<div style="color:#f44336;">Failed to load - check your Wartorn key is still valid.</div>';
+                if (openWindows.has('war') && document.getElementById('wt-panel-body-war')) {
+                    document.getElementById('wt-panel-body-war').innerHTML = '<div style="color:#f44336;">Failed to load - check your Wartorn key is still valid.</div>';
                 }
             }
         }
@@ -1400,13 +1436,13 @@
         // routes, so calling a hit here shows up on the dashboard instantly
         // (well, next ~15s poll) and vice versa.
         async function renderMilestonePanel() {
-            const body = document.getElementById('wt-panel-body');
+            const body = document.getElementById('wt-panel-body-milestone');
             if (!body) return;
             try {
                 const data = await getPanelData('milestone', 'chain-calls');
-                if (activePanelKey !== 'milestone' || !document.getElementById('wt-panel-body')) return;
+                if (!openWindows.has('milestone') || !document.getElementById('wt-panel-body-milestone')) return;
                 if (!data || !data.active) {
-                    document.getElementById('wt-panel-body').innerHTML = '<div style="color:#888;">No chain hit coordination active right now.</div>';
+                    document.getElementById('wt-panel-body-milestone').innerHTML = '<div style="color:#888;">No chain hit coordination active right now.</div>';
                     return;
                 }
 
@@ -1434,7 +1470,7 @@
                     </div>`;
                 });
 
-                document.getElementById('wt-panel-body').innerHTML = html;
+                document.getElementById('wt-panel-body-milestone').innerHTML = html;
                 document.querySelectorAll('.wt-call-btn').forEach(btn => {
                     btn.addEventListener('click', () => callMilestoneHit(parseInt(btn.dataset.hit, 10)));
                 });
@@ -1442,8 +1478,8 @@
                     btn.addEventListener('click', () => voteMilestoneBonus(parseInt(btn.dataset.cid, 10), btn.dataset.cname));
                 });
             } catch (e) {
-                if (activePanelKey === 'milestone' && document.getElementById('wt-panel-body')) {
-                    document.getElementById('wt-panel-body').innerHTML = '<div style="color:#f44336;">Failed to load - check your Wartorn key is still valid.</div>';
+                if (openWindows.has('milestone') && document.getElementById('wt-panel-body-milestone')) {
+                    document.getElementById('wt-panel-body-milestone').innerHTML = '<div style="color:#f44336;">Failed to load - check your Wartorn key is still valid.</div>';
                 }
             }
         }
@@ -1459,7 +1495,7 @@
         }
 
         function renderSettingsPanel() {
-            const body = document.getElementById('wt-panel-body');
+            const body = document.getElementById('wt-panel-body-settings');
             if (!body) return;
 
             const slider = (id, label, value, min, max, step, unit) => `
@@ -1520,20 +1556,25 @@
                 </div>
             `;
 
-            const bindSlider = (id, gmKey, setter, unit, isPercent) => {
+            // liveApply: width/height now only change the DEFAULT size for
+            // the NEXT freshly-opened window (every already-open window has
+            // its own independent size, and there's no sane single size to
+            // force onto all of them at once) - only font-size/opacity
+            // still apply live to whatever's already on screen.
+            const bindSlider = (id, gmKey, setter, unit, isPercent, liveApply) => {
                 document.getElementById(id).addEventListener('input', (e) => {
                     const raw = parseInt(e.target.value, 10);
                     const stored = isPercent ? raw / 100 : raw;
                     setter(stored);
                     safeGmSet(gmKey, stored);
                     document.getElementById(id + '-val').innerText = raw + unit;
-                    applyLivePanelStyle();
+                    if (liveApply) applyLiveAppearanceToAllWindows();
                 });
             };
-            bindSlider('wt-set-width', 'wt_panel_width', (v) => panelWidthSetting = v, 'px', false);
-            bindSlider('wt-set-height', 'wt_panel_height_vh', (v) => panelHeightVhSetting = v, 'vh', false);
-            bindSlider('wt-set-font', 'wt_font_size', (v) => fontSizeSetting = v, 'px', false);
-            bindSlider('wt-set-opacity', 'wt_panel_opacity', (v) => opacitySetting = v, '%', true);
+            bindSlider('wt-set-width', 'wt_panel_width', (v) => panelWidthSetting = v, 'px', false, false);
+            bindSlider('wt-set-height', 'wt_panel_height_vh', (v) => panelHeightVhSetting = v, 'vh', false, false);
+            bindSlider('wt-set-font', 'wt_font_size', (v) => fontSizeSetting = v, 'px', false, true);
+            bindSlider('wt-set-opacity', 'wt_panel_opacity', (v) => opacitySetting = v, '%', true, true);
 
             document.getElementById('wt-set-chainff').addEventListener('change', (e) => {
                 chainFfSetting = parseFloat(e.target.value) || 3.0;
@@ -1605,7 +1646,7 @@
             renderVendettaPanel();
         }
         async function renderVendettaPanel() {
-            const body = document.getElementById('wt-panel-body');
+            const body = document.getElementById('wt-panel-body-vendetta');
             if (!body) return;
             const addFormHtml = `<div style="display:flex; gap:4px; margin-bottom:10px;">
                 <input id="wt-vendetta-add-input" type="text" placeholder="Player ID or profile link" style="flex:1; min-width:0; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 8px; border-radius:4px; font-size:0.85em;">
@@ -1619,7 +1660,7 @@
             };
             try {
                 const data = await getPanelData('vendetta', 'vendettas');
-                if (activePanelKey !== 'vendetta' || !document.getElementById('wt-panel-body')) return;
+                if (!openWindows.has('vendetta') || !document.getElementById('wt-panel-body-vendetta')) return;
                 const vendettas = (data && data.vendettas) || [];
                 if (!vendettas.length) {
                     body.innerHTML = addFormHtml + '<div style="color:#888;">No vendetta targets saved yet.</div>';
@@ -1645,8 +1686,8 @@
                     btn.addEventListener('click', () => deleteVendettaCompanion(btn.dataset.tid));
                 });
             } catch (e) {
-                if (activePanelKey === 'vendetta' && document.getElementById('wt-panel-body')) {
-                    document.getElementById('wt-panel-body').innerHTML = addFormHtml + '<div style="color:#f44336;">Failed to load - check your Wartorn key is still valid.</div>';
+                if (openWindows.has('vendetta') && document.getElementById('wt-panel-body-vendetta')) {
+                    document.getElementById('wt-panel-body-vendetta').innerHTML = addFormHtml + '<div style="color:#f44336;">Failed to load - check your Wartorn key is still valid.</div>';
                     wireAddForm();
                 }
             }
@@ -1663,14 +1704,14 @@
             safeGmSet('wt_timer_target_ms', customTimerTargetMs);
             safeGmSet('wt_timer_label', customTimerLabel);
             unlockAudioContext();
-            if (activePanelKey === 'timer') renderTimerPanel();
+            if (openWindows.has('timer')) renderTimerPanel();
         }
         function cancelCustomTimer() {
             customTimerTargetMs = null;
             customTimerLabel = '';
             safeGmSet('wt_timer_target_ms', null);
             safeGmSet('wt_timer_label', '');
-            if (activePanelKey === 'timer') renderTimerPanel();
+            if (openWindows.has('timer')) renderTimerPanel();
         }
         // A small floating notice for when the timer fires while its panel
         // isn't even open - the sound alone is easy to miss/misattribute if
@@ -1683,7 +1724,7 @@
             setTimeout(() => toast.remove(), 8000);
         }
         function renderTimerPanel() {
-            const body = document.getElementById('wt-panel-body');
+            const body = document.getElementById('wt-panel-body-timer');
             if (!body) return;
             if (customTimerTargetMs !== null && Date.now() < customTimerTargetMs) {
                 const remainingSecs = Math.ceil((customTimerTargetMs - Date.now()) / 1000);
@@ -1727,40 +1768,160 @@
             milestone: { icon: '🔥', title: 'Chain Hits', render: renderMilestonePanel, ticking: true },
             vendetta: { icon: '🔪', title: 'Vendettas', render: renderVendettaPanel, ticking: false },
             // Not ticking: the setup form (label/h/m/s inputs) would get
-            // wiped out and reset every second by the shared panelTickTimer
-            // re-render while someone's still typing into it. The live
+            // wiped out and reset every second by that window's own tick
+            // timer (startWindowTick) while someone's still typing into it. The live
             // countdown display (once a timer is actually running) instead
             // gets its own dedicated 1s redraw below, well past PANEL_DEFS.
             timer: { icon: '⏰', title: 'Custom Timer', render: renderTimerPanel, ticking: false },
             settings: { icon: '⚙️', title: 'Settings', render: renderSettingsPanel, ticking: false }
         };
 
-        function closeSidePanel() {
-            stopPanelTick();
-            const p = document.getElementById('wt-side-panel');
-            if (p) p.remove();
-            document.querySelectorAll('.wt-side-btn').forEach(b => { b.style.background = 'rgba(21,23,28,0.9)'; b.style.opacity = '0.85'; });
-            activePanelKey = null;
+        function refreshButtonHighlights() {
+            document.querySelectorAll('.wt-side-btn').forEach(b => {
+                const isOpen = openWindows.has(b.dataset.key);
+                b.style.background = isOpen ? 'rgba(10,11,14,0.95)' : 'rgba(21,23,28,0.9)';
+                b.style.opacity = isOpen ? '1' : '0.85';
+            });
         }
 
-        function openSidePanel(key) {
-            if (activePanelKey === key) { closeSidePanel(); return; }
-            closeSidePanel();
-            activePanelKey = key;
+        function closePanelWindow(key) {
+            stopWindowTick(key);
+            const w = openWindows.get(key);
+            if (w && w.el) w.el.remove();
+            openWindows.delete(key);
+            refreshButtonHighlights();
+        }
+        // Used by the edge-cluster collapse toggle below, which used to
+        // close the one single panel - now needs to close every open
+        // window, not just one.
+        function closeAllPanelWindows() {
+            Array.from(openWindows.keys()).forEach(closePanelWindow);
+        }
+
+        // Bumps a shared, ever-increasing counter so clicking any open
+        // window (even one buried behind others) raises it above the rest
+        // without needing to renumber every other window's z-index.
+        function bringWindowToFront(key) {
+            const w = openWindows.get(key);
+            if (!w || !w.el) return;
+            topZIndex += 1;
+            w.el.style.zIndex = topZIndex;
+        }
+
+        // Re-clamp (not re-center) every open window on resize, same
+        // reasoning as clampCompanionAnchor's own resize handling above -
+        // shrinking the browser window can't strand a dragged window
+        // somewhere off-screen and unreachable. Registered here (not
+        // folded into applyCompanionAnchor itself) since openWindows only
+        // exists once this module has loaded, well after
+        // applyCompanionAnchor's own resize listener is already wired up
+        // near the top of the script.
+        function clampAllWindowPositions() {
+            const maxTop = Math.max(0, window.innerHeight - 60);
+            const maxLeft = Math.max(0, window.innerWidth - 60);
+            openWindows.forEach((w) => {
+                if (!w.el) return;
+                const top = parseInt(w.el.style.top, 10) || 0;
+                const left = parseInt(w.el.style.left, 10) || 0;
+                w.el.style.top = Math.min(Math.max(0, top), maxTop) + 'px';
+                w.el.style.left = Math.min(Math.max(0, left), maxLeft) + 'px';
+            });
+        }
+        window.addEventListener('resize', clampAllWindowPositions);
+
+        // Pointer Events (not the ghost logo's mouse-only drag, see
+        // injectGhostLogo above) so mouse, touch, and pen all go through
+        // one code path - the companion also runs inside TornPDA's mobile
+        // webview, where real touch dragging/resizing matters.
+        function makeWindowDraggableAndResizable(key, winEl, titlebarEl, resizeHandleEl) {
+            titlebarEl.style.touchAction = 'none';
+            resizeHandleEl.style.touchAction = 'none';
+
+            const persistGeometry = () => {
+                safeGmSet('wt_window_' + key, {
+                    top: parseInt(winEl.style.top, 10) || 0,
+                    left: parseInt(winEl.style.left, 10) || 0,
+                    width: parseInt(winEl.style.width, 10) || 0,
+                    height: parseInt(winEl.style.height, 10) || 0
+                });
+            };
+
+            let dragging = false;
+            let dragStartX = 0, dragStartY = 0, dragStartTop = 0, dragStartLeft = 0;
+            titlebarEl.addEventListener('pointerdown', (e) => {
+                bringWindowToFront(key);
+                dragging = true;
+                dragStartX = e.clientX;
+                dragStartY = e.clientY;
+                dragStartTop = parseInt(winEl.style.top, 10) || 0;
+                dragStartLeft = parseInt(winEl.style.left, 10) || 0;
+                titlebarEl.setPointerCapture(e.pointerId);
+            });
+            titlebarEl.addEventListener('pointermove', (e) => {
+                if (!dragging) return;
+                winEl.style.top = (dragStartTop + (e.clientY - dragStartY)) + 'px';
+                winEl.style.left = (dragStartLeft + (e.clientX - dragStartX)) + 'px';
+            });
+            titlebarEl.addEventListener('pointerup', () => {
+                if (!dragging) return;
+                dragging = false;
+                persistGeometry();
+            });
+
+            let resizing = false;
+            let resizeStartX = 0, resizeStartY = 0, resizeStartW = 0, resizeStartH = 0;
+            resizeHandleEl.addEventListener('pointerdown', (e) => {
+                bringWindowToFront(key);
+                resizing = true;
+                resizeStartX = e.clientX;
+                resizeStartY = e.clientY;
+                resizeStartW = parseInt(winEl.style.width, 10) || 0;
+                resizeStartH = parseInt(winEl.style.height, 10) || 0;
+                resizeHandleEl.setPointerCapture(e.pointerId);
+                e.stopPropagation();
+            });
+            resizeHandleEl.addEventListener('pointermove', (e) => {
+                if (!resizing) return;
+                winEl.style.width = Math.max(200, resizeStartW + (e.clientX - resizeStartX)) + 'px';
+                winEl.style.height = Math.max(150, resizeStartH + (e.clientY - resizeStartY)) + 'px';
+            });
+            resizeHandleEl.addEventListener('pointerup', () => {
+                if (!resizing) return;
+                resizing = false;
+                const w = openWindows.get(key);
+                if (w) w.resized = true;
+                persistGeometry();
+            });
+        }
+
+        function openPanelWindow(key) {
+            if (openWindows.has(key)) { bringWindowToFront(key); return; }
             const def = PANEL_DEFS[key];
 
-            const panel = document.createElement('div');
-            panel.id = 'wt-side-panel';
-            panel.style.cssText = getPanelBaseStyle();
-            panel.innerHTML = `
-                <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:#0b0c10; border-bottom:1px solid #333;">
+            const saved = safeGmGet('wt_window_' + key, null);
+            const hasSaved = saved && typeof saved.top === 'number' && typeof saved.left === 'number';
+            const geo = hasSaved ? saved : getWindowGeometryStyle();
+            const maxTop = Math.max(0, window.innerHeight - 60);
+            const maxLeft = Math.max(0, window.innerWidth - 60);
+
+            const win = document.createElement('div');
+            win.id = 'wt-window-' + key;
+            win.className = 'wt-window';
+            topZIndex += 1;
+            win.style.cssText = `position:fixed; display:flex; flex-direction:column; top:${Math.min(Math.max(0, geo.top), maxTop)}px; left:${Math.min(Math.max(0, geo.left), maxLeft)}px; width:${geo.width}px; height:${geo.height}px; z-index:${topZIndex}; background:rgba(21,23,28,${opacitySetting}); font-size:${fontSizeSetting}px; ${getWindowChromeStyle()}`;
+            win.innerHTML = `
+                <div id="wt-window-titlebar-${key}" style="cursor:move; flex:0 0 auto; display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:#0b0c10; border-bottom:1px solid #333;">
                     <span style="color:#00e5ff; font-weight:bold; font-size:0.9em;">${def.icon} ${def.title}</span>
-                    <span id="wt-panel-close" style="cursor:pointer; color:#888; font-size:1.2em; line-height:1; padding:0 4px;">&times;</span>
+                    <span id="wt-window-close-${key}" style="cursor:pointer; color:#888; font-size:1.2em; line-height:1; padding:0 4px;">&times;</span>
                 </div>
-                <div id="wt-panel-body" style="padding:10px 12px; font-size:0.85em;">Loading...</div>
+                <div id="wt-panel-body-${key}" class="wt-window-body" style="flex:1 1 auto; overflow-y:auto; padding:10px 12px; font-size:0.85em;">Loading...</div>
+                <div id="wt-window-resize-${key}" title="Drag to resize" style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 50%, #3a3f4b 50%); border-radius:0 0 6px 0;"></div>
             `;
-            document.body.appendChild(panel);
-            panel.style.scrollBehavior = 'smooth';
+            document.body.appendChild(win);
+            openWindows.set(key, { el: win, tickTimer: null, refreshTimer: null, resized: hasSaved });
+
+            const body = document.getElementById('wt-panel-body-' + key);
+            body.style.scrollBehavior = 'smooth';
             // Manually drive scrolling and stop the wheel event from
             // bubbling - Torn's own page can otherwise swallow/intercept
             // wheel events before the browser's native overflow-y:auto
@@ -1774,19 +1935,34 @@
             // handles a burst of wheel events (extending the animation
             // instead of restarting it) far more reliably than a hand-timed
             // easing loop would.
-            panel.addEventListener('wheel', (e) => {
+            body.addEventListener('wheel', (e) => {
                 e.stopPropagation();
-                panel.scrollBy({ top: e.deltaY, behavior: 'smooth' });
+                body.scrollBy({ top: e.deltaY, behavior: 'smooth' });
             }, { passive: true });
-            document.getElementById('wt-panel-close').addEventListener('click', closeSidePanel);
-            document.querySelectorAll('.wt-side-btn').forEach(b => {
-                const isActive = b.dataset.key === key;
-                b.style.background = isActive ? 'rgba(10,11,14,0.95)' : 'rgba(21,23,28,0.9)';
-                b.style.opacity = isActive ? '1' : '0.85';
-            });
 
+            const closeBtn = document.getElementById('wt-window-close-' + key);
+            // Stops the close click from also being seen as the start of a
+            // drag by the title bar's own pointerdown listener right below
+            // it (pointerdown bubbles from this button up through its
+            // parent title bar, same as any other nested element's click).
+            closeBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+            closeBtn.addEventListener('click', () => closePanelWindow(key));
+
+            win.addEventListener('pointerdown', () => bringWindowToFront(key));
+            makeWindowDraggableAndResizable(
+                key, win,
+                document.getElementById('wt-window-titlebar-' + key),
+                document.getElementById('wt-window-resize-' + key)
+            );
+
+            refreshButtonHighlights();
             def.render();
-            if (def.ticking) startPanelTick();
+            if (def.ticking) startWindowTick(key);
+        }
+
+        function togglePanelWindow(key) {
+            if (openWindows.has(key)) closePanelWindow(key);
+            else openPanelWindow(key);
         }
 
         function injectSidePanels() {
@@ -1794,15 +1970,16 @@
 
             // Webkit scrollbar pseudo-elements can't be set via an inline
             // style attribute - needs a real stylesheet rule. Targets the
-            // panel by ID, so this one-time injection covers every future
-            // #wt-side-panel even though it's fully destroyed and recreated
-            // on each open/close.
+            // shared .wt-window class (every window, not one ID) so this
+            // one-time injection covers every window opened for the rest
+            // of this page's lifetime, however many are ever created.
             const scrollbarStyle = document.createElement('style');
             scrollbarStyle.textContent = `
-                #wt-side-panel::-webkit-scrollbar { width: 6px; }
-                #wt-side-panel::-webkit-scrollbar-track { background: transparent; }
-                #wt-side-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
-                #wt-side-panel::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
+                .wt-window-body { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.15) transparent; }
+                .wt-window-body::-webkit-scrollbar { width: 6px; }
+                .wt-window-body::-webkit-scrollbar-track { background: transparent; }
+                .wt-window-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+                .wt-window-body::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
                 @keyframes wt-danger-pulse {
                     0%, 100% { filter: drop-shadow(0 0 3px rgba(244,67,54,0.9)) drop-shadow(0 0 2px rgba(244,67,54,0.9)); }
                     50% { filter: drop-shadow(0 0 16px rgba(244,67,54,1)) drop-shadow(0 0 8px rgba(244,67,54,1)); }
@@ -1837,20 +2014,20 @@
                 btn.addEventListener('mouseenter', () => {
                     btn.style.opacity = '1';
                     btn.style.transform = 'scale(1.05)';
-                    if (activePanelKey !== key) btn.style.background = 'rgba(10,11,14,0.95)';
+                    if (!openWindows.has(key)) btn.style.background = 'rgba(10,11,14,0.95)';
                 });
                 btn.addEventListener('mouseleave', () => {
-                    btn.style.opacity = activePanelKey === key ? '1' : '0.85';
+                    btn.style.opacity = openWindows.has(key) ? '1' : '0.85';
                     btn.style.transform = 'scale(1)';
-                    if (activePanelKey !== key) btn.style.background = 'rgba(21,23,28,0.9)';
+                    if (!openWindows.has(key)) btn.style.background = 'rgba(21,23,28,0.9)';
                 });
-                btn.addEventListener('click', () => openSidePanel(key));
+                btn.addEventListener('click', () => togglePanelWindow(key));
                 wrap.appendChild(btn);
             });
 
             // --- Radio: Tesseract (tesseract.on-air.fm) ---
             // Slides open the same way every other panel does (registered
-            // into PANEL_DEFS below, opened via the normal openSidePanel()
+            // into PANEL_DEFS below, opened via the normal togglePanelWindow()
             // path) - same button styling as the panel buttons above for
             // visual consistency. Restricted to Tesseract's own faction
             // (53940) for now, per the user's explicit ask - checked
@@ -1870,14 +2047,14 @@
                 radioBtn.addEventListener('mouseenter', () => {
                     radioBtn.style.opacity = '1';
                     radioBtn.style.transform = 'scale(1.05)';
-                    if (activePanelKey !== 'radio') radioBtn.style.background = 'rgba(10,11,14,0.95)';
+                    if (!openWindows.has('radio')) radioBtn.style.background = 'rgba(10,11,14,0.95)';
                 });
                 radioBtn.addEventListener('mouseleave', () => {
-                    radioBtn.style.opacity = activePanelKey === 'radio' ? '1' : '0.85';
+                    radioBtn.style.opacity = openWindows.has('radio') ? '1' : '0.85';
                     radioBtn.style.transform = 'scale(1)';
-                    if (activePanelKey !== 'radio') radioBtn.style.background = 'rgba(21,23,28,0.9)';
+                    if (!openWindows.has('radio')) radioBtn.style.background = 'rgba(21,23,28,0.9)';
                 });
-                radioBtn.addEventListener('click', () => openSidePanel('radio'));
+                radioBtn.addEventListener('click', () => togglePanelWindow('radio'));
                 wrap.appendChild(radioBtn);
 
                 // Reconnect automatically on this fresh page load if it was
@@ -1942,7 +2119,7 @@
             toggle.addEventListener('click', () => {
                 edgeCollapsed = !edgeCollapsed;
                 safeGmSet('wt_edge_collapsed', edgeCollapsed);
-                if (edgeCollapsed) closeSidePanel();
+                if (edgeCollapsed) closeAllPanelWindows();
                 applyEdgeCollapsed(true);
             });
             document.body.appendChild(toggle);
@@ -2517,7 +2694,7 @@
         }
 
         function renderRadioPanel() {
-            const body = document.getElementById('wt-panel-body');
+            const body = document.getElementById('wt-panel-body-radio');
             if (!body) return;
             const audio = getRadioAudioEl();
             const volume = Math.round(audio.volume * 100);
@@ -2669,7 +2846,7 @@
             };
 
             // Self-terminates once the panel closes (its own body node
-            // stops existing) rather than needing closeSidePanel() to
+            // stops existing) rather than needing closePanelWindow() to
             // know about every panel's own extra timers. Also cleared and
             // restarted here on every render (not just the first), since
             // the pop-out toggle re-renders this same open panel in place -
@@ -3221,7 +3398,7 @@
                 customTimerLabel = '';
                 safeGmSet('wt_timer_target_ms', null);
                 safeGmSet('wt_timer_label', '');
-                if (activePanelKey === 'timer') renderTimerPanel();
+                if (openWindows.has('timer')) renderTimerPanel();
             }
         }
         setInterval(tickLocalAlertClocks, 1000);
@@ -3230,7 +3407,7 @@
         // above so the setup form (still showing when no timer is running)
         // never gets rebuilt out from under someone mid-typing.
         setInterval(() => {
-            if (activePanelKey === 'timer' && customTimerTargetMs !== null) renderTimerPanel();
+            if (openWindows.has('timer') && customTimerTargetMs !== null) renderTimerPanel();
         }, 1000);
     }
 
