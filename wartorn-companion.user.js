@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      2.41
+// @version      2.43
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2146,6 +2146,14 @@
                 // else, so there's no reason to drop it).
                 radioGainNode = radioAudioCtx.createGain();
                 radioGainNode.gain.value = audio.volume;
+                // Once the graph exists, gain becomes the ONLY thing
+                // controlling perceived volume - leaving .volume at
+                // whatever it already was would double-attenuate (e.g.
+                // 0.8 volume * 0.8 gain = 0.64 actual loudness), which
+                // is exactly why turning the visualizer on was making
+                // playback audibly quieter. setRadioVolume() below keeps
+                // it pinned at 1 from here on.
+                audio.volume = 1;
                 // Gain sits after the analyser (not before) so the
                 // visualizer keeps reacting to the real signal regardless
                 // of the volume slider's position, rather than the whole
@@ -2175,9 +2183,17 @@
         // to first touch the audio graph.
         function setRadioVolume(v01) {
             const audio = getRadioAudioEl();
-            audio.volume = v01;
+            // Only touches .volume directly while there's no graph yet -
+            // once one exists, gain is the sole source of truth (see
+            // ensureRadioAnalyser) and .volume stays pinned at 1, so the
+            // two never multiply together into a quieter-than-requested
+            // result.
+            if (!radioAnalyser) audio.volume = v01;
             ensureRadioAnalyser();
-            if (radioGainNode) radioGainNode.gain.value = v01;
+            if (radioGainNode) {
+                radioGainNode.gain.value = v01;
+                audio.volume = 1;
+            }
         }
         function getRadioVizStyleIndex() {
             return safeGmGet('wt_radio_viz_style', 0);
@@ -2500,7 +2516,7 @@
             const poppedOut = isRadioPoppedOut();
             const vizStyleIdx = getRadioVizStyleIndex();
             body.innerHTML = `<div style="position:relative; padding:10px 0;">
-                <canvas id="wt-radio-viz" style="position:absolute; inset:0; z-index:0; border-radius:8px; pointer-events:none;"></canvas>
+                <canvas id="wt-radio-viz" style="position:absolute; inset:0; width:100%; height:100%; z-index:0; border-radius:8px; pointer-events:none;"></canvas>
                 <div style="position:relative; z-index:1; display:flex; flex-direction:column; gap:12px;">
                     <div style="display:flex; gap:12px; align-items:flex-start;">
                         <div id="wt-radio-art-wrap" style="flex:0 0 100px; width:100px; height:100px; border-radius:8px; overflow:hidden; background:#252525; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 10px rgba(0,0,0,0.5);"><img src="${RADIO_LOGO_URL}" style="width:100%; height:100%; object-fit:contain;"></div>
