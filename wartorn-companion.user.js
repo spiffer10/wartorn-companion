@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.4
+// @version      3.5
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1168,6 +1168,12 @@
                 const ff = parseFloat(chainFfSetting) || 3.0;
                 const endpoint = ff === 3.0 ? 'targets?limit=30&preset=respect' : `targets?limit=30&minff=${ff}&maxff=${ff}&inactive=1`;
                 const data = await getPanelData('targets_' + ff, endpoint);
+                // Reaching here means the round trip itself succeeded (even
+                // if the payload turns out to be an error/empty state below) -
+                // see the catch block, which uses this to tell "never loaded
+                // yet" from "just this one poll dropped" (common on a flaky
+                // mobile connection, e.g. TornPDA backgrounding the webview).
+                body.dataset.wtLoaded = '1';
                 await refreshCompanionFavorites();
                 if (!openWindows.has('targets') || !document.getElementById('wt-panel-body-targets')) return;
                 if (data.error || !data.targets || !data.targets.length) {
@@ -1199,8 +1205,16 @@
                 }).join('');
                 wireAttackButtons(body);
             } catch (e) {
+                // A transient hiccup (timeout/network error on a flaky mobile
+                // connection - TornPDA backgrounding the webview is the
+                // common case) shouldn't blank out a panel that was already
+                // showing good data; the next successful poll a few seconds
+                // later fixes it on its own. Only show the scary message on
+                // a genuinely first-ever failed load, when there's nothing
+                // else on screen to preserve.
+                if (body.dataset.wtLoaded === '1') { console.warn('[Wartorn] Chain Targets refresh failed:', e); return; }
                 if (openWindows.has('targets') && document.getElementById('wt-panel-body-targets')) {
-                    document.getElementById('wt-panel-body-targets').innerHTML = '<div style="color:#f44336;">Failed to load - check your Wartorn key is still valid.</div>';
+                    document.getElementById('wt-panel-body-targets').innerHTML = `<div style="color:#f44336;">Failed to load (${(e && e.message) || 'unknown error'}) - if this persists, check your Wartorn key is still valid.</div>`;
                 }
             }
         }
@@ -1243,6 +1257,7 @@
             if (!body) return;
             try {
                 const data = await getPanelData('war', 'war-status');
+                body.dataset.wtLoaded = '1';
                 await refreshCompanionFavorites();
                 if (!openWindows.has('war') || !document.getElementById('wt-panel-body-war')) return;
                 if (data.error || !data.them) {
@@ -1459,8 +1474,11 @@
                     btn.addEventListener('click', () => releaseTargetCompanion(parseInt(btn.dataset.tid, 10)));
                 });
             } catch (e) {
+                // See renderTargetsPanel's catch for why this is skipped once
+                // the panel has already loaded successfully at least once.
+                if (body.dataset.wtLoaded === '1') { console.warn('[Wartorn] War panel refresh failed:', e); return; }
                 if (openWindows.has('war') && document.getElementById('wt-panel-body-war')) {
-                    document.getElementById('wt-panel-body-war').innerHTML = '<div style="color:#f44336;">Failed to load - check your Wartorn key is still valid.</div>';
+                    document.getElementById('wt-panel-body-war').innerHTML = `<div style="color:#f44336;">Failed to load (${(e && e.message) || 'unknown error'}) - if this persists, check your Wartorn key is still valid.</div>`;
                 }
             }
         }
@@ -1475,6 +1493,7 @@
             if (!body) return;
             try {
                 const data = await getPanelData('milestone', 'chain-calls');
+                body.dataset.wtLoaded = '1';
                 if (!openWindows.has('milestone') || !document.getElementById('wt-panel-body-milestone')) return;
                 if (!data || !data.active) {
                     document.getElementById('wt-panel-body-milestone').innerHTML = '<div style="color:#888;">No chain hit coordination active right now.</div>';
@@ -1513,8 +1532,11 @@
                     btn.addEventListener('click', () => voteMilestoneBonus(parseInt(btn.dataset.cid, 10), btn.dataset.cname));
                 });
             } catch (e) {
+                // See renderTargetsPanel's catch for why this is skipped once
+                // the panel has already loaded successfully at least once.
+                if (body.dataset.wtLoaded === '1') { console.warn('[Wartorn] Chain Hits refresh failed:', e); return; }
                 if (openWindows.has('milestone') && document.getElementById('wt-panel-body-milestone')) {
-                    document.getElementById('wt-panel-body-milestone').innerHTML = '<div style="color:#f44336;">Failed to load - check your Wartorn key is still valid.</div>';
+                    document.getElementById('wt-panel-body-milestone').innerHTML = `<div style="color:#f44336;">Failed to load (${(e && e.message) || 'unknown error'}) - if this persists, check your Wartorn key is still valid.</div>`;
                 }
             }
         }
@@ -1699,6 +1721,7 @@
             };
             try {
                 const data = await getPanelData('vendetta', 'vendettas');
+                body.dataset.wtLoaded = '1';
                 if (!openWindows.has('vendetta') || !document.getElementById('wt-panel-body-vendetta')) return;
                 const vendettas = (data && data.vendettas) || [];
                 if (!vendettas.length) {
@@ -1725,8 +1748,11 @@
                     btn.addEventListener('click', () => deleteVendettaCompanion(btn.dataset.tid));
                 });
             } catch (e) {
+                // See renderTargetsPanel's catch for why this is skipped once
+                // the panel has already loaded successfully at least once.
+                if (body.dataset.wtLoaded === '1') { console.warn('[Wartorn] Vendettas refresh failed:', e); return; }
                 if (openWindows.has('vendetta') && document.getElementById('wt-panel-body-vendetta')) {
-                    document.getElementById('wt-panel-body-vendetta').innerHTML = addFormHtml + '<div style="color:#f44336;">Failed to load - check your Wartorn key is still valid.</div>';
+                    document.getElementById('wt-panel-body-vendetta').innerHTML = addFormHtml + `<div style="color:#f44336;">Failed to load (${(e && e.message) || 'unknown error'}) - if this persists, check your Wartorn key is still valid.</div>`;
                     wireAddForm();
                 }
             }
