@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.10
+// @version      3.11
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -3210,32 +3210,46 @@
             } catch (e) {}
         }
 
-        // Chain Hits going active - a two-note rising/falling sawtooth
-        // sweep per "whoop", played twice back to back for the literal
-        // "whoop whoop" feel, matching the button's own red/blue flashing.
+        // Chain Hits going active. The first version was two short, gapped
+        // "chirps" - real siren wails don't have silence in the middle,
+        // they sweep continuously - so this instead ramps ONE oscillator's
+        // frequency up and down back-to-back with no gain-to-zero in
+        // between, for a genuinely continuous wail. Two layered voices
+        // (a sawtooth fundamental for body/buzz, plus a sine an octave up
+        // for the higher "whistle" real siren horns have) instead of a
+        // single flat tone, which is what made the old version read as a
+        // toy buzzer rather than a siren.
         function playPoliceSiren() {
             if (!sharedAudioCtx) return;
             try {
                 const ctx = sharedAudioCtx;
-                const whoop = (startTime) => {
+                const now = ctx.currentTime;
+                const LOW = 500, HIGH = 1000;
+                const HALF_CYCLE = 0.45; // one sweep up, or one sweep down
+                const CYCLES = 4;        // 4 half-cycles = 2 full up-down wails, ~1.8s total
+
+                const voice = (type, freqMult, peakGain) => {
                     const osc = ctx.createOscillator();
                     const gain = ctx.createGain();
-                    osc.type = 'sawtooth';
-                    osc.frequency.setValueAtTime(500, startTime);
-                    osc.frequency.linearRampToValueAtTime(1100, startTime + 0.25);
-                    osc.frequency.linearRampToValueAtTime(500, startTime + 0.5);
-                    gain.gain.setValueAtTime(0, startTime);
-                    gain.gain.linearRampToValueAtTime(0.3, startTime + 0.05);
-                    gain.gain.linearRampToValueAtTime(0.3, startTime + 0.45);
-                    gain.gain.linearRampToValueAtTime(0, startTime + 0.55);
+                    osc.type = type;
+                    let t = now;
+                    osc.frequency.setValueAtTime(LOW * freqMult, t);
+                    gain.gain.setValueAtTime(0, t);
+                    gain.gain.linearRampToValueAtTime(peakGain, t + 0.08);
+                    for (let i = 0; i < CYCLES; i++) {
+                        const target = (i % 2 === 0) ? HIGH * freqMult : LOW * freqMult;
+                        t += HALF_CYCLE;
+                        osc.frequency.linearRampToValueAtTime(target, t);
+                    }
+                    gain.gain.setValueAtTime(peakGain, t - 0.1);
+                    gain.gain.linearRampToValueAtTime(0, t);
                     osc.connect(gain);
                     gain.connect(ctx.destination);
-                    osc.start(startTime);
-                    osc.stop(startTime + 0.6);
+                    osc.start(now);
+                    osc.stop(t + 0.05);
                 };
-                const now = ctx.currentTime;
-                whoop(now);
-                whoop(now + 0.65);
+                voice('sawtooth', 1, 0.28);
+                voice('sine', 2, 0.12);
             } catch (e) {}
         }
 
