@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.5
+// @version      3.6
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2101,6 +2101,26 @@
                 }
                 #wt-ghost-logo img.wt-logo-danger { animation: wt-danger-pulse 1s ease-in-out infinite; }
                 #wt-ghost-logo img.wt-logo-away { animation: wt-away-pulse 1.4s ease-in-out infinite; }
+                /* Chain Hits button - fires while a chain-hit coordination
+                   buildup is live (see checkChainHitsActive), same red as
+                   the dashboard's own buildup banner. Pulse and wiggle are
+                   separate animations on the same element so they run on
+                   independent timers instead of having to keep one giant
+                   keyframe's percentages in sync for both effects. */
+                @keyframes wt-chainbtn-pulse {
+                    0%, 100% { background: rgba(21,23,28,0.9); border-color: #f44336; box-shadow: 0 0 6px rgba(244,67,54,0.5), 0 2px 8px rgba(0,0,0,0.5); }
+                    50% { background: rgba(244,67,54,0.45); border-color: #ff8a80; box-shadow: 0 0 22px rgba(244,67,54,1), 0 2px 8px rgba(0,0,0,0.5); }
+                }
+                @keyframes wt-chainbtn-wiggle {
+                    0%, 16% { transform: rotate(0deg); }
+                    22% { transform: rotate(-10deg); }
+                    28% { transform: rotate(8deg); }
+                    34% { transform: rotate(-6deg); }
+                    40%, 100% { transform: rotate(0deg); }
+                }
+                .wt-side-btn.wt-chain-active {
+                    animation: wt-chainbtn-pulse 1s ease-in-out infinite, wt-chainbtn-wiggle 2.4s ease-in-out infinite;
+                }
             `;
             document.head.appendChild(scrollbarStyle);
 
@@ -3468,10 +3488,42 @@
                     });
                 }
                 updateLogoDangerState(dangerTarget, awayTarget);
+                updateWarButtonVisibility(warIsActive);
             } catch (e) {}
         }
         setInterval(checkLiveAlerts, 5000);
         checkLiveAlerts(); // don't wait 5s for the first check
+
+        // War button only makes sense to show while a war is actually
+        // running - hidden the rest of the time instead of sitting there
+        // as a dead button. Only ever hides/shows the BUTTON, never force-
+        // closes an already-open War window (e.g. one reopened from a
+        // previous session right as the war ended) - that's left for the
+        // user to close themselves.
+        function updateWarButtonVisibility(warIsActive) {
+            const btn = document.querySelector('.wt-side-btn[data-key="war"]');
+            if (!btn) return;
+            btn.style.display = warIsActive ? 'flex' : 'none';
+        }
+
+        // Chain Hits button pulses + wiggles while a chain-hit coordination
+        // buildup is actually live (same "active" flag renderMilestonePanel
+        // itself checks) - a completely separate, lightweight fetch so this
+        // works even when nobody has that panel open to trigger its own
+        // poll. Rides its own 5s interval rather than piggybacking on
+        // checkLiveAlerts, since chain-calls has nothing to do with war-
+        // status and there's no reason to couple their failure/retry
+        // behavior together.
+        async function checkChainHitsActive() {
+            const btn = document.querySelector('.wt-side-btn[data-key="milestone"]');
+            if (!btn) return;
+            try {
+                const data = await fetchFromWartorn('chain-calls');
+                btn.classList.toggle('wt-chain-active', !!(data && data.active));
+            } catch (e) {}
+        }
+        setInterval(checkChainHitsActive, 5000);
+        checkChainHitsActive();
 
         function tickLocalAlertClocks() {
             // Flight timing is self-contained (travelLandAtMs, tracked
