@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.12
+// @version      3.13
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2327,6 +2327,20 @@
         // reconnect on its own instead of forcing a re-click every time -
         // see maybeAutoResumeRadio() and the 5-minute window below.
         const RADIO_STREAM_URL = 'https://s12.myradiostream.com:20014/;';
+        // Re-points the element at a freshly cache-busted URL (never the
+        // bare RADIO_STREAM_URL by itself) so the browser can't serve a
+        // previously buffered/cached copy of this exact URL instead of
+        // genuinely reconnecting to the live stream. Matters most right
+        // before resuming playback on an element that was simply paused
+        // earlier (e.g. clicking play again after the pop-out auto-paused
+        // this one) - without this, .play() on an already-loaded element
+        // can pick back up from wherever it left off in the browser's own
+        // buffer rather than jumping to the current live position, which
+        // is exactly what "it plays from where I left off, not live"
+        // looks like for a live broadcast.
+        function reconnectRadioSrc(audio) {
+            audio.src = RADIO_STREAM_URL + '?_=' + Date.now();
+        }
         // Shoutcast's own JSON stats endpoint on the same stream server -
         // found alongside the stream URL itself. songtitle DOES carry
         // real per-track metadata (verified live 2026-09-22, an earlier
@@ -2435,7 +2449,7 @@
                 // element has already started loading doesn't reliably
                 // take effect.
                 radioAudioEl.crossOrigin = 'anonymous';
-                radioAudioEl.src = RADIO_STREAM_URL;
+                reconnectRadioSrc(radioAudioEl);
                 radioAudioEl.volume = (safeGmGet('wt_radio_volume', 80)) / 100;
                 // wt_radio_playing tracks INTENT (did the user ask for
                 // this to be on), separately from whatever the element's
@@ -2914,6 +2928,16 @@
                             if (titleEl) titleEl.innerText = 'Already playing on another tab/device';
                             return;
                         }
+                        // Force a genuinely fresh connection rather than
+                        // resuming this same element from wherever it left
+                        // off in the browser's own buffer (common when this
+                        // was just paused a while ago - e.g. the pop-out
+                        // auto-pauses this one while it's open) - a live
+                        // stream should always resume at the current live
+                        // position, not mid-playback from whenever it was
+                        // paused.
+                        reconnectRadioSrc(audio);
+                        audio.load();
                         audio.play().catch(() => { toggleBtn.innerText = '▶️'; });
                     });
                 } else {
