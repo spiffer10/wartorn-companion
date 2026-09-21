@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.15
+// @version      3.16
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2592,29 +2592,40 @@
                 dist: Math.random(),
                 hue: Math.random() * 360
             }));
-            // strobe/ripple both peak-detect off a rolling average of bass
-            // energy (this tick jumped meaningfully above recent normal)
-            // rather than reacting to raw loudness every frame - without
-            // it they'd just read as a continuous wash/pulse instead of
-            // distinct hits landing on the actual beat.
+            // strobe/ripple both peak-detect bass hits rather than
+            // reacting to raw loudness every frame - without it they'd
+            // just read as a continuous wash/pulse instead of distinct
+            // hits landing on the actual beat.
             //
-            // First version used a fast-tracking average (alpha 0.1, ~0.3s
-            // memory at 30fps) which is SHORTER than the gap between most
-            // kick drum hits (~0.4-0.6s at typical tempos) - it caught the
-            // very first quiet-to-loud transient in a song, then the
-            // average converged to match sustained loud bass within under
-            // a second, permanently disqualifying every hit after the
-            // first ("fires once and quits"). A slower average (longer
-            // memory than a beat gap) plus a brief cooldown after each hit
-            // (so a still-loud bass note can't immediately re-trigger)
-            // fixes it - this is the standard "onset detection" shape:
-            // local average, spike above it, short lockout.
+            // Two earlier versions both compared the current value against
+            // a rolling AVERAGE (first alpha 0.1/~0.3s memory, then 0.04/
+            // ~1s memory) - either way, an average is pulled UP by every
+            // loud frame it sees, including the hits themselves, so during
+            // any sustained loud passage it eventually converges close
+            // enough to the current level that nothing clears the bar
+            // anymore ("fires [for a while], then quits" - slower average
+            // just delayed the same convergence, it didn't prevent it).
+            // Real kick-drum rhythms have a genuine trough between hits
+            // even in a loud, busy mix - comparing against the LOCAL
+            // MINIMUM over a short recent window instead of an average
+            // tracks those troughs specifically and never converges to the
+            // peaks the way an average does, since it only ever reflects
+            // the quietest recent moment, however loud the overall passage
+            // gets.
             function makeBeatDetector() {
-                let avg = 0;
+                const HISTORY_LEN = 24; // ~0.8s at 30fps - spans a beat's trough-to-peak without being so long a genuine tempo change stops registering
+                const history = [];
                 let cooldownUntil = 0;
                 return (value, nowTs) => {
-                    avg = avg * 0.96 + value * 0.04; // ~1s memory at 30fps, not ~0.3s
-                    const isHit = nowTs >= cooldownUntil && value > avg * 1.3 && value > 0.3;
+                    history.push(value);
+                    if (history.length > HISTORY_LEN) history.shift();
+                    const floor = Math.min(...history);
+                    // max() of an additive and a multiplicative margin -
+                    // additive alone is too lenient once the floor itself
+                    // is already fairly loud, multiplicative alone is too
+                    // twitchy/noise-prone once the floor is near-silent.
+                    const threshold = Math.max(floor + 0.08, floor * 1.25);
+                    const isHit = nowTs >= cooldownUntil && value > threshold && value > 0.3;
                     if (isHit) cooldownUntil = nowTs + 150;
                     return isHit;
                 };
