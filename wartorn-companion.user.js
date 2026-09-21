@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.11
+// @version      3.12
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2328,12 +2328,13 @@
         // see maybeAutoResumeRadio() and the 5-minute window below.
         const RADIO_STREAM_URL = 'https://s12.myradiostream.com:20014/;';
         // Shoutcast's own JSON stats endpoint on the same stream server -
-        // found alongside the stream URL itself. songtitle comes back
-        // empty for this station (looks like it doesn't set per-track
-        // metadata), so "Now Playing" falls back to a live listener
-        // count instead, still real data rather than a static label.
-        // No CORS header on this one (unlike the stream itself), so it
-        // has to go through GM_xmlhttpRequest rather than a page fetch().
+        // found alongside the stream URL itself. songtitle DOES carry
+        // real per-track metadata (verified live 2026-09-22, an earlier
+        // comment here claiming it always came back empty was stale/wrong
+        // by the time this was checked) - falls back to "Tesseract Radio"
+        // as a generic label only on the rare response with no title at
+        // all. No CORS header on this one (unlike the stream itself), so
+        // it has to go through GM_xmlhttpRequest rather than a page fetch().
         const RADIO_STATS_URL = 'https://s12.myradiostream.com:20014/stats?json=1';
         // Tesseract's own station logo (hosted on myradiostream.com,
         // where the station's owner uploaded it) - used as the art
@@ -2759,6 +2760,7 @@
         let radioPopoutWin = null;
         let radioPopoutPoll = null;
         let radioNpInterval = null;
+        let radioVisibilityHandler = null;
         function isRadioPoppedOut() {
             return !!radioPopoutWin && !radioPopoutWin.closed;
         }
@@ -3024,7 +3026,7 @@
             // the pop-out toggle re-renders this same open panel in place -
             // without clearing the old one first, each toggle would stack
             // another redundant polling interval on top of it.
-            if (radioNpInterval) clearInterval(radioNpInterval);
+            stopRadioPolling();
             // Only re-queries iTunes when the song actually changes, not
             // on every 30s stats poll - the title is usually unchanged
             // between polls, and there's no reason to repeat the same
@@ -3042,14 +3044,22 @@
                 const isLogo = !url;
                 artWrap.innerHTML = `<img src="${url || RADIO_LOGO_URL}" style="width:100%; height:100%; object-fit:${isLogo ? 'contain' : 'cover'};">`;
             }
+            // Shared by both self-termination checks below - stops the
+            // interval AND removes the visibilitychange listener together,
+            // so closing the panel doesn't leave that listener firing
+            // (and immediately no-op-ing) for the rest of the page's life.
+            function stopRadioPolling() {
+                if (radioNpInterval) clearInterval(radioNpInterval);
+                if (radioVisibilityHandler) { document.removeEventListener('visibilitychange', radioVisibilityHandler); radioVisibilityHandler = null; }
+            }
             function refreshNowPlaying() {
                 const titleEl = document.getElementById('wt-radio-title');
-                if (!titleEl) { if (radioNpInterval) clearInterval(radioNpInterval); return; }
+                if (!titleEl) { stopRadioPolling(); return; }
                 fetchRadioStats((stats) => {
                     const titleEl2 = document.getElementById('wt-radio-title');
                     const artistEl = document.getElementById('wt-radio-artist');
                     const yearEl = document.getElementById('wt-radio-year');
-                    if (!titleEl2) { if (radioNpInterval) clearInterval(radioNpInterval); return; }
+                    if (!titleEl2) { stopRadioPolling(); return; }
 
                     // songtitle comes as "Artist - Track" - swapped here
                     // since the ask was title first, artist second.
@@ -3088,6 +3098,22 @@
             }
             refreshNowPlaying();
             radioNpInterval = setInterval(refreshNowPlaying, 30000);
+            // A backgrounded browser tab gets its setInterval throttled by
+            // the browser (Chrome clamps inactive tabs to roughly once a
+            // minute or slower) - Torn is frequently open in a background
+            // tab while someone works in another one, so the 30s interval
+            // above can silently stretch out to well over a minute without
+            // this. Catching document.visibilitychange and refreshing
+            // immediately the moment the tab is looked at again is what
+            // actually fixes "stale mid-song" and "missed a track change" -
+            // both are explained by a throttled timer quietly falling
+            // behind while the tab wasn't in focus, not by anything wrong
+            // with the station's own metadata (verified live - it does
+            // report real per-track titles).
+            radioVisibilityHandler = () => {
+                if (document.visibilityState === 'visible') refreshNowPlaying();
+            };
+            document.addEventListener('visibilitychange', radioVisibilityHandler);
         }
 
         injectSidePanels();
