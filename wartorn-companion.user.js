@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.9
+// @version      3.10
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1608,6 +1608,7 @@
                         <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
                             <input type="checkbox" id="wt-set-chainhitssiren" ${chainHitsSirenEnabled ? 'checked' : ''} style="cursor:pointer;">
                             🚨 Chain Hits siren (whoop whoop)
+                            <span id="wt-set-chainhitssiren-test" style="cursor:pointer; color:#00e5ff; font-size:0.85em; margin-left:auto; text-decoration:underline;">Test</span>
                         </label>
                     </div>
 
@@ -1680,6 +1681,16 @@
                 chainHitsSirenEnabled = e.target.checked;
                 safeGmSet('wt_chain_hits_siren', chainHitsSirenEnabled);
                 if (chainHitsSirenEnabled) unlockAudioContext();
+            });
+            document.getElementById('wt-set-chainhitssiren-test').addEventListener('click', (e) => {
+                // Sits inside the checkbox's own <label> for layout, which
+                // would otherwise also toggle the checkbox on click (native
+                // browser behavior for anything inside a label) - stopped
+                // here so "Test" only ever plays the sound.
+                e.preventDefault();
+                e.stopPropagation();
+                unlockAudioContext();
+                playPoliceSiren();
             });
             // Same slide-out panel the Tampermonkey menu command and the
             // "Auto-link not working?" link use - previously the ONLY way
