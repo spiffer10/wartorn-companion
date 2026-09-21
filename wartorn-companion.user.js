@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.13
+// @version      3.14
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2496,7 +2496,7 @@
         // ONCE (a second createMediaElementSource call on the same
         // element throws), so this is set up lazily, once, and reused -
         // same singleton pattern as radioAudioEl itself.
-        const RADIO_VIZ_STYLES = ['off', 'bars', 'wave', 'dots', 'plasma', 'kaleido', 'tunnel'];
+        const RADIO_VIZ_STYLES = ['off', 'bars', 'wave', 'dots', 'plasma', 'kaleido', 'tunnel', 'orbit', 'strobe', 'rain', 'ripple'];
         let radioAudioCtx = null;
         let radioAnalyser = null;
         let radioGainNode = null;
@@ -2592,6 +2592,16 @@
                 dist: Math.random(),
                 hue: Math.random() * 360
             }));
+            // strobe/ripple both peak-detect off a rolling average of bass
+            // energy (this tick jumped meaningfully above recent normal)
+            // rather than reacting to raw loudness every frame - without
+            // it they'd just read as a continuous wash/pulse instead of
+            // distinct hits landing on the actual beat.
+            let strobeAvg = 0, strobeFlash = 0, strobeHue = 0;
+            let rippleAvg = 0;
+            const ripples = [];
+            const RAIN_COLS = 24;
+            const rainDrops = Array.from({ length: RAIN_COLS }, () => Math.random() * 300);
             function avgEnergy(data) {
                 let sum = 0;
                 for (let i = 0; i < data.length; i++) sum += data[i];
@@ -2731,6 +2741,87 @@
                         ctx2d.beginPath();
                         ctx2d.arc(x, y, size, 0, Math.PI * 2);
                         ctx2d.fill();
+                    }
+                } else if (style === 'orbit') {
+                    // Same per-bin frequency data as "bars", laid out as
+                    // fixed spokes around a static ring instead of a line -
+                    // a classic circular EQ look, and (unlike kaleido) it
+                    // doesn't spin, so it reads more like a calm dial than
+                    // a burst.
+                    analyser.getByteFrequencyData(freqData);
+                    const cx = canvas.width / 2, cy = canvas.height / 2;
+                    const baseR = Math.min(canvas.width, canvas.height) * 0.22;
+                    const maxLen = Math.min(canvas.width, canvas.height) * 0.26;
+                    const spokes = 48;
+                    for (let i = 0; i < spokes; i++) {
+                        const v = freqData[Math.floor(i * bufferLen / spokes)] / 255;
+                        const angle = (i / spokes) * Math.PI * 2;
+                        const len = baseR + v * maxLen;
+                        ctx2d.strokeStyle = `hsl(${180 + v * 140}, 85%, 55%)`;
+                        ctx2d.lineWidth = 3;
+                        ctx2d.beginPath();
+                        ctx2d.moveTo(cx + Math.cos(angle) * baseR, cy + Math.sin(angle) * baseR);
+                        ctx2d.lineTo(cx + Math.cos(angle) * len, cy + Math.sin(angle) * len);
+                        ctx2d.stroke();
+                    }
+                } else if (style === 'strobe') {
+                    // Deliberately the odd one out - no bars/particles at
+                    // all, just a full-canvas color flash on bass hits,
+                    // like a simple beat strobe. strobeAvg tracks a rolling
+                    // baseline so a hit means "meaningfully louder than
+                    // normal right now", not just "loud" - a constantly
+                    // loud track would otherwise strobe every single frame.
+                    analyser.getByteFrequencyData(freqData);
+                    const bassNow = bassEnergy(freqData);
+                    strobeAvg = strobeAvg * 0.9 + bassNow * 0.1;
+                    if (bassNow > strobeAvg * 1.35 && bassNow > 0.35) {
+                        strobeHue = Math.random() * 360;
+                        strobeFlash = 1;
+                    } else {
+                        strobeFlash *= 0.85;
+                    }
+                    ctx2d.fillStyle = `hsla(${strobeHue}, 90%, 55%, ${strobeFlash * 0.6})`;
+                    ctx2d.fillRect(0, 0, canvas.width, canvas.height);
+                } else if (style === 'rain') {
+                    // "Digital rain" - one falling column per (downsampled)
+                    // frequency bin, speed and brightness tied to that
+                    // bin's current energy so louder frequencies visibly
+                    // fall faster and brighter instead of everything
+                    // dropping at the same random rate.
+                    analyser.getByteFrequencyData(freqData);
+                    ctx2d.fillStyle = 'rgba(0,0,0,0.2)';
+                    ctx2d.fillRect(0, 0, canvas.width, canvas.height);
+                    const colW = canvas.width / RAIN_COLS;
+                    for (let c = 0; c < RAIN_COLS; c++) {
+                        const v = freqData[Math.floor(c * bufferLen / RAIN_COLS)] / 255;
+                        rainDrops[c] += 2 + v * 12;
+                        if (rainDrops[c] > canvas.height) rainDrops[c] = 0;
+                        ctx2d.fillStyle = `hsla(${140 + v * 40}, 90%, ${50 + v * 30}%, ${0.5 + v * 0.5})`;
+                        ctx2d.fillRect(c * colW + 1, rainDrops[c], Math.max(1, colW - 2), 14 + v * 20);
+                    }
+                } else if (style === 'ripple') {
+                    // Concentric rings expanding from center, spawned on
+                    // bass hits (same peak-detection as strobe) rather than
+                    // continuously, so distinct beats read as distinct
+                    // rings instead of blurring into one pulsing blob.
+                    analyser.getByteFrequencyData(freqData);
+                    const bassNow = bassEnergy(freqData);
+                    rippleAvg = rippleAvg * 0.9 + bassNow * 0.1;
+                    if (bassNow > rippleAvg * 1.3 && bassNow > 0.3) {
+                        ripples.push({ r: 0, hue: Math.random() * 360 });
+                        if (ripples.length > 8) ripples.shift();
+                    }
+                    const cx = canvas.width / 2, cy = canvas.height / 2;
+                    const maxR = Math.max(canvas.width, canvas.height) * 0.6;
+                    for (let i = ripples.length - 1; i >= 0; i--) {
+                        const rp = ripples[i];
+                        rp.r += 6;
+                        if (rp.r > maxR) { ripples.splice(i, 1); continue; }
+                        ctx2d.strokeStyle = `hsla(${rp.hue}, 85%, 60%, ${1 - rp.r / maxR})`;
+                        ctx2d.lineWidth = 3;
+                        ctx2d.beginPath();
+                        ctx2d.arc(cx, cy, rp.r, 0, Math.PI * 2);
+                        ctx2d.stroke();
                     }
                 }
             }
