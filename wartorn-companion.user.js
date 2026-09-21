@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.14
+// @version      3.15
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2597,8 +2597,31 @@
             // rather than reacting to raw loudness every frame - without
             // it they'd just read as a continuous wash/pulse instead of
             // distinct hits landing on the actual beat.
-            let strobeAvg = 0, strobeFlash = 0, strobeHue = 0;
-            let rippleAvg = 0;
+            //
+            // First version used a fast-tracking average (alpha 0.1, ~0.3s
+            // memory at 30fps) which is SHORTER than the gap between most
+            // kick drum hits (~0.4-0.6s at typical tempos) - it caught the
+            // very first quiet-to-loud transient in a song, then the
+            // average converged to match sustained loud bass within under
+            // a second, permanently disqualifying every hit after the
+            // first ("fires once and quits"). A slower average (longer
+            // memory than a beat gap) plus a brief cooldown after each hit
+            // (so a still-loud bass note can't immediately re-trigger)
+            // fixes it - this is the standard "onset detection" shape:
+            // local average, spike above it, short lockout.
+            function makeBeatDetector() {
+                let avg = 0;
+                let cooldownUntil = 0;
+                return (value, nowTs) => {
+                    avg = avg * 0.96 + value * 0.04; // ~1s memory at 30fps, not ~0.3s
+                    const isHit = nowTs >= cooldownUntil && value > avg * 1.3 && value > 0.3;
+                    if (isHit) cooldownUntil = nowTs + 150;
+                    return isHit;
+                };
+            }
+            const strobeBeat = makeBeatDetector();
+            const rippleBeat = makeBeatDetector();
+            let strobeFlash = 0, strobeHue = 0;
             const ripples = [];
             const RAIN_COLS = 24;
             const rainDrops = Array.from({ length: RAIN_COLS }, () => Math.random() * 300);
@@ -2767,14 +2790,10 @@
                 } else if (style === 'strobe') {
                     // Deliberately the odd one out - no bars/particles at
                     // all, just a full-canvas color flash on bass hits,
-                    // like a simple beat strobe. strobeAvg tracks a rolling
-                    // baseline so a hit means "meaningfully louder than
-                    // normal right now", not just "loud" - a constantly
-                    // loud track would otherwise strobe every single frame.
+                    // like a simple beat strobe.
                     analyser.getByteFrequencyData(freqData);
                     const bassNow = bassEnergy(freqData);
-                    strobeAvg = strobeAvg * 0.9 + bassNow * 0.1;
-                    if (bassNow > strobeAvg * 1.35 && bassNow > 0.35) {
+                    if (strobeBeat(bassNow, ts)) {
                         strobeHue = Math.random() * 360;
                         strobeFlash = 1;
                     } else {
@@ -2806,8 +2825,7 @@
                     // rings instead of blurring into one pulsing blob.
                     analyser.getByteFrequencyData(freqData);
                     const bassNow = bassEnergy(freqData);
-                    rippleAvg = rippleAvg * 0.9 + bassNow * 0.1;
-                    if (bassNow > rippleAvg * 1.3 && bassNow > 0.3) {
+                    if (rippleBeat(bassNow, ts)) {
                         ripples.push({ r: 0, hue: Math.random() * 360 });
                         if (ripples.length > 8) ripples.shift();
                     }
