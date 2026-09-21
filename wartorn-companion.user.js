@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.7
+// @version      3.8
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2111,12 +2111,18 @@
                     0%, 100% { background: rgba(21,23,28,0.9); border-color: #f44336; box-shadow: 0 0 6px rgba(244,67,54,0.5), 0 2px 8px rgba(0,0,0,0.5); }
                     50% { background: rgba(244,67,54,0.45); border-color: #ff8a80; box-shadow: 0 0 22px rgba(244,67,54,1), 0 2px 8px rgba(0,0,0,0.5); }
                 }
+                /* scale(1.25) is repeated at every stop (not just set once
+                   on the base .wt-chain-active rule) because a keyframe's
+                   transform value fully replaces whatever's already there
+                   each frame rather than combining with it - without it
+                   here, the button would shrink back to normal size the
+                   instant the wiggle animation takes over on each tick. */
                 @keyframes wt-chainbtn-wiggle {
-                    0%, 16% { transform: rotate(0deg); }
-                    22% { transform: rotate(-10deg); }
-                    28% { transform: rotate(8deg); }
-                    34% { transform: rotate(-6deg); }
-                    40%, 100% { transform: rotate(0deg); }
+                    0%, 16% { transform: scale(1.25) rotate(0deg); }
+                    22% { transform: scale(1.25) rotate(-10deg); }
+                    28% { transform: scale(1.25) rotate(8deg); }
+                    34% { transform: scale(1.25) rotate(-6deg); }
+                    40%, 100% { transform: scale(1.25) rotate(0deg); }
                 }
                 .wt-side-btn.wt-chain-active {
                     animation: wt-chainbtn-pulse 1s ease-in-out infinite, wt-chainbtn-wiggle 2.4s ease-in-out infinite;
