@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.6
+// @version      3.7
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -3181,8 +3181,14 @@
         // The Custom Timer's alert sound. Can't embed the actual copyrighted
         // Final Fantasy moogle "Kupo!" clip this is named after, so this
         // synthesizes a stand-in with the same two-syllable feel: a short
-        // "ku" note followed by a "po!" that bends upward in pitch.
-        function playKupoSound() {
+        // "ku" note followed by a "po!" that bends upward in pitch. Repeats
+        // (default 5x) rather than playing once, since a single ~0.5s chime
+        // is easy to miss entirely if you're not already looking at the
+        // screen right when the timer fires - scheduled up front via the
+        // AudioContext's own clock (absolute startTime offsets) rather than
+        // a setTimeout chain, so the repeats stay precisely spaced even if
+        // the tab is throttled in the background.
+        function playKupoSound(times = 5) {
             if (!sharedAudioCtx) return;
             try {
                 const ctx = sharedAudioCtx;
@@ -3201,8 +3207,12 @@
                     osc.start(startTime);
                     osc.stop(startTime + dur + 0.05);
                 };
-                note(now, 392, 0.15);
-                note(now + 0.18, 523.25, 0.35, 659.25);
+                const CYCLE_S = 0.7; // ~0.53s for the two notes + a short gap
+                for (let i = 0; i < times; i++) {
+                    const t0 = now + i * CYCLE_S;
+                    note(t0, 392, 0.15);
+                    note(t0 + 0.18, 523.25, 0.35, 659.25);
+                }
             } catch (e) {}
         }
 
