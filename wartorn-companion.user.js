@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.8
+// @version      3.9
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -966,6 +966,7 @@
         // mid-browsing is worse than them having to turn it on once.
         let flightSoundEnabled = safeGmGet('wt_flight_sound', false);
         let chainSoundEnabled = safeGmGet('wt_chain_sound', false);
+        let chainHitsSirenEnabled = safeGmGet('wt_chain_hits_siren', false);
         // Static chrome (border/shadow/font/colors/scrollbar) - identical
         // for every window, set once at creation and never touched again.
         // Geometry (top/left/width/height/z-index) is computed separately
@@ -1604,6 +1605,10 @@
                             <input type="checkbox" id="wt-set-chainsound" ${chainSoundEnabled ? 'checked' : ''} style="cursor:pointer;">
                             ⛓️ Chain warning sound
                         </label>
+                        <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
+                            <input type="checkbox" id="wt-set-chainhitssiren" ${chainHitsSirenEnabled ? 'checked' : ''} style="cursor:pointer;">
+                            🚨 Chain Hits siren (whoop whoop)
+                        </label>
                     </div>
 
                     <div style="display:flex; flex-direction:column; gap:6px; border-top:1px solid #333; padding-top:10px;">
@@ -1670,6 +1675,11 @@
                 chainSoundEnabled = e.target.checked;
                 safeGmSet('wt_chain_sound', chainSoundEnabled);
                 if (chainSoundEnabled) unlockAudioContext();
+            });
+            document.getElementById('wt-set-chainhitssiren').addEventListener('change', (e) => {
+                chainHitsSirenEnabled = e.target.checked;
+                safeGmSet('wt_chain_hits_siren', chainHitsSirenEnabled);
+                if (chainHitsSirenEnabled) unlockAudioContext();
             });
             // Same slide-out panel the Tampermonkey menu command and the
             // "Auto-link not working?" link use - previously the ONLY way
@@ -2107,9 +2117,14 @@
                    separate animations on the same element so they run on
                    independent timers instead of having to keep one giant
                    keyframe's percentages in sync for both effects. */
+                /* Police-light strobe: paired stops with the SAME value
+                   right next to each other (0%/49% both red, 50%/100% both
+                   blue) so the color holds steady then snaps instantly at
+                   the boundary, instead of smoothly fading between red and
+                   blue like the old single-color version did. */
                 @keyframes wt-chainbtn-pulse {
-                    0%, 100% { background: rgba(21,23,28,0.9); border-color: #f44336; box-shadow: 0 0 6px rgba(244,67,54,0.5), 0 2px 8px rgba(0,0,0,0.5); }
-                    50% { background: rgba(244,67,54,0.45); border-color: #ff8a80; box-shadow: 0 0 22px rgba(244,67,54,1), 0 2px 8px rgba(0,0,0,0.5); }
+                    0%, 49% { background: rgba(244,67,54,0.55); border-color: #f44336; box-shadow: 0 0 20px rgba(244,67,54,1), 0 2px 8px rgba(0,0,0,0.5); }
+                    50%, 100% { background: rgba(33,150,243,0.55); border-color: #2196f3; box-shadow: 0 0 20px rgba(33,150,243,1), 0 2px 8px rgba(0,0,0,0.5); }
                 }
                 /* scale(1.25) is repeated at every stop (not just set once
                    on the base .wt-chain-active rule) because a keyframe's
@@ -2125,7 +2140,7 @@
                     40%, 100% { transform: scale(1.25) rotate(0deg); }
                 }
                 .wt-side-btn.wt-chain-active {
-                    animation: wt-chainbtn-pulse 1s ease-in-out infinite, wt-chainbtn-wiggle 2.4s ease-in-out infinite;
+                    animation: wt-chainbtn-pulse 0.5s linear infinite, wt-chainbtn-wiggle 2.4s ease-in-out infinite;
                 }
             `;
             document.head.appendChild(scrollbarStyle);
@@ -3184,6 +3199,35 @@
             } catch (e) {}
         }
 
+        // Chain Hits going active - a two-note rising/falling sawtooth
+        // sweep per "whoop", played twice back to back for the literal
+        // "whoop whoop" feel, matching the button's own red/blue flashing.
+        function playPoliceSiren() {
+            if (!sharedAudioCtx) return;
+            try {
+                const ctx = sharedAudioCtx;
+                const whoop = (startTime) => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(500, startTime);
+                    osc.frequency.linearRampToValueAtTime(1100, startTime + 0.25);
+                    osc.frequency.linearRampToValueAtTime(500, startTime + 0.5);
+                    gain.gain.setValueAtTime(0, startTime);
+                    gain.gain.linearRampToValueAtTime(0.3, startTime + 0.05);
+                    gain.gain.linearRampToValueAtTime(0.3, startTime + 0.45);
+                    gain.gain.linearRampToValueAtTime(0, startTime + 0.55);
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start(startTime);
+                    osc.stop(startTime + 0.6);
+                };
+                const now = ctx.currentTime;
+                whoop(now);
+                whoop(now + 0.65);
+            } catch (e) {}
+        }
+
         // The Custom Timer's alert sound. Can't embed the actual copyrighted
         // Final Fantasy moogle "Kupo!" clip this is named after, so this
         // synthesizes a stand-in with the same two-syllable feel: a short
@@ -3535,7 +3579,14 @@
             if (!btn) return;
             try {
                 const data = await fetchFromWartorn('chain-calls');
-                btn.classList.toggle('wt-chain-active', !!(data && data.active));
+                const isActive = !!(data && data.active);
+                btn.classList.toggle('wt-chain-active', isActive);
+                // Repeats on this same 5s cadence for as long as it stays
+                // active - same "keep alerting while the condition holds"
+                // pattern as the chain-timeout warning beep above, not a
+                // one-shot ping that's easy to miss if you're not looking
+                // right when it first goes active.
+                if (isActive && chainHitsSirenEnabled) playPoliceSiren();
             } catch (e) {}
         }
         setInterval(checkChainHitsActive, 5000);
