@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.24
+// @version      3.25
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2211,6 +2211,7 @@
                 if (!data || data.factionId !== TESSERACT_FACTION_ID) return;
                 PANEL_DEFS.radio = { icon: '🎵', title: 'Tesseract Radio', render: renderRadioPanel, ticking: false };
                 const radioBtn = document.createElement('div');
+                radioBtn.id = 'wt-radio-side-btn';
                 radioBtn.className = 'wt-side-btn';
                 radioBtn.dataset.key = 'radio';
                 radioBtn.title = 'Tesseract Radio';
@@ -3094,9 +3095,22 @@
                 // instance's behalf for as long as the pop-out stays
                 // open (ensureRadioLockRenewal treats isRadioPoppedOut()
                 // as "still active" too), so nothing else can start
-                // playing elsewhere while this window is up.
+                // playing elsewhere while this window is up. Muted too,
+                // as a belt-and-suspenders guarantee of actual silence -
+                // cleared again by the toggle button's own resume branch
+                // below, the only place that's meant to bring this copy
+                // back to life while popped out is impossible anyway
+                // (its click handler bails immediately if isRadioPoppedOut()).
                 audio.pause();
-                const vol = Math.round(audio.volume * 100);
+                audio.muted = true;
+                // Reads the persisted slider setting, not audio.volume
+                // directly - once the visualizer's graph is active (now
+                // the default, since Milkdrop is default-on), gain sits
+                // after the analyser and audio.volume gets pinned at 1
+                // for the rest of that element's life (see setRadioVolume
+                // above), so reading it here would always hand the
+                // pop-out 100% regardless of where the slider actually is.
+                const vol = safeGmGet('wt_radio_volume', 80);
                 // No window-feature string (width/height/etc.) - that's
                 // what tells the browser to open a separate popup window
                 // rather than a normal tab. A bare window.open(url, name)
@@ -3161,6 +3175,12 @@
             if (!body) return;
             const audio = getRadioAudioEl();
             const poppedOut = isRadioPoppedOut();
+            // The side button that opens this whole panel stays in the DOM
+            // across renders (built once, not part of body.innerHTML) - has
+            // to be hidden/shown here in lockstep with the panel body
+            // rather than only ever set once at creation.
+            const sideBtn = document.getElementById('wt-radio-side-btn');
+            if (sideBtn) sideBtn.style.display = poppedOut ? 'none' : 'flex';
             // Completely replaces the player UI while popped out, rather
             // than showing the normal controls faded/disabled - none of
             // them (toggle/volume/visualizer) do anything meaningful
@@ -3176,7 +3196,13 @@
                 switchBtn.addEventListener('click', () => openRadioPopout(renderRadioPanel));
                 return;
             }
-            const volume = Math.round(audio.volume * 100);
+            // Reads the persisted slider setting, not audio.volume directly
+            // - once the visualizer's graph is active (now the default,
+            // since Milkdrop is default-on), audio.volume gets pinned at 1
+            // for the rest of that element's life (see setRadioVolume
+            // below), so this would otherwise always show 100% regardless
+            // of where the slider actually is.
+            const volume = safeGmGet('wt_radio_volume', 80);
             const vizStyleIdx = getRadioVizStyleIndex();
             body.innerHTML = `<div style="position:relative; padding:10px 0;">
                 <canvas id="wt-radio-viz" style="position:absolute; inset:0; width:100%; height:100%; z-index:0; border-radius:8px; pointer-events:none;"></canvas>
@@ -3225,6 +3251,7 @@
                         // paused.
                         reconnectRadioSrc(audio);
                         audio.load();
+                        audio.muted = false;
                         audio.play().catch(() => { toggleBtn.innerText = '▶️'; });
                     });
                 } else {
