@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.25
+// @version      3.26
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -3119,6 +3119,14 @@
                 radioPopoutWin = window.open(`${WARTORN_HOST}/radio-player?volume=${vol}`, 'wt_radio_player');
                 if (radioPopoutWin) radioPopoutWin.focus();
                 ensureRadioLockRenewal();
+                // Closes the panel window outright (not just its
+                // contents) and hides its side button entirely - both
+                // reappear in the poll below the moment the pop-out
+                // closes, but while it's open there's nothing useful for
+                // either to show or do.
+                if (openWindows.has('radio')) closePanelWindow('radio');
+                const sideBtn = document.getElementById('wt-radio-side-btn');
+                if (sideBtn) sideBtn.style.display = 'none';
                 if (onStateChange) onStateChange();
                 if (radioPopoutPoll) clearInterval(radioPopoutPoll);
                 radioPopoutPoll = setInterval(() => {
@@ -3126,6 +3134,17 @@
                         clearInterval(radioPopoutPoll);
                         radioPopoutPoll = null;
                         releaseRadioLock();
+                        const sideBtn2 = document.getElementById('wt-radio-side-btn');
+                        if (sideBtn2) sideBtn2.style.display = 'flex';
+                        // Resume in-page the moment the pop-out is gone -
+                        // claims first, same as every other place that
+                        // starts playback, in case something else (another
+                        // tab/device) beat it to the lock in the meantime.
+                        audio.muted = false;
+                        reconnectRadioSrc(audio);
+                        audio.load();
+                        claimRadioLock().then(g => { if (g) audio.play().catch(() => {}); });
+                        openPanelWindow('radio');
                         if (onStateChange) onStateChange();
                     }
                 }, 1000);
