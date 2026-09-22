@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.21
+// @version      3.22
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -3084,18 +3084,17 @@
         // real state change (opened, or later closed).
         function openRadioPopout(onStateChange) {
             if (isRadioPoppedOut()) { radioPopoutWin.focus(); return; }
+            // Paused immediately, synchronously - not gated behind the
+            // lock-claim round trip below, so there's no window where
+            // both the in-page copy and the about-to-open pop-out could
+            // make sound at once while waiting on the network.
+            const audio = getRadioAudioEl();
+            audio.pause();
             claimRadioLock().then(granted => {
                 if (!granted) {
                     if (onStateChange) onStateChange('Already playing on another tab/device');
                     return;
                 }
-                const audio = getRadioAudioEl();
-                // Paused, not released - the claim stays held on this
-                // instance's behalf for as long as the pop-out stays
-                // open (ensureRadioLockRenewal treats isRadioPoppedOut()
-                // as "still active" too), so nothing else can start
-                // playing elsewhere while this window is up.
-                audio.pause();
                 const vol = Math.round(audio.volume * 100);
                 // No window-feature string (width/height/etc.) - that's
                 // what tells the browser to open a separate popup window
@@ -3160,8 +3159,23 @@
             const body = document.getElementById('wt-panel-body-radio');
             if (!body) return;
             const audio = getRadioAudioEl();
-            const volume = Math.round(audio.volume * 100);
             const poppedOut = isRadioPoppedOut();
+            // Completely replaces the player UI while popped out, rather
+            // than showing the normal controls faded/disabled - none of
+            // them (toggle/volume/visualizer) do anything meaningful
+            // here once playback has genuinely moved to the separate tab,
+            // so a dead-looking control set was just confusing.
+            if (poppedOut) {
+                body.innerHTML = `<div style="padding:24px 10px; text-align:center; display:flex; flex-direction:column; align-items:center; gap:12px;">
+                    <img src="${RADIO_LOGO_URL}" style="width:56px; height:56px; border-radius:8px; object-fit:contain; opacity:0.5;">
+                    <div style="color:#888; font-size:0.85em;">Playing in a separate tab</div>
+                    <span id="wt-radio-popout" style="color:#00e5ff; font-size:0.8em; cursor:pointer; text-decoration:underline;">↗ Switch to that tab</span>
+                </div>`;
+                const switchBtn = document.getElementById('wt-radio-popout');
+                switchBtn.addEventListener('click', () => openRadioPopout(renderRadioPanel));
+                return;
+            }
+            const volume = Math.round(audio.volume * 100);
             const vizStyleIdx = getRadioVizStyleIndex();
             body.innerHTML = `<div style="position:relative; padding:10px 0;">
                 <canvas id="wt-radio-viz" style="position:absolute; inset:0; width:100%; height:100%; z-index:0; border-radius:8px; pointer-events:none;"></canvas>
