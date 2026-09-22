@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.16
+// @version      3.17
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2597,36 +2597,37 @@
             // just read as a continuous wash/pulse instead of distinct
             // hits landing on the actual beat.
             //
-            // Two earlier versions both compared the current value against
-            // a rolling AVERAGE (first alpha 0.1/~0.3s memory, then 0.04/
-            // ~1s memory) - either way, an average is pulled UP by every
-            // loud frame it sees, including the hits themselves, so during
-            // any sustained loud passage it eventually converges close
-            // enough to the current level that nothing clears the bar
-            // anymore ("fires [for a while], then quits" - slower average
-            // just delayed the same convergence, it didn't prevent it).
-            // Real kick-drum rhythms have a genuine trough between hits
-            // even in a loud, busy mix - comparing against the LOCAL
-            // MINIMUM over a short recent window instead of an average
-            // tracks those troughs specifically and never converges to the
-            // peaks the way an average does, since it only ever reflects
-            // the quietest recent moment, however loud the overall passage
-            // gets.
+            // Two earlier versions compared against a rolling AVERAGE
+            // (pulled up by every loud frame including the hits
+            // themselves, so it eventually converges and stops firing) and
+            // then a rolling MINIMUM with thresholds guessed without ever
+            // seeing this stream's actual bass-energy numbers - which
+            // turned out too strict and stopped it firing at all. Rather
+            // than guess a fourth set of numbers blind, this keeps the
+            // local-minimum idea (still the right shape - it can't
+            // converge toward the peaks the way an average does) but with
+            // a much lower bar, AND a hard fallback: if genuinely nothing
+            // has cleared even that low bar in 3s, fire anyway off
+            // whatever's loudest in the recent window. That fallback means
+            // this literally cannot go silent for more than ~3s regardless
+            // of how far off these specific thresholds still are for this
+            // stream's real dynamics.
             function makeBeatDetector() {
-                const HISTORY_LEN = 24; // ~0.8s at 30fps - spans a beat's trough-to-peak without being so long a genuine tempo change stops registering
+                const HISTORY_LEN = 24; // ~0.8s at 30fps
                 const history = [];
                 let cooldownUntil = 0;
+                let lastHitTs = 0;
                 return (value, nowTs) => {
                     history.push(value);
                     if (history.length > HISTORY_LEN) history.shift();
                     const floor = Math.min(...history);
-                    // max() of an additive and a multiplicative margin -
-                    // additive alone is too lenient once the floor itself
-                    // is already fairly loud, multiplicative alone is too
-                    // twitchy/noise-prone once the floor is near-silent.
-                    const threshold = Math.max(floor + 0.08, floor * 1.25);
-                    const isHit = nowTs >= cooldownUntil && value > threshold && value > 0.3;
-                    if (isHit) cooldownUntil = nowTs + 150;
+                    const peak = Math.max(...history);
+                    const cooledDown = nowTs >= cooldownUntil;
+                    let isHit = cooledDown && value > floor + 0.03 && value > peak * 0.7;
+                    if (!isHit && cooledDown && nowTs - lastHitTs > 3000 && peak > 0.02) {
+                        isHit = value >= peak * 0.85;
+                    }
+                    if (isHit) { cooldownUntil = nowTs + 150; lastHitTs = nowTs; }
                     return isHit;
                 };
             }
