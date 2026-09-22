@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.17
+// @version      3.18
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -14,6 +14,8 @@
 // @connect      wartorn.spiffer10.com
 // @connect      api.torn.com
 // @connect      s12.myradiostream.com
+// @require      https://cdn.jsdelivr.net/npm/butterchurn@2.6.7/lib/butterchurn.min.js
+// @require      https://cdn.jsdelivr.net/npm/butterchurn-presets@2.4.7/lib/butterchurnPresetsMinimal.min.js
 // @downloadURL  https://update.greasyfork.org/scripts/595166/Wartorn%20Companion.user.js
 // @updateURL    https://update.greasyfork.org/scripts/595166/Wartorn%20Companion.meta.js
 // @license MIT
@@ -2496,7 +2498,7 @@
         // ONCE (a second createMediaElementSource call on the same
         // element throws), so this is set up lazily, once, and reused -
         // same singleton pattern as radioAudioEl itself.
-        const RADIO_VIZ_STYLES = ['off', 'bars', 'wave', 'dots', 'plasma', 'kaleido', 'tunnel', 'orbit', 'strobe', 'rain', 'ripple'];
+        const RADIO_VIZ_STYLES = ['off', 'bars', 'wave', 'dots', 'plasma', 'kaleido', 'tunnel', 'orbit', 'strobe', 'rain', 'ripple', 'milkdrop'];
         let radioAudioCtx = null;
         let radioAnalyser = null;
         let radioGainNode = null;
@@ -2547,6 +2549,107 @@
             } catch (e) { radioAnalyser = null; radioGainNode = null; }
             return radioAnalyser;
         }
+
+        // Milkdrop, via Butterchurn (butterchurn/butterchurn-presets,
+        // loaded through @require in the metadata block above - a WebGL
+        // reimplementation of the real Milkdrop preset engine, same one
+        // Webamp uses). This is the one style that can never share the
+        // other styles' 2D canvas - WebGL needs its own canvas/context,
+        // and a <canvas> can only ever bind to ONE kind of context for
+        // its whole lifetime - so it gets a second, normally-hidden
+        // canvas (wt-radio-viz-milkdrop) that this shows/hides in
+        // lockstep with the 2D one as the style changes, both driven from
+        // the SAME draw() tick in startRadioViz rather than a second
+        // independent render loop competing for the same frame budget.
+        let milkdropViz = null;
+        let milkdropVizCanvas = null; // which canvas element milkdropViz is currently bound to
+        let milkdropPresets = null;
+        let milkdropPresetKeys = null;
+        let milkdropNextPresetAt = 0;
+        function ensureMilkdropVisualizer() {
+            const canvas = document.getElementById('wt-radio-viz-milkdrop');
+            if (!canvas) return null;
+            // Closing and reopening the radio panel rebuilds its whole
+            // innerHTML from scratch, including this canvas - a fresh
+            // element, not the same one milkdropViz (if it already
+            // exists) was bound to. Reusing it in that case would try to
+            // render into a dead, detached WebGL context, so it has to be
+            // rebuilt whenever the canvas identity changes, not just once
+            // ever.
+            if (milkdropViz && milkdropVizCanvas === canvas) return milkdropViz;
+            milkdropViz = null;
+            if (typeof butterchurn === 'undefined' || typeof butterchurnPresetsMinimal === 'undefined') return null;
+            const analyser = ensureRadioAnalyser();
+            if (!analyser || !radioAudioCtx) return null;
+            try {
+                milkdropViz = butterchurn.createVisualizer(radioAudioCtx, canvas, {
+                    width: canvas.width || 300,
+                    height: canvas.height || 300
+                });
+                // Same tap point as the 2D visualizers (the analyser, not
+                // the gain node after it) - reacts to the real signal
+                // regardless of the volume slider's position, matching
+                // ensureRadioAnalyser's own "gain sits after the
+                // analyser" reasoning above.
+                milkdropViz.connectAudio(analyser);
+                milkdropVizCanvas = canvas;
+                // A freshly created visualizer has no preset loaded at
+                // all yet - force an immediate pick on the very next
+                // frame rather than leaving it blank until whatever
+                // preset-switch time happened to be left over from a
+                // previous panel session.
+                milkdropNextPresetAt = 0;
+                // Presets don't depend on the canvas - only fetched once
+                // ever, not re-fetched on every panel reopen.
+                if (!milkdropPresets) {
+                    milkdropPresets = butterchurnPresetsMinimal.getPresets();
+                    milkdropPresetKeys = Object.keys(milkdropPresets);
+                }
+            } catch (e) { milkdropViz = null; milkdropVizCanvas = null; }
+            return milkdropViz;
+        }
+        function pickRandomMilkdropPreset() {
+            if (!milkdropViz || !milkdropPresetKeys || !milkdropPresetKeys.length) return;
+            const key = milkdropPresetKeys[Math.floor(Math.random() * milkdropPresetKeys.length)];
+            try { milkdropViz.loadPreset(milkdropPresets[key], 1.5); } catch (e) {}
+        }
+        function sizeMilkdropCanvas() {
+            const canvas = document.getElementById('wt-radio-viz-milkdrop');
+            if (!canvas || !canvas.parentElement) return;
+            const rect = canvas.parentElement.getBoundingClientRect();
+            // Full resolution (unlike the 2D styles' halved RADIO_VIZ_RES_SCALE) -
+            // Butterchurn's WebGL rendering is GPU-bound, not competing with
+            // audio decode on the same main thread the way the CPU-drawn 2D
+            // canvas effects were found to on a real phone.
+            const w = Math.max(1, Math.round(rect.width));
+            const h = Math.max(1, Math.round(rect.height));
+            if (canvas.width === w && canvas.height === h) return;
+            canvas.width = w;
+            canvas.height = h;
+            if (milkdropViz) { try { milkdropViz.setRendererSize(w, h); } catch (e) {} }
+        }
+        // Classic Milkdrop cycles presets on its own every so often rather
+        // than sitting on one forever - 20s here is a toned-down version
+        // of that, not a literal recreation of Milkdrop's own timing.
+        const MILKDROP_PRESET_INTERVAL_MS = 20000;
+        function renderMilkdropFrame(audio) {
+            const viz = ensureMilkdropVisualizer();
+            const canvas = document.getElementById('wt-radio-viz-milkdrop');
+            if (!viz || !canvas) return;
+            if (canvas.style.display === 'none') canvas.style.display = 'block';
+            sizeMilkdropCanvas();
+            if (Date.now() >= milkdropNextPresetAt) {
+                pickRandomMilkdropPreset();
+                milkdropNextPresetAt = Date.now() + MILKDROP_PRESET_INTERVAL_MS;
+            }
+            if (!audio || audio.paused) return;
+            try { viz.render(); } catch (e) {}
+        }
+        function hideMilkdropCanvasIfShown() {
+            const canvas = document.getElementById('wt-radio-viz-milkdrop');
+            if (canvas && canvas.style.display !== 'none') canvas.style.display = 'none';
+        }
+
         // v01 is 0-1. Always sets the native property (works everywhere
         // except iOS, where it's silently ignored) and lazily wires up
         // the GainNode workaround too (see ensureRadioAnalyser above) -
@@ -2670,10 +2773,24 @@
 
                 const styleIdx = getRadioVizStyleIndex();
                 const audio = radioAudioEl;
+                const style = RADIO_VIZ_STYLES[styleIdx];
+
+                // Milkdrop draws on its own separate WebGL canvas (see
+                // ensureMilkdropVisualizer above) - handled entirely apart
+                // from the shared 2D canvas the rest of these styles use,
+                // including its own paused/off checks, so it returns
+                // before ever touching ctx2d.
+                if (style === 'milkdrop') {
+                    canvas.style.display = 'none';
+                    renderMilkdropFrame(audio);
+                    return;
+                }
+                hideMilkdropCanvasIfShown();
+                canvas.style.display = 'block';
+
                 ctx2d.clearRect(0, 0, canvas.width, canvas.height);
                 if (styleIdx === 0 || !audio || audio.paused) return;
 
-                const style = RADIO_VIZ_STYLES[styleIdx];
                 if (style === 'bars') {
                     analyser.getByteFrequencyData(freqData);
                     const barW = canvas.width / bufferLen;
@@ -3011,6 +3128,7 @@
             const vizStyleIdx = getRadioVizStyleIndex();
             body.innerHTML = `<div style="position:relative; padding:10px 0;">
                 <canvas id="wt-radio-viz" style="position:absolute; inset:0; width:100%; height:100%; z-index:0; border-radius:8px; pointer-events:none;"></canvas>
+                <canvas id="wt-radio-viz-milkdrop" style="display:none; position:absolute; inset:0; width:100%; height:100%; z-index:0; border-radius:8px; pointer-events:none;"></canvas>
                 <div style="position:relative; z-index:1; display:flex; flex-direction:column; gap:12px;">
                     <div style="display:flex; gap:12px; align-items:flex-start;">
                         <div id="wt-radio-art-wrap" style="flex:0 0 100px; width:100px; height:100px; border-radius:8px; overflow:hidden; background:#252525; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 10px rgba(0,0,0,0.5);"><img src="${RADIO_LOGO_URL}" style="width:100%; height:100%; object-fit:contain;"></div>
@@ -3108,15 +3226,20 @@
                 vizCanvas.height = rect.height * RADIO_VIZ_RES_SCALE;
             }
             sizeVizCanvas();
-            // Deferred until the button is actually clicked for the
-            // first time, rather than run eagerly on every panel open -
-            // createMediaElementSource (inside ensureRadioAnalyser)
-            // permanently reroutes the radio's own audio output the
-            // moment it's called, which is exactly what put playback at
-            // the mercy of a freshly-created AudioContext's own
-            // suspended-by-default state (see the .resume() call added
-            // above). Nobody who never touches this button should have
-            // their audio graph touched at all.
+            // Starting the draw loop is deferred until either the button
+            // is actually clicked, OR (here) a non-off style was already
+            // saved from a previous session - createMediaElementSource
+            // (inside ensureRadioAnalyser) permanently reroutes the
+            // radio's own audio output the moment it's called, which is
+            // exactly what put playback at the mercy of a freshly-created
+            // AudioContext's own suspended-by-default state (see the
+            // .resume() call added above). Nobody who's never touched
+            // this button at all (persisted style still 'off') should
+            // have their audio graph touched - but the whole point of
+            // remembering the choice is that someone who DID turn it on
+            // before shouldn't have to click through the cycle again on
+            // every fresh page load just to get back to what they had.
+            if (getRadioVizStyleIndex() > 0) startRadioViz(vizCanvas);
             vizBtn.addEventListener('click', () => {
                 const next = (getRadioVizStyleIndex() + 1) % RADIO_VIZ_STYLES.length;
                 safeGmSet('wt_radio_viz_style', next);
