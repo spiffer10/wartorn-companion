@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.23
+// @version      3.24
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -3043,15 +3043,6 @@
             requestAnimationFrame(draw);
         }
         function maybeAutoResumeRadio() {
-            // This tab's own durable record (see isRadioPoppedOut below)
-            // that playback was last handed off to a separate pop-out tab
-            // takes priority over wt_radio_playing - that GM flag is only
-            // ever set by THIS in-page element's own play/pause events,
-            // which is exactly what pausing before popping out already
-            // clears, but defending here too means a fresh reload can
-            // never resume the in-page copy while this tab still
-            // believes a pop-out is out there.
-            if (getRadioPoppedOutFlag()) return;
             const wasPlaying = safeGmGet('wt_radio_playing', false);
             const lastActive = safeGmGet('wt_radio_last_active_ts', 0);
             if (!wasPlaying || (Date.now() - lastActive) >= RADIO_RESUME_WINDOW_MS) return;
@@ -3085,73 +3076,26 @@
         let radioPopoutPoll = null;
         let radioNpInterval = null;
         let radioVisibilityHandler = null;
-        // Torn navigates with real full page loads on nearly every click,
-        // which reinitializes this whole script from scratch - radioPopoutWin
-        // (an in-memory window handle) is lost the instant that happens,
-        // even though the actual separate tab is still genuinely open and
-        // playing. Without something durable, the freshly-reloaded page has
-        // no way to know that, shows the full in-page controls again, and
-        // - since those controls default to a paused, not-popped-out state
-        // - going anywhere near the play button (or a stray auto-resume)
-        // means BOTH the pop-out and the in-page copy end up making sound.
-        // sessionStorage (same "survives same-tab navigation, scoped to
-        // this one tab" reasoning as getRadioInstanceId above) is what
-        // isRadioPoppedOut() below falls back on whenever there's no live
-        // window handle to check directly.
-        function setRadioPoppedOutFlag(val) {
-            try {
-                if (val) sessionStorage.setItem('wt_radio_popped_out', '1');
-                else sessionStorage.removeItem('wt_radio_popped_out');
-            } catch (e) {}
-        }
-        function getRadioPoppedOutFlag() {
-            try { return sessionStorage.getItem('wt_radio_popped_out') === '1'; }
-            catch (e) { return false; }
-        }
         function isRadioPoppedOut() {
-            if (radioPopoutWin) {
-                const stillOpen = !radioPopoutWin.closed;
-                // A live handle is authoritative - reconcile the durable
-                // flag to match rather than trusting a stale '1' left over
-                // from before this exact handle existed.
-                setRadioPoppedOutFlag(stillOpen);
-                return stillOpen;
-            }
-            // No handle in THIS script instance (fresh page load after a
-            // Torn navigation, most likely) - trust whatever this tab
-            // last durably recorded. Can't self-correct if the pop-out
-            // was closed while this tab was away, but that only risks
-            // wrongly showing "playing in a tab" a bit too long, never
-            // wrongly resuming a duplicate in-page copy - the safe side
-            // to be wrong on.
-            return getRadioPoppedOutFlag();
+            return !!radioPopoutWin && !radioPopoutWin.closed;
         }
         // onStateChange(deniedMsg) - called with a message string if the
         // claim was refused (nothing opened), or with no argument on a
         // real state change (opened, or later closed).
         function openRadioPopout(onStateChange) {
-            // Only .focus() a LIVE handle - after a Torn navigation
-            // reinitializes this script, isRadioPoppedOut() can be true
-            // purely off the durable sessionStorage flag with no actual
-            // window reference yet, and calling .focus() on null would
-            // throw. Falling through to a fresh window.open() below with
-            // the same window name either focuses that same still-open
-            // tab (if it genuinely is) or opens a new one otherwise (if
-            // it was actually closed) - both correct outcomes.
-            if (isRadioPoppedOut() && radioPopoutWin) { radioPopoutWin.focus(); return; }
-            // Paused immediately, synchronously - not gated behind the
-            // lock-claim round trip below, so there's no window where
-            // both the in-page copy and the about-to-open pop-out could
-            // make sound at once while waiting on the network.
-            const audio = getRadioAudioEl();
-            audio.pause();
-            setRadioPoppedOutFlag(true);
+            if (isRadioPoppedOut()) { radioPopoutWin.focus(); return; }
             claimRadioLock().then(granted => {
                 if (!granted) {
-                    setRadioPoppedOutFlag(false);
                     if (onStateChange) onStateChange('Already playing on another tab/device');
                     return;
                 }
+                const audio = getRadioAudioEl();
+                // Paused, not released - the claim stays held on this
+                // instance's behalf for as long as the pop-out stays
+                // open (ensureRadioLockRenewal treats isRadioPoppedOut()
+                // as "still active" too), so nothing else can start
+                // playing elsewhere while this window is up.
+                audio.pause();
                 const vol = Math.round(audio.volume * 100);
                 // No window-feature string (width/height/etc.) - that's
                 // what tells the browser to open a separate popup window
@@ -3159,18 +3103,7 @@
                 // opens as a tab, and still reuses the same one by name
                 // on a later click instead of opening duplicates.
                 radioPopoutWin = window.open(`${WARTORN_HOST}/radio-player?volume=${vol}`, 'wt_radio_player');
-                if (!radioPopoutWin) {
-                    // Blocked by a popup blocker (rare here since this is
-                    // a direct click response, but the network round trip
-                    // above can be just enough delay for some browsers to
-                    // no longer consider this "during" the gesture) -
-                    // nothing actually opened, so don't leave this tab
-                    // durably believing playback moved elsewhere.
-                    setRadioPoppedOutFlag(false);
-                    if (onStateChange) onStateChange('Pop-out blocked - allow pop-ups for this site and try again');
-                    return;
-                }
-                radioPopoutWin.focus();
+                if (radioPopoutWin) radioPopoutWin.focus();
                 ensureRadioLockRenewal();
                 if (onStateChange) onStateChange();
                 if (radioPopoutPoll) clearInterval(radioPopoutPoll);
