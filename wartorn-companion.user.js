@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.18
+// @version      3.19
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2578,9 +2578,22 @@
             // ever.
             if (milkdropViz && milkdropVizCanvas === canvas) return milkdropViz;
             milkdropViz = null;
-            if (typeof butterchurn === 'undefined' || typeof butterchurnPresetsMinimal === 'undefined') return null;
+            // Logged rather than silently swallowed - this is the one
+            // style depending on an external dependency loaded via
+            // @require, which can fail for reasons the rest of this
+            // script can't (CDN blocked, Tampermonkey not having
+            // re-fetched a newly-added @require on an existing install,
+            // etc.) - worth being loud about exactly where it breaks
+            // instead of just quietly not drawing anything.
+            if (typeof butterchurn === 'undefined' || typeof butterchurnPresetsMinimal === 'undefined') {
+                console.error('[Wartorn] Milkdrop unavailable: butterchurn=' + (typeof butterchurn) + ', butterchurnPresetsMinimal=' + (typeof butterchurnPresetsMinimal) + ' - the @require script(s) in the userscript header didn\'t load. Try reinstalling the companion script (Tampermonkey doesn\'t always re-fetch newly added @require entries on a normal auto-update).');
+                return null;
+            }
             const analyser = ensureRadioAnalyser();
-            if (!analyser || !radioAudioCtx) return null;
+            if (!analyser || !radioAudioCtx) {
+                console.error('[Wartorn] Milkdrop unavailable: radio audio graph not ready (analyser=' + !!analyser + ', audioCtx=' + !!radioAudioCtx + ')');
+                return null;
+            }
             try {
                 milkdropViz = butterchurn.createVisualizer(radioAudioCtx, canvas, {
                     width: canvas.width || 300,
@@ -2605,13 +2618,17 @@
                     milkdropPresets = butterchurnPresetsMinimal.getPresets();
                     milkdropPresetKeys = Object.keys(milkdropPresets);
                 }
-            } catch (e) { milkdropViz = null; milkdropVizCanvas = null; }
+            } catch (e) {
+                console.error('[Wartorn] Milkdrop failed to initialize:', e.message, e.stack);
+                milkdropViz = null; milkdropVizCanvas = null;
+            }
             return milkdropViz;
         }
         function pickRandomMilkdropPreset() {
             if (!milkdropViz || !milkdropPresetKeys || !milkdropPresetKeys.length) return;
             const key = milkdropPresetKeys[Math.floor(Math.random() * milkdropPresetKeys.length)];
-            try { milkdropViz.loadPreset(milkdropPresets[key], 1.5); } catch (e) {}
+            try { milkdropViz.loadPreset(milkdropPresets[key], 1.5); }
+            catch (e) { console.error('[Wartorn] Milkdrop loadPreset failed:', e.message); }
         }
         function sizeMilkdropCanvas() {
             const canvas = document.getElementById('wt-radio-viz-milkdrop');
@@ -2626,12 +2643,16 @@
             if (canvas.width === w && canvas.height === h) return;
             canvas.width = w;
             canvas.height = h;
-            if (milkdropViz) { try { milkdropViz.setRendererSize(w, h); } catch (e) {} }
+            if (milkdropViz) {
+                try { milkdropViz.setRendererSize(w, h); }
+                catch (e) { console.error('[Wartorn] Milkdrop setRendererSize failed:', e.message); }
+            }
         }
         // Classic Milkdrop cycles presets on its own every so often rather
         // than sitting on one forever - 20s here is a toned-down version
         // of that, not a literal recreation of Milkdrop's own timing.
         const MILKDROP_PRESET_INTERVAL_MS = 20000;
+        let milkdropRenderErrorLogged = false; // this runs at ~30fps - log a failure once, not every frame
         function renderMilkdropFrame(audio) {
             const viz = ensureMilkdropVisualizer();
             const canvas = document.getElementById('wt-radio-viz-milkdrop');
@@ -2643,7 +2664,13 @@
                 milkdropNextPresetAt = Date.now() + MILKDROP_PRESET_INTERVAL_MS;
             }
             if (!audio || audio.paused) return;
-            try { viz.render(); } catch (e) {}
+            try { viz.render(); }
+            catch (e) {
+                if (!milkdropRenderErrorLogged) {
+                    milkdropRenderErrorLogged = true;
+                    console.error('[Wartorn] Milkdrop render() failed:', e.message);
+                }
+            }
         }
         function hideMilkdropCanvasIfShown() {
             const canvas = document.getElementById('wt-radio-viz-milkdrop');
