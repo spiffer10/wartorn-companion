@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.20
+// @version      3.21
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2565,7 +2565,6 @@
         let milkdropVizCanvas = null; // which canvas element milkdropViz is currently bound to
         let milkdropPresets = null;
         let milkdropPresetKeys = null;
-        let milkdropNextPresetAt = 0;
         // Confirmed live (console log 2026-09-22): the @require actually
         // loads fine - butterchurn is defined - but butterchurn.
         // createVisualizer isn't a function. butterchurn's UMD build is a
@@ -2636,18 +2635,30 @@
                 // analyser" reasoning above.
                 milkdropViz.connectAudio(analyser);
                 milkdropVizCanvas = canvas;
-                // A freshly created visualizer has no preset loaded at
-                // all yet - force an immediate pick on the very next
-                // frame rather than leaving it blank until whatever
-                // preset-switch time happened to be left over from a
-                // previous panel session.
-                milkdropNextPresetAt = 0;
                 // Presets don't depend on the canvas - only fetched once
                 // ever, not re-fetched on every panel reopen.
                 if (!milkdropPresets) {
                     milkdropPresets = presetsLib.getPresets();
                     milkdropPresetKeys = Object.keys(milkdropPresets);
                 }
+                // Torn's own page CSP blocks 'unsafe-eval' (confirmed live
+                // 2026-09-22), which loadPreset needs to compile a
+                // preset's equations - it throws every single time here,
+                // deterministically, so a real Milkdrop preset can never
+                // actually load on torn.com itself (this is a hard wall,
+                // not a bug - other Butterchurn integrations explicitly
+                // require 'unsafe-eval' in their OWN page's CSP to work
+                // at all). Left as a single, silently-caught attempt
+                // rather than a repeating retry loop, since a
+                // deterministic failure will never start succeeding on a
+                // later try - if it DOES throw, this just quietly leaves
+                // Butterchurn's own default (a reactive ring) on screen,
+                // which is still a real, live, audio-reactive visual, just
+                // not a curated preset. (The pop-out radio player is a
+                // separate page on our own domain with no such CSP
+                // restriction - see /radio-player in server.js, which
+                // gets real preset cycling.)
+                pickRandomMilkdropPreset();
             } catch (e) {
                 console.error('[Wartorn] Milkdrop failed to initialize:', e.message, e.stack);
                 milkdropViz = null; milkdropVizCanvas = null;
@@ -2657,8 +2668,7 @@
         function pickRandomMilkdropPreset() {
             if (!milkdropViz || !milkdropPresetKeys || !milkdropPresetKeys.length) return;
             const key = milkdropPresetKeys[Math.floor(Math.random() * milkdropPresetKeys.length)];
-            try { milkdropViz.loadPreset(milkdropPresets[key], 1.5); }
-            catch (e) { console.error('[Wartorn] Milkdrop loadPreset failed:', e.message); }
+            try { milkdropViz.loadPreset(milkdropPresets[key], 1.5); } catch (e) {}
         }
         function sizeMilkdropCanvas() {
             const canvas = document.getElementById('wt-radio-viz-milkdrop');
@@ -2678,10 +2688,6 @@
                 catch (e) { console.error('[Wartorn] Milkdrop setRendererSize failed:', e.message); }
             }
         }
-        // Classic Milkdrop cycles presets on its own every so often rather
-        // than sitting on one forever - 20s here is a toned-down version
-        // of that, not a literal recreation of Milkdrop's own timing.
-        const MILKDROP_PRESET_INTERVAL_MS = 20000;
         let milkdropRenderErrorLogged = false; // this runs at ~30fps - log a failure once, not every frame
         function renderMilkdropFrame(audio) {
             const viz = ensureMilkdropVisualizer();
@@ -2689,10 +2695,6 @@
             if (!viz || !canvas) return;
             if (canvas.style.display === 'none') canvas.style.display = 'block';
             sizeMilkdropCanvas();
-            if (Date.now() >= milkdropNextPresetAt) {
-                pickRandomMilkdropPreset();
-                milkdropNextPresetAt = Date.now() + MILKDROP_PRESET_INTERVAL_MS;
-            }
             if (!audio || audio.paused) return;
             try { viz.render(); }
             catch (e) {
@@ -2728,7 +2730,11 @@
             }
         }
         function getRadioVizStyleIndex() {
-            return safeGmGet('wt_radio_viz_style', 0);
+            // Milkdrop is the default for anyone who's never touched this
+            // setting (was 'off') - looked up by name rather than a
+            // hardcoded index so it keeps working if RADIO_VIZ_STYLES
+            // ever gets reordered.
+            return safeGmGet('wt_radio_viz_style', RADIO_VIZ_STYLES.indexOf('milkdrop'));
         }
         let radioVizRunning = false;
         function startRadioViz(canvas) {
@@ -3150,32 +3156,6 @@
             } catch (e) { cb({ url: null, year: null }); }
         }
 
-        // Turns the stream's raw stats payload into a small label/value
-        // grid - listener counts, quality, and uptime are genuinely
-        // interesting to see live, unlike the more internal fields on
-        // that same payload (streampath, content-type, DNAS version)
-        // which wouldn't mean anything to someone just listening.
-        function formatRadioUptime(secs) {
-            secs = parseInt(secs, 10) || 0;
-            const h = Math.floor(secs / 3600);
-            const m = Math.floor((secs % 3600) / 60);
-            if (h > 0) return `${h}h ${m}m`;
-            return `${m}m`;
-        }
-        function renderRadioMeta(stats) {
-            const rows = [];
-            if (stats.currentlisteners !== undefined) {
-                rows.push(['Listeners', `${stats.currentlisteners}${stats.peaklisteners ? ' (peak ' + stats.peaklisteners + ')' : ''}`]);
-            }
-            if (stats.bitrate) rows.push(['Quality', `${stats.bitrate}kbps${stats.samplerate ? ' · ' + (stats.samplerate / 1000) + 'kHz' : ''}`]);
-            if (stats.servergenre) rows.push(['Genre', stats.servergenre]);
-            if (stats.streamuptime !== undefined) rows.push(['Uptime', formatRadioUptime(stats.streamuptime)]);
-            if (stats.uniquelisteners !== undefined) rows.push(['Unique today', stats.uniquelisteners]);
-            return rows.map(([label, value]) =>
-                `<div>${label}</div><div style="color:#ccc; text-align:right;">${value}</div>`
-            ).join('');
-        }
-
         function renderRadioPanel() {
             const body = document.getElementById('wt-panel-body-radio');
             if (!body) return;
@@ -3195,7 +3175,6 @@
                             <div id="wt-radio-year" style="color:#666; font-size:0.75em; line-height:1.3; min-height:1.1em;"></div>
                             <div style="display:flex; gap:6px; margin-top:6px;">
                                 <span id="wt-radio-toggle" style="width:38px; height:38px; border-radius:50%; background:#252525; border:2px solid #00e5ff; display:flex; align-items:center; justify-content:center; font-size:1.1em; cursor:pointer; opacity:${poppedOut ? '0.4' : '1'};">${audio.paused ? '▶️' : '⏸️'}</span>
-                                <span id="wt-radio-info-btn" title="Stream stats" style="width:38px; height:38px; border-radius:50%; background:#252525; border:1px solid #444; display:flex; align-items:center; justify-content:center; font-size:1em; cursor:pointer;">ℹ️</span>
                                 <span id="wt-radio-viz-btn" title="Visualizer: ${RADIO_VIZ_STYLES[vizStyleIdx]}" style="width:38px; height:38px; border-radius:50%; background:#252525; border:1px solid #444; display:flex; align-items:center; justify-content:center; font-size:1em; cursor:pointer;">📊</span>
                             </div>
                         </div>
@@ -3204,9 +3183,6 @@
                         <span style="font-size:0.9em;">🔉</span>
                         <input id="wt-radio-volume" type="range" min="0" max="100" value="${volume}" style="flex:1;">
                         <span id="wt-radio-volume-label" style="color:#888; font-size:0.8em; width:32px; text-align:right;">${volume}%</span>
-                    </div>
-                    <div id="wt-radio-meta-drawer" style="max-height:0; overflow:hidden; transition:max-height 0.25s ease;">
-                        <div id="wt-radio-meta" style="display:grid; grid-template-columns:1fr 1fr; gap:5px 12px; font-size:0.75em; color:#888; border-top:1px solid #2a2a2a; padding-top:10px;"></div>
                     </div>
                     <span id="wt-radio-popout" style="color:#00e5ff; font-size:0.8em; cursor:pointer; text-decoration:underline; opacity:0.85; text-align:center;">${poppedOut ? '↗ Playing in a tab' : '↗ Open in a tab'}</span>
                 </div>
@@ -3248,19 +3224,6 @@
                 safeGmSet('wt_radio_volume', v);
                 const label = document.getElementById('wt-radio-volume-label');
                 if (label) label.innerText = v + '%';
-            });
-
-            // Info button slides the stats grid open/closed from the
-            // bottom - a fixed px height (not "auto"/none) since
-            // max-height only actually animates between two concrete
-            // values, comfortably tall enough for the 5 possible rows.
-            const infoBtn = document.getElementById('wt-radio-info-btn');
-            let metaOpen = false;
-            infoBtn.addEventListener('click', () => {
-                metaOpen = !metaOpen;
-                const drawer = document.getElementById('wt-radio-meta-drawer');
-                if (drawer) drawer.style.maxHeight = metaOpen ? '140px' : '0';
-                infoBtn.style.background = metaOpen ? 'rgba(0,229,255,0.15)' : '#252525';
             });
 
             // Visualizer button cycles off -> bars -> wave -> dots -> off.
@@ -3416,9 +3379,6 @@
                         if (yearEl) yearEl.innerText = '';
                         if (lastArtTitle !== null) { lastArtTitle = null; setArt(null); }
                     }
-
-                    const metaEl = document.getElementById('wt-radio-meta');
-                    if (metaEl && stats) metaEl.innerHTML = renderRadioMeta(stats);
                 });
             }
             refreshNowPlaying();
