@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.19
+// @version      3.20
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2566,6 +2566,33 @@
         let milkdropPresets = null;
         let milkdropPresetKeys = null;
         let milkdropNextPresetAt = 0;
+        // Confirmed live (console log 2026-09-22): the @require actually
+        // loads fine - butterchurn is defined - but butterchurn.
+        // createVisualizer isn't a function. butterchurn's UMD build is a
+        // webpack bundle of an ES module, and its real class sits on the
+        // module's "default" export (butterchurn.default.createVisualizer),
+        // not flattened onto the global itself the way the plain `import
+        // butterchurn from 'butterchurn'` usage in butterchurn's own docs
+        // implies once that import is compiled away. butterchurn-presets'
+        // bundle looked like it might export flat (module.exports = v
+        // directly in one internal chunk) rather than nested under
+        // .default, so rather than assume BOTH libraries share one shape,
+        // this checks for a working createVisualizer/getPresets method
+        // directly and falls back to .default only if the flat object
+        // doesn't have it - works regardless of which shape either
+        // library actually turns out to use.
+        function resolveButterchurnLib() {
+            if (typeof butterchurn === 'undefined') return null;
+            if (typeof butterchurn.createVisualizer === 'function') return butterchurn;
+            if (butterchurn.default && typeof butterchurn.default.createVisualizer === 'function') return butterchurn.default;
+            return null;
+        }
+        function resolveButterchurnPresetsLib() {
+            if (typeof butterchurnPresetsMinimal === 'undefined') return null;
+            if (typeof butterchurnPresetsMinimal.getPresets === 'function') return butterchurnPresetsMinimal;
+            if (butterchurnPresetsMinimal.default && typeof butterchurnPresetsMinimal.default.getPresets === 'function') return butterchurnPresetsMinimal.default;
+            return null;
+        }
         function ensureMilkdropVisualizer() {
             const canvas = document.getElementById('wt-radio-viz-milkdrop');
             if (!canvas) return null;
@@ -2578,15 +2605,18 @@
             // ever.
             if (milkdropViz && milkdropVizCanvas === canvas) return milkdropViz;
             milkdropViz = null;
+            const lib = resolveButterchurnLib();
+            const presetsLib = resolveButterchurnPresetsLib();
             // Logged rather than silently swallowed - this is the one
             // style depending on an external dependency loaded via
             // @require, which can fail for reasons the rest of this
             // script can't (CDN blocked, Tampermonkey not having
             // re-fetched a newly-added @require on an existing install,
-            // etc.) - worth being loud about exactly where it breaks
-            // instead of just quietly not drawing anything.
-            if (typeof butterchurn === 'undefined' || typeof butterchurnPresetsMinimal === 'undefined') {
-                console.error('[Wartorn] Milkdrop unavailable: butterchurn=' + (typeof butterchurn) + ', butterchurnPresetsMinimal=' + (typeof butterchurnPresetsMinimal) + ' - the @require script(s) in the userscript header didn\'t load. Try reinstalling the companion script (Tampermonkey doesn\'t always re-fetch newly added @require entries on a normal auto-update).');
+            // an unexpected export shape, etc.) - worth being loud about
+            // exactly where it breaks instead of just quietly not
+            // drawing anything.
+            if (!lib || !presetsLib) {
+                console.error('[Wartorn] Milkdrop unavailable: butterchurn lib=' + !!lib + ', presets lib=' + !!presetsLib + ' (typeof butterchurn=' + (typeof butterchurn) + ', typeof butterchurnPresetsMinimal=' + (typeof butterchurnPresetsMinimal) + '). If both are "undefined", the @require script(s) didn\'t load - try reinstalling the companion script. If they\'re defined but this still fails, their export shape has changed again.');
                 return null;
             }
             const analyser = ensureRadioAnalyser();
@@ -2595,7 +2625,7 @@
                 return null;
             }
             try {
-                milkdropViz = butterchurn.createVisualizer(radioAudioCtx, canvas, {
+                milkdropViz = lib.createVisualizer(radioAudioCtx, canvas, {
                     width: canvas.width || 300,
                     height: canvas.height || 300
                 });
@@ -2615,7 +2645,7 @@
                 // Presets don't depend on the canvas - only fetched once
                 // ever, not re-fetched on every panel reopen.
                 if (!milkdropPresets) {
-                    milkdropPresets = butterchurnPresetsMinimal.getPresets();
+                    milkdropPresets = presetsLib.getPresets();
                     milkdropPresetKeys = Object.keys(milkdropPresets);
                 }
             } catch (e) {
