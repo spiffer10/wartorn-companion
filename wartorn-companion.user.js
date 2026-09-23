@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.32
+// @version      3.33
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -855,40 +855,106 @@
         });
     }
 
+    // Draws the chart once, plus wires mousemove/mouseleave to redraw with
+    // a hover indicator (a vertical guide, a dot on the line, and a
+    // time+quantity tooltip) - matching torn-intel.com's own graph
+    // interaction, not just the static area/line it was before.
     function renderHistoryChart(canvas, samples) {
         const ctx = canvas.getContext('2d');
         const w = canvas.width, h = canvas.height;
-        ctx.clearRect(0, 0, w, h);
+        canvas.onmousemove = null;
+        canvas.onmouseleave = null;
         if (!samples || samples.length < 2) {
+            ctx.clearRect(0, 0, w, h);
             ctx.fillStyle = '#666';
             ctx.font = '13px sans-serif';
             ctx.textAlign = 'center';
             ctx.fillText('Not enough history yet', w / 2, h / 2);
             return;
         }
+        // Left/bottom padding for axis labels - the old version drew edge-
+        // to-edge with no scale at all.
+        const PAD_L = 46, PAD_R = 10, PAD_T = 10, PAD_B = 8;
+        const plotW = w - PAD_L - PAD_R;
+        const plotH = h - PAD_T - PAD_B;
         const minTs = samples[0].sampled_at;
         const maxTs = samples[samples.length - 1].sampled_at;
         const maxQty = Math.max(1, ...samples.map(s => s.quantity));
         const spanTs = Math.max(1, maxTs - minTs);
-        const x = ts => ((ts - minTs) / spanTs) * w;
-        const y = qty => h - (qty / maxQty) * (h - 10) - 5;
+        const x = ts => PAD_L + ((ts - minTs) / spanTs) * plotW;
+        const y = qty => PAD_T + plotH - (qty / maxQty) * plotH;
 
-        ctx.beginPath();
-        ctx.moveTo(x(samples[0].sampled_at), h);
-        samples.forEach(s => ctx.lineTo(x(s.sampled_at), y(s.quantity)));
-        ctx.lineTo(x(samples[samples.length - 1].sampled_at), h);
-        ctx.closePath();
-        ctx.fillStyle = 'rgba(0,229,255,0.15)';
-        ctx.fill();
+        function draw(hoverIdx) {
+            ctx.clearRect(0, 0, w, h);
 
-        ctx.beginPath();
-        ctx.strokeStyle = '#00e5ff';
-        ctx.lineWidth = 2;
-        samples.forEach((s, i) => {
+            // Y-axis gridlines/labels (0, half, max) - gives the shape an
+            // actual scale instead of just a relative silhouette.
+            ctx.strokeStyle = '#1e1e1e';
+            ctx.lineWidth = 1;
+            ctx.font = '11px sans-serif';
+            ctx.textAlign = 'right';
+            [0, 0.5, 1].forEach(f => {
+                const gy = PAD_T + plotH * (1 - f);
+                ctx.beginPath(); ctx.moveTo(PAD_L, gy); ctx.lineTo(w - PAD_R, gy); ctx.stroke();
+                ctx.fillStyle = '#666';
+                ctx.fillText(Math.round(maxQty * f).toLocaleString(), PAD_L - 8, gy + 4);
+            });
+
+            ctx.beginPath();
+            ctx.moveTo(x(samples[0].sampled_at), PAD_T + plotH);
+            samples.forEach(s => ctx.lineTo(x(s.sampled_at), y(s.quantity)));
+            ctx.lineTo(x(samples[samples.length - 1].sampled_at), PAD_T + plotH);
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(0,229,255,0.15)';
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.strokeStyle = '#00e5ff';
+            ctx.lineWidth = 2;
+            samples.forEach((s, i) => {
+                const px = x(s.sampled_at), py = y(s.quantity);
+                if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+            });
+            ctx.stroke();
+
+            if (hoverIdx == null) return;
+            const s = samples[hoverIdx];
             const px = x(s.sampled_at), py = y(s.quantity);
-            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-        });
-        ctx.stroke();
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+            ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(px, PAD_T); ctx.lineTo(px, PAD_T + plotH); ctx.stroke();
+
+            ctx.fillStyle = '#fff';
+            ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI * 2); ctx.fill();
+
+            const label = new Date(s.sampled_at).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + '  ·  ' + s.quantity.toLocaleString();
+            ctx.font = 'bold 11px sans-serif';
+            const tw = ctx.measureText(label).width + 14;
+            let boxX = Math.min(Math.max(2, px - tw / 2), w - 2 - tw);
+            const boxY = py > PAD_T + 26 ? py - 26 : py + 8;
+            ctx.fillStyle = 'rgba(0,0,0,0.88)';
+            ctx.fillRect(boxX, boxY, tw, 20);
+            ctx.strokeStyle = '#00e5ff';
+            ctx.strokeRect(boxX, boxY, tw, 20);
+            ctx.fillStyle = '#fff';
+            ctx.textAlign = 'left';
+            ctx.fillText(label, boxX + 7, boxY + 14);
+        }
+
+        draw(null);
+
+        canvas.onmousemove = (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = (e.clientX - rect.left) * (w / rect.width);
+            let nearest = 0, nearestDist = Infinity;
+            samples.forEach((s, i) => {
+                const d = Math.abs(x(s.sampled_at) - mouseX);
+                if (d < nearestDist) { nearestDist = d; nearest = i; }
+            });
+            draw(nearest);
+        };
+        canvas.onmouseleave = () => draw(null);
     }
 
     function showItemHistoryModal(countryName, itemId, itemName) {
@@ -897,12 +963,12 @@
         overlay.id = 'wt-item-modal';
         overlay.style.cssText = 'position:fixed; inset:0; z-index:999999999; background:rgba(0,0,0,0.75); display:flex; align-items:center; justify-content:center; padding:20px;';
         overlay.innerHTML = `
-            <div style="background:#15171c; border:1px solid #333; border-radius:10px; padding:22px; max-width:480px; width:100%; box-shadow:0 20px 60px rgba(0,0,0,0.7); font-family:sans-serif;">
+            <div style="background:#15171c; border:1px solid #333; border-radius:10px; padding:22px; max-width:620px; width:100%; box-shadow:0 20px 60px rgba(0,0,0,0.7); font-family:sans-serif;">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
                     <div style="color:#00e5ff; font-weight:bold; font-size:1.05em;">${itemName}</div>
                     <span id="wt-item-modal-close" style="cursor:pointer; color:#888; font-size:1.4em; line-height:1;">&times;</span>
                 </div>
-                <canvas id="wt-item-modal-chart" width="440" height="150" style="width:100%; height:150px; background:#0b0c10; border-radius:6px; display:block;"></canvas>
+                <canvas id="wt-item-modal-chart" width="560" height="260" style="width:100%; height:260px; background:#0b0c10; border-radius:6px; display:block; cursor:crosshair;"></canvas>
                 <div style="color:#555; font-size:0.7em; margin-top:6px;">Last 48h - stock quantity over time</div>
                 <div style="display:flex; flex-direction:column; gap:10px; margin-top:16px; border-top:1px solid #333; padding-top:14px;">
                     <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
