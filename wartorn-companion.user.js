@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.29.1
+// @version      3.30
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -363,9 +363,16 @@
         // sliding OUT from behind the logo rather than fading in beside it.
         notice.style.cssText = 'position:fixed; z-index:9999998; height:40px; width:0; overflow:hidden; background:#15171c; border:1px solid #00e5ff; border-radius:0 6px 6px 0; box-shadow:0 4px 15px rgba(0,0,0,0.6); transition:width 0.4s ease; display:flex; align-items:center; white-space:nowrap; cursor:pointer;';
         notice.innerHTML = '<span style="padding:0 14px; color:#00e5ff; font-size:0.8em; font-weight:bold;">🚀 New version available - click to update</span>';
-        notice.title = 'Opens the latest Wartorn Companion script - Tampermonkey will offer to update.';
+        notice.title = 'Opens the GreasyFork page - use its own Install/Update button there.';
         notice.addEventListener('click', () => {
-            window.open(`${WARTORN_HOST}/wartorn-companion.user.js`, '_blank');
+            // Confirmed live: opening the raw .user.js file directly (even
+            // though it's the exact file Tampermonkey's own update
+            // mechanism pulls from) just displayed as plain text instead of
+            // triggering Tampermonkey's install/update prompt - something
+            // about that flow specifically doesn't fire it reliably.
+            // GreasyFork's own script page - the same page/button already
+            // confirmed to work - does.
+            window.open('https://greasyfork.org/en/scripts/595166-wartorn-companion', '_blank');
         });
         document.body.appendChild(notice);
         applyCompanionAnchor();
@@ -783,16 +790,17 @@
     }
 
     if (/sid=travel/.test(window.location.href)) {
-        let marketScrapeTimer = null;
-        const scheduleMarketScrape = () => {
-            if (marketScrapeTimer) return;
-            // Debounced, not instant - the observer below can fire dozens of
-            // times a second on a busy page, and there's no need to re-scan
-            // the DOM that often for something that only changes on restock.
-            marketScrapeTimer = setTimeout(() => { marketScrapeTimer = null; scrapeItemMarket(); }, 800);
-        };
-        new MutationObserver(scheduleMarketScrape).observe(document.body, { childList: true, subtree: true });
-        scheduleMarketScrape();
+        // A plain 500ms poll instead of a MutationObserver - a restock
+        // doesn't add/remove any DOM nodes, React just updates the stock
+        // cell's own text content in place, which a { childList: true }
+        // observer (the previous approach) never sees fire at all. This
+        // isn't nearly as wasteful as it sounds: scrapeItemMarket() itself
+        // already no-ops (no network call) unless the actual quantities
+        // changed since the last scrape, so a live shop page is the only
+        // place this runs at all, and it's cheap even there (a few dozen
+        // cells, not thousands).
+        setInterval(scrapeItemMarket, 500);
+        scrapeItemMarket();
     }
 
     // --- 5. MODULE: LEFT-EDGE CONDENSED PANELS ---
