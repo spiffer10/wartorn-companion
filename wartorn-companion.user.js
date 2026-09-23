@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.38
+// @version      3.39
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -161,10 +161,22 @@
         // it can reach shared GM storage. See renderFlightWidget/
         // onFlightWidgetClick further down for the torn.com side that
         // reads wt_active_flight_target back out.
+        //
+        // flight-planner.js's countryRaw is the full lowercase country
+        // name ("mexico"), not the short YATA code ("mex") the torn.com
+        // side's lookups (FLIGHT_COUNTRY_NAMES/FLIGHT_FLAG_EMOJI) are keyed
+        // by - without this translation the flag/country-name display
+        // silently misses for every dashboard-pushed target (auto-picked
+        // ones already come back from the backend as short codes, so they
+        // were never affected). Kept local to this branch rather than
+        // reusing FLIGHT_MINS_MAP's sibling maps further down, since this
+        // whole block returns before that code ever runs on this domain.
+        const FLIGHT_NAME_TO_CODE = { mexico: 'mex', cayman: 'cay', canada: 'can', hawaii: 'haw', 'united kingdom': 'uni', argentina: 'arg', switzerland: 'swi', japan: 'jap', china: 'chi', uae: 'uae', 'south africa': 'sou' };
         unsafeWindow.wtSendFlightToCompanion = function(target) {
+            const rawCountry = String(target.countryRaw || '').toLowerCase();
             safeGmSet('wt_active_flight_target', {
                 source: 'dashboard',
-                code: target.countryRaw,
+                code: FLIGHT_NAME_TO_CODE[rawCountry] || rawCountry,
                 itemId: target.itemId,
                 itemName: target.itemName,
                 profit: target.roi || null,
@@ -1456,6 +1468,12 @@
                 w.el.style.background = `rgba(21,23,28,${opacitySetting})`;
                 w.el.style.fontSize = fontSizeSetting + 'px';
             });
+            // Not part of openWindows (it's a status widget, not a
+            // togglable panel), and it rebuilds its own style.cssText from
+            // scratch on every 1s tick anyway (see renderFlightWidget) -
+            // this just makes a font-size change land immediately instead
+            // of waiting up to a second for the next tick to pick it up.
+            if (typeof renderFlightWidget === 'function') renderFlightWidget();
         }
 
         function openAttackPopup(id) {
@@ -2371,7 +2389,7 @@
                 // side - explicit border-box here (see
                 // FLIGHT_WIDGET_BASE_CSS) means this has to ask for 36px
                 // directly to end up the same visible size, not 34px.
-                el.style.cssText = FLIGHT_WIDGET_BASE_CSS + 'align-items:center; width:36px; height:36px; padding:0;';
+                el.style.cssText = FLIGHT_WIDGET_BASE_CSS + `align-items:center; width:36px; height:36px; padding:0; font-size:${fontSizeSetting}px;`;
                 el.innerHTML = '<span style="font-size:1.1em;">✈️</span>';
                 el.title = 'Click to auto-pick a high-ROI flight target';
                 return;
@@ -2389,7 +2407,7 @@
             const profitHtml = (target.profit != null)
                 ? `<div style="font-size:0.72em; color:#4CAF50; font-weight:bold;">+$${Math.round(target.profit).toLocaleString()} est.</div>`
                 : '';
-            el.style.cssText = FLIGHT_WIDGET_BASE_CSS + 'align-items:stretch; width:180px; padding:8px 10px;';
+            el.style.cssText = FLIGHT_WIDGET_BASE_CSS + `align-items:stretch; width:180px; padding:8px 10px; font-size:${fontSizeSetting}px;`;
             el.innerHTML = `
                 <div style="display:flex; align-items:center; gap:6px;">
                     ${flagHtml}
@@ -2403,7 +2421,7 @@
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
                     <div style="display:flex; align-items:baseline; gap:4px; overflow:hidden;">
                         <span style="font-size:1.15em; font-weight:bold; color:${countdownColor}; font-family:monospace; white-space:nowrap;">${countdownText}</span>
-                        <span style="font-size:0.65em; color:#888; white-space:nowrap;">&gt; Takeoff</span>
+                        <span style="font-size:0.65em; color:${countdownColor}; white-space:nowrap;">&gt; Takeoff</span>
                     </div>
                     <button id="wt-flight-cycle-btn" title="Try a different item" style="width:20px; height:20px; line-height:1; padding:0; flex-shrink:0; background:#252525; border:1px solid #444; color:#00e5ff; border-radius:4px; font-size:0.95em; font-weight:bold; cursor:pointer;">+</button>
                 </div>
