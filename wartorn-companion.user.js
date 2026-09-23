@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.31
+// @version      3.31.1
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -812,15 +812,33 @@
         // if Worker construction is blocked for any reason (e.g. a
         // restrictive CSP) - at least keeps working while focused instead
         // of losing the feature outright.
+        // Temporary diagnostic - logs whether the Worker actually started
+        // (vs. silently falling back to the throttled plain timer), and a
+        // tick count/timestamp every ~10s so it's visible in the console
+        // whether ticks keep firing at all while this tab is hidden, as
+        // opposed to firing fine but genuinely finding nothing changed
+        // (Torn's own page may just not be refreshing the stock numbers
+        // it displays while backgrounded either, in which case no amount
+        // of polling on this end would show anything different).
+        let wtTickCount = 0;
+        function wtMarketTick() {
+            wtTickCount++;
+            if (wtTickCount % 20 === 0) {
+                console.log('[Wartorn] market tick #' + wtTickCount + ' - hidden=' + document.hidden + ' at ' + new Date().toLocaleTimeString());
+            }
+            scrapeItemMarket();
+        }
         scrapeItemMarket();
         try {
             const worker = new Worker(URL.createObjectURL(new Blob(
                 ['setInterval(() => postMessage(1), 500);'],
                 { type: 'application/javascript' }
             )));
-            worker.onmessage = scrapeItemMarket;
+            worker.onmessage = wtMarketTick;
+            console.log('[Wartorn] market scraper: Worker tick started');
         } catch (e) {
-            setInterval(scrapeItemMarket, 500);
+            console.error('[Wartorn] market scraper: Worker blocked, falling back to plain timer:', e.message);
+            setInterval(wtMarketTick, 500);
         }
     }
 
