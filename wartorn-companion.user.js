@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.28.4
+// @version      3.29
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -333,15 +333,18 @@
     // --- 1b. UPDATE-AVAILABLE NOTICE ---
     // Compares this installed copy's own version (GM_info.script.version -
     // Tampermonkey's own account of what's actually running, not anything
-    // this script could get stale about itself) against the live script
-    // currently served from our own domain - always in sync with whatever
-    // was last pushed, no GreasyFork indexing lag to wait out. Fetching the
-    // whole ~250KB file on literally every Torn page load (which happens
-    // constantly) would be wasteful for something that only changes with a
-    // real release, so the network check itself is throttled to once every
-    // 6 hours per browser; the cached verdict from the last check is what
-    // actually decides whether the notice shows on THIS particular load.
-    const VERSION_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+    // this script could get stale about itself) against whatever's
+    // currently live on our own domain - always in sync with whatever was
+    // last pushed, no GreasyFork indexing lag to wait out. Checked on
+    // EVERY load (the actual ask - a fetch that only fires every 6 hours
+    // can sit on a stale "you're up to date" verdict for hours after a
+    // real release ships, which is exactly the confusion that kept
+    // happening while testing this). That's only cheap enough to do
+    // unthrottled because it hits /api/public/companion-version - a few
+    // bytes of JSON reading just the @version line server-side - rather
+    // than fetching the whole ~250KB script every time; the raw script
+    // itself is only ever fetched once, when the notice's own "click to
+    // update" link is actually clicked.
     function compareVersions(a, b) {
         const pa = String(a).split('.').map(n => parseInt(n, 10) || 0);
         const pb = String(b).split('.').map(n => parseInt(n, 10) || 0);
@@ -389,61 +392,44 @@
             setTimeout(() => banner.remove(), 8000);
         } catch (e) {}
     }
-    // verbose=true (the manual menu command below) always does a live
-    // network check and reports exactly what it found or why it failed -
-    // the throttled/silent path (a plain page load) only ever shows
-    // something when it already knows there's an update.
+    // verbose=true (the manual menu command below) shows a result either
+    // way, including "you're up to date" and the specific failure reason
+    // if something went wrong - the normal silent path (every page load)
+    // only ever shows anything when there's actually an update.
     function checkForCompanionUpdate(verbose) {
         const currentVersion = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '';
         if (!currentVersion) {
             if (verbose) showDiagnosticToast('⚠️ <b>Update check failed</b><br><span style="color:#aaa;">GM_info.script.version is unavailable in this environment.</span>', '#f44336');
             return;
         }
-        const lastChecked = safeGmGet('wt_version_checked_at', 0);
-        const cachedLatest = safeGmGet('wt_latest_version', '');
-        if (!verbose && Date.now() - lastChecked < VERSION_CHECK_INTERVAL_MS) {
-            if (cachedLatest && compareVersions(cachedLatest, currentVersion) > 0) showUpdateNotice();
-            return;
-        }
         try {
             GM_xmlhttpRequest({
                 method: 'GET',
-                url: `${WARTORN_HOST}/wartorn-companion.user.js?_=${Date.now()}`,
-                timeout: 10000,
+                url: `${WARTORN_HOST}/api/public/companion-version?_=${Date.now()}`,
+                timeout: 8000,
                 onload: (res) => {
-                    safeGmSet('wt_version_checked_at', Date.now());
-                    const match = res.responseText && res.responseText.match(/@version\s+([\d.]+)/);
-                    if (!match) {
-                        if (verbose) showDiagnosticToast(`⚠️ <b>Update check failed</b><br><span style="color:#aaa;">Fetched the live script (HTTP ${res.status}, ${res.responseText ? res.responseText.length : 0} bytes) but couldn't find a @version line in it.</span>`, '#f44336');
+                    let latest = null;
+                    try { latest = JSON.parse(res.responseText).version; } catch (e) {}
+                    if (!latest) {
+                        if (verbose) showDiagnosticToast(`⚠️ <b>Update check failed</b><br><span style="color:#aaa;">Got HTTP ${res.status} but couldn't read a version out of the response.</span>`, '#f44336');
                         return;
                     }
-                    safeGmSet('wt_latest_version', match[1]);
-                    const isNewer = compareVersions(match[1], currentVersion) > 0;
+                    const isNewer = compareVersions(latest, currentVersion) > 0;
                     if (isNewer) showUpdateNotice();
-                    if (verbose) showDiagnosticToast(`✅ <b>Checked for updates</b><br><span style="color:#aaa;">You have ${currentVersion} - latest is ${match[1]}${isNewer ? ' <b style="color:#00e5ff;">(update available!)</b>' : ' (up to date)'}</span>`, isNewer ? '#00e5ff' : '#4CAF50');
+                    if (verbose) showDiagnosticToast(`✅ <b>Checked for updates</b><br><span style="color:#aaa;">You have ${currentVersion} - latest is ${latest}${isNewer ? ' <b style="color:#00e5ff;">(update available!)</b>' : ' (up to date)'}</span>`, isNewer ? '#00e5ff' : '#4CAF50');
                 },
-                onerror: () => {
-                    safeGmSet('wt_version_checked_at', Date.now());
-                    if (verbose) showDiagnosticToast(`⚠️ <b>Update check failed</b><br><span style="color:#aaa;">Network request to ${WARTORN_HOST} failed.</span>`, '#f44336');
-                },
-                ontimeout: () => {
-                    safeGmSet('wt_version_checked_at', Date.now());
-                    if (verbose) showDiagnosticToast('⚠️ <b>Update check failed</b><br><span style="color:#aaa;">Request timed out after 10s.</span>', '#f44336');
-                }
+                onerror: () => { if (verbose) showDiagnosticToast(`⚠️ <b>Update check failed</b><br><span style="color:#aaa;">Network request to ${WARTORN_HOST} failed.</span>`, '#f44336'); },
+                ontimeout: () => { if (verbose) showDiagnosticToast('⚠️ <b>Update check failed</b><br><span style="color:#aaa;">Request timed out after 8s.</span>', '#f44336'); }
             });
         } catch (e) {
             if (verbose) showDiagnosticToast(`⚠️ <b>Update check failed</b><br><span style="color:#aaa;">${e.message}</span>`, '#f44336');
         }
     }
     checkForCompanionUpdate();
-    // Manual override for the 6-hour throttle above - mainly useful right
-    // after a release ships, when the cached "latest" value from an
-    // earlier check this same browser already did can otherwise sit stale
-    // for hours before naturally re-checking on its own.
-    safeRegisterMenuCommand('🔄 Check for Companion update now', () => {
-        safeGmSet('wt_version_checked_at', 0);
-        checkForCompanionUpdate(true);
-    });
+    // Manual version, purely for a visible on-demand result (see verbose
+    // above) - the silent check above already runs on every load now, so
+    // this isn't bypassing a throttle anymore, just reporting back.
+    safeRegisterMenuCommand('🔄 Check for Companion update now', () => checkForCompanionUpdate(true));
 
     // --- 2. AUTHENTICATION ---
     // No more pasting a raw API key into a Tampermonkey prompt - the key
