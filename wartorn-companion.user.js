@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.33
+// @version      3.34
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -153,6 +153,26 @@
             };
             tryPopulate();
         }
+
+        // Opposite direction from the trip-planner bridge above: the TOT
+        // Scheduler's "Send to Companion" button (sendScheduleToCompanion
+        // in flight-planner.js) calls this directly - it's a plain page
+        // script with no GM_* access of its own, so this is the only way
+        // it can reach shared GM storage. See renderFlightWidget/
+        // onFlightWidgetClick further down for the torn.com side that
+        // reads wt_active_flight_target back out.
+        unsafeWindow.wtSendFlightToCompanion = function(target) {
+            safeGmSet('wt_active_flight_target', {
+                source: 'dashboard',
+                code: target.countryRaw,
+                itemId: target.itemId,
+                itemName: target.itemName,
+                flagUrl: target.flagUrl || null,
+                launchMs: target.launchMs,
+                landMs: target.landMs,
+                ts: Date.now()
+            });
+        };
         return;
     }
 
@@ -2291,6 +2311,121 @@
             settings: { icon: '⚙️', title: 'Settings', render: renderSettingsPanel, ticking: false }
         };
 
+        // --- FLIGHT WIDGET ---
+        // Shows either a target pushed from the dashboard's Time-On-Target
+        // scheduler (see wtSendFlightToCompanion in the DASHBOARD HANDSHAKE
+        // block, and sendScheduleToCompanion in flight-planner.js) or one
+        // auto-picked here from /api/public/top-roi-items - a plane icon
+        // when idle, a flag + item image + live countdown when something's
+        // active. Not a togglable PANEL_DEFS entry (there's no window to
+        // open, just a status readout), so it's inserted directly into the
+        // button stack instead - see the 'settings' check in the
+        // Object.keys(PANEL_DEFS) loop below.
+        //
+        // Small local copies of flight-planner.js's own flagMap/
+        // flightTimesStd (keyed by YATA code, not full country name, to
+        // match what top-roi-items already returns) - duplicated rather
+        // than shared since that file doesn't run on torn.com at all.
+        const FLIGHT_FLAG_MAP = { mex: 'mx', cay: 'ky', can: 'ca', haw: 'us-hi', uni: 'gb', arg: 'ar', swi: 'ch', jap: 'jp', chi: 'cn', uae: 'ae', sou: 'za' };
+        const FLIGHT_MINS_MAP = { mex: 24, cay: 33, can: 39, haw: 127, uni: 151, arg: 158, swi: 166, jap: 213, chi: 229, uae: 257, sou: 282 };
+
+        function getFlightWidgetEl() { return document.getElementById('wt-flight-widget'); }
+
+        function renderFlightWidget() {
+            const el = getFlightWidgetEl();
+            if (!el) return;
+            const target = safeGmGet('wt_active_flight_target', null);
+            if (!target) {
+                el.style.width = '34px';
+                el.style.height = '34px';
+                el.style.padding = '0';
+                el.innerHTML = '<span style="font-size:1.1em;">✈️</span>';
+                el.title = 'Click to auto-pick a high-ROI flight target';
+                return;
+            }
+            const remainingMs = target.launchMs - Date.now();
+            const flagHtml = target.flagUrl ? `<img src="${target.flagUrl}" style="width:18px; border-radius:2px;">` : '';
+            const itemImgHtml = target.itemId ? `<img src="https://www.torn.com/images/items/${target.itemId}/medium.png" style="width:24px; height:24px; object-fit:contain;">` : '<span style="font-size:1.1em;">✈️</span>';
+            let countdownText, countdownColor;
+            if (remainingMs <= 0) {
+                countdownText = 'GO';
+                countdownColor = '#4CAF50';
+            } else {
+                const totalSecs = Math.floor(remainingMs / 1000);
+                const mins = Math.floor(totalSecs / 60);
+                countdownText = mins >= 100 ? Math.floor(mins / 60) + 'h' : mins + ':' + String(totalSecs % 60).padStart(2, '0');
+                countdownColor = remainingMs < 60000 ? '#f44336' : '#00e5ff';
+            }
+            el.style.width = '38px';
+            el.style.height = 'auto';
+            el.style.padding = '4px 0';
+            el.innerHTML = `${flagHtml}${itemImgHtml}<span style="font-size:0.62em; font-weight:bold; color:${countdownColor}; font-family:monospace;">${countdownText}</span>`;
+            el.title = (target.itemName || 'Flight target') + ' - launch ' + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '. Click to hide.';
+        }
+
+        // Cached briefly rather than re-fetched on every idle click - the
+        // ranking itself only changes as often as restocks do, not every
+        // second.
+        let flightAutoCandidates = null;
+        let flightAutoCandidatesFetchedAt = 0;
+        function applyAutoFlightCandidate() {
+            if (!flightAutoCandidates || !flightAutoCandidates.length) return;
+            const idx = safeGmGet('wt_flight_cycle_index', 0) % flightAutoCandidates.length;
+            const c = flightAutoCandidates[idx];
+            safeGmSet('wt_flight_cycle_index', (idx + 1) % flightAutoCandidates.length);
+            const flagUrl = FLIGHT_FLAG_MAP[c.code] ? `https://flagcdn.com/w40/${FLIGHT_FLAG_MAP[c.code]}.png` : null;
+            const oneWayMins = Math.round((FLIGHT_MINS_MAP[c.code] || 0) * 0.7);
+            safeGmSet('wt_active_flight_target', {
+                source: 'auto', country: c.code, itemId: c.itemId, itemName: c.itemName,
+                flagUrl, launchMs: c.restockMs - oneWayMins * 60000, landMs: c.restockMs, ts: Date.now()
+            });
+            renderFlightWidget();
+        }
+        function onFlightWidgetClick() {
+            // Something's currently showing (whether pushed from the
+            // dashboard or auto-picked) - a click just dismisses it. The
+            // cycle position itself is untouched here, so the NEXT time
+            // this reveals something fresh (idle -> active), it picks up
+            // from wherever it left off rather than restarting from the
+            // top every time.
+            if (safeGmGet('wt_active_flight_target', null)) {
+                safeGmSet('wt_active_flight_target', null);
+                renderFlightWidget();
+                return;
+            }
+            const useCache = flightAutoCandidates && (Date.now() - flightAutoCandidatesFetchedAt) < 10 * 60 * 1000;
+            if (useCache) { applyAutoFlightCandidate(); return; }
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `${WARTORN_HOST}/api/public/top-roi-items`,
+                timeout: 8000,
+                onload: (res) => {
+                    let data = null;
+                    try { data = JSON.parse(res.responseText); } catch (e) {}
+                    flightAutoCandidates = (data && data.items) || [];
+                    flightAutoCandidatesFetchedAt = Date.now();
+                    applyAutoFlightCandidate();
+                },
+                onerror: () => {},
+                ontimeout: () => {}
+            });
+        }
+        let flightWidgetTickTimer = null;
+        function createFlightWidget() {
+            const el = document.createElement('div');
+            el.id = 'wt-flight-widget';
+            el.style.cssText = 'display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85; overflow:hidden;';
+            el.addEventListener('mouseenter', () => { el.style.opacity = '1'; });
+            el.addEventListener('mouseleave', () => { el.style.opacity = '0.85'; });
+            el.addEventListener('click', onFlightWidgetClick);
+            // One shared tick regardless of how many times this gets
+            // (re)created - a fresh Torn page load only ever creates this
+            // once anyway, but guards against a future double-init.
+            if (!flightWidgetTickTimer) flightWidgetTickTimer = setInterval(renderFlightWidget, 1000);
+            renderFlightWidget();
+            return el;
+        }
+
         function refreshButtonHighlights() {
             document.querySelectorAll('.wt-side-btn').forEach(b => {
                 const isOpen = openWindows.has(b.dataset.key);
@@ -2592,6 +2727,11 @@
             const WRAP_TRANSITION = 'opacity 0.3s ease, transform 0.3s ease';
             wrap.style.cssText = `position:fixed; z-index:9999999; display:flex; flex-direction:column; gap:6px; pointer-events:auto; transform-origin:top center; transition:${WRAP_TRANSITION};`;
             Object.keys(PANEL_DEFS).forEach(key => {
+                // Not a togglable panel - a live status widget - so it's
+                // inserted here rather than added to PANEL_DEFS, right
+                // before Settings specifically (an explicit ask, and
+                // 'settings' is guaranteed to be PANEL_DEFS' last key).
+                if (key === 'settings') wrap.appendChild(createFlightWidget());
                 const def = PANEL_DEFS[key];
                 const btn = document.createElement('div');
                 btn.className = 'wt-side-btn';
