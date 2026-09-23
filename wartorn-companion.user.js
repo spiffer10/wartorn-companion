@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.28.1
+// @version      3.28.2
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -403,6 +403,14 @@
         } catch (e) {}
     }
     checkForCompanionUpdate();
+    // Manual override for the 6-hour throttle above - mainly useful right
+    // after a release ships, when the cached "latest" value from an
+    // earlier check this same browser already did can otherwise sit stale
+    // for hours before naturally re-checking on its own.
+    safeRegisterMenuCommand('🔄 Check for Companion update now', () => {
+        safeGmSet('wt_version_checked_at', 0);
+        checkForCompanionUpdate();
+    });
 
     // --- 2. AUTHENTICATION ---
     // No more pasting a raw API key into a Tampermonkey prompt - the key
