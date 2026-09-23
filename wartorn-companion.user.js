@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.27
+// @version      3.28
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -195,6 +195,7 @@
         place('wt-edge-toggle', -23, 0); // toggle is 24px tall now - keep its bottom edge flush against the logo
         place('wt-link-notice', 140, 1);
         place('wt-link-manual', 195, 1);
+        place('wt-version-notice', 45, 44); // right of the logo, vertically centered on its 130px height
         // Open panel windows (War Targets/Chain Targets/etc) used to follow
         // a drag of this anchor too, back when there was only ever one of
         // them and it had no independent position of its own. Now that
@@ -328,7 +329,81 @@
     }
  
     injectGhostLogo();
- 
+
+    // --- 1b. UPDATE-AVAILABLE NOTICE ---
+    // Compares this installed copy's own version (GM_info.script.version -
+    // Tampermonkey's own account of what's actually running, not anything
+    // this script could get stale about itself) against the live script
+    // currently served from our own domain - always in sync with whatever
+    // was last pushed, no GreasyFork indexing lag to wait out. Fetching the
+    // whole ~250KB file on literally every Torn page load (which happens
+    // constantly) would be wasteful for something that only changes with a
+    // real release, so the network check itself is throttled to once every
+    // 6 hours per browser; the cached verdict from the last check is what
+    // actually decides whether the notice shows on THIS particular load.
+    const VERSION_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+    function compareVersions(a, b) {
+        const pa = String(a).split('.').map(n => parseInt(n, 10) || 0);
+        const pb = String(b).split('.').map(n => parseInt(n, 10) || 0);
+        for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+            const diff = (pa[i] || 0) - (pb[i] || 0);
+            if (diff !== 0) return diff;
+        }
+        return 0;
+    }
+    function showUpdateNotice() {
+        if (document.getElementById('wt-version-notice')) return;
+        const notice = document.createElement('div');
+        notice.id = 'wt-version-notice';
+        // Starts at width:0 (slid fully into the logo) - the transition on
+        // width, not on transform/opacity, is what makes it read as
+        // sliding OUT from behind the logo rather than fading in beside it.
+        notice.style.cssText = 'position:fixed; z-index:9999998; height:40px; width:0; overflow:hidden; background:#15171c; border:1px solid #00e5ff; border-radius:0 6px 6px 0; box-shadow:0 4px 15px rgba(0,0,0,0.6); transition:width 0.4s ease; display:flex; align-items:center; white-space:nowrap; cursor:pointer;';
+        notice.innerHTML = '<span style="padding:0 14px; color:#00e5ff; font-size:0.8em; font-weight:bold;">🚀 New version available - click to update</span>';
+        notice.title = 'Opens the latest Wartorn Companion script - Tampermonkey will offer to update.';
+        notice.addEventListener('click', () => {
+            window.open(`${WARTORN_HOST}/wartorn-companion.user.js`, '_blank');
+        });
+        document.body.appendChild(notice);
+        applyCompanionAnchor();
+        // Two-step (append at width:0, THEN set the target width) so the
+        // transition actually has a starting value to animate FROM -
+        // setting both in the same paint would just render already-open,
+        // no slide at all.
+        requestAnimationFrame(() => { notice.style.width = '280px'; });
+        setTimeout(() => {
+            notice.style.width = '0';
+            setTimeout(() => notice.remove(), 450);
+        }, 10000);
+    }
+    function checkForCompanionUpdate() {
+        const currentVersion = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '';
+        if (!currentVersion) return;
+        const lastChecked = safeGmGet('wt_version_checked_at', 0);
+        const cachedLatest = safeGmGet('wt_latest_version', '');
+        if (Date.now() - lastChecked < VERSION_CHECK_INTERVAL_MS) {
+            if (cachedLatest && compareVersions(cachedLatest, currentVersion) > 0) showUpdateNotice();
+            return;
+        }
+        try {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `${WARTORN_HOST}/wartorn-companion.user.js?_=${Date.now()}`,
+                timeout: 10000,
+                onload: (res) => {
+                    safeGmSet('wt_version_checked_at', Date.now());
+                    const match = res.responseText && res.responseText.match(/@version\s+([\d.]+)/);
+                    if (!match) return;
+                    safeGmSet('wt_latest_version', match[1]);
+                    if (compareVersions(match[1], currentVersion) > 0) showUpdateNotice();
+                },
+                onerror: () => safeGmSet('wt_version_checked_at', Date.now()),
+                ontimeout: () => safeGmSet('wt_version_checked_at', Date.now())
+            });
+        } catch (e) {}
+    }
+    checkForCompanionUpdate();
+
     // --- 2. AUTHENTICATION ---
     // No more pasting a raw API key into a Tampermonkey prompt - the key
     // this needs is pulled automatically from an active Wartorn login (see
