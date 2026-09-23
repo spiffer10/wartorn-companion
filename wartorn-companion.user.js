@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.39
+// @version      3.40
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -164,8 +164,9 @@
         //
         // flight-planner.js's countryRaw is the full lowercase country
         // name ("mexico"), not the short YATA code ("mex") the torn.com
-        // side's lookups (FLIGHT_COUNTRY_NAMES/FLIGHT_FLAG_EMOJI) are keyed
-        // by - without this translation the flag/country-name display
+        // side's lookups (FLIGHT_COUNTRY_NAMES, and the flag badge's own
+        // uppercase-of-code) are keyed by - without this translation the
+        // flag/country-name display
         // silently misses for every dashboard-pushed target (auto-picked
         // ones already come back from the backend as short codes, so they
         // were never affected). Kept local to this branch rather than
@@ -2344,14 +2345,15 @@
         // flightTimesStd (keyed by YATA code, not full country name, to
         // match what top-roi-items already returns) - duplicated rather
         // than shared since that file doesn't run on torn.com at all.
-        // Unicode flag emoji, not flagcdn.com images - TornPDA's webview
-        // doesn't reliably load images from arbitrary third-party domains
-        // (only torn.com's own CDN is guaranteed), so this is the one spot
-        // in the whole companion that ever depended on an external image
-        // host. Emoji render from the OS's own font, so this works
-        // identically in a normal browser and inside TornPDA. Hawaii isn't
-        // a country and has no real flag emoji - a palm tree stands in.
-        const FLIGHT_FLAG_EMOJI = { mex: '🇲🇽', cay: '🇰🇾', can: '🇨🇦', haw: '🌴', uni: '🇬🇧', arg: '🇦🇷', swi: '🇨🇭', jap: '🇯🇵', chi: '🇨🇳', uae: '🇦🇪', sou: '🇿🇦' };
+        // Neither of the two obvious ways to show a flag actually holds up
+        // everywhere: flagcdn.com images don't reliably load inside
+        // TornPDA's webview (only torn.com's own CDN is guaranteed there),
+        // and Unicode regional-indicator flag emoji - the very next thing
+        // tried - render as nothing at all on a lot of Windows/Chromium
+        // font combos instead of falling back to anything visible. A
+        // plain 3-letter code badge needs no image fetch and no emoji
+        // font support, so it's the one option that can't silently fail
+        // depending on where this is viewed.
         const FLIGHT_MINS_MAP = { mex: 24, cay: 33, can: 39, haw: 127, uni: 151, arg: 158, swi: 166, jap: 213, chi: 229, uae: 257, sou: 282 };
         // Same names/spellings as flight-planner.js's own yataMap, so the
         // widget's country label matches what the dashboard already shows.
@@ -2400,7 +2402,7 @@
             // stale value from before that fix is still sitting in storage.
             const code = target.code || target.country;
             const countryName = FLIGHT_COUNTRY_NAMES[code] || (code || '').toUpperCase();
-            const flagHtml = `<span style="font-size:1.1em; flex-shrink:0;">${FLIGHT_FLAG_EMOJI[code] || '🏳️'}</span>`;
+            const flagHtml = `<span style="font-size:0.62em; font-weight:bold; letter-spacing:0.5px; background:#252525; border:1px solid #444; color:#00e5ff; border-radius:3px; padding:2px 4px; flex-shrink:0;">${(code || '??').toUpperCase()}</span>`;
             const itemImgHtml = target.itemId ? `<img src="https://www.torn.com/images/items/${target.itemId}/medium.png" draggable="false" style="width:28px; height:28px; object-fit:contain; flex-shrink:0;">` : '<span style="font-size:1.1em;">✈️</span>';
             const remainingMs = target.launchMs - Date.now();
             const { text: countdownText, color: countdownColor } = formatFlightCountdown(remainingMs);
