@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.28
+// @version      3.28.1
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1717,6 +1717,10 @@
                             🔑 Wartorn key: ${userApiKey ? ('••••' + userApiKey.slice(-4)) : '<span style="color:#f44336;">not linked</span>'}
                         </div>
                         <button id="wt-set-change-key" style="background:#252525; border:1px solid #444; color:#00e5ff; padding:7px; border-radius:4px; cursor:pointer; font-size:0.8em; font-weight:bold;">Change Wartorn Key</button>
+                    </div>
+
+                    <div style="text-align:center; color:#555; font-size:0.7em; padding-top:4px;">
+                        Wartorn Companion v${(typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '?'}
                     </div>
                 </div>
             `;
