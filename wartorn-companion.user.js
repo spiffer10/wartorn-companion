@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.26
+// @version      3.27
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -621,28 +621,51 @@
  
     // --- 4. MODULE: ZERO-LATENCY MARKET SCRAPER ---
     // Previously gated on `index.php?page=people` - unrelated to the travel
-    // agency market this actually scrapes (.travel-agency-market), so this
-    // never fired in practice. The item shop lives at sid=travel, but Torn's
-    // Travel Agency is a single-page app: switching between the hub, a
-    // country, and that country's shop never changes window.location.href,
-    // so a one-shot check on load only ever catches whatever happened to
-    // already be rendered at that instant. A MutationObserver watches for the
-    // shop's markup actually appearing/updating instead, no matter how the
-    // user navigated there.
+    // agency market this actually scrapes, so this never fired in practice.
+    // The item shop lives at sid=travel, but Torn's Travel Agency is a
+    // single-page app: switching between the hub, a country, and that
+    // country's shop never changes window.location.href, so a one-shot
+    // check on load only ever catches whatever happened to already be
+    // rendered at that instant. A MutationObserver watches for the shop's
+    // markup actually appearing/updating instead, no matter how the user
+    // navigated there.
+    //
+    // Confirmed live 2026-09-23 (real page markup pulled via DevTools) that
+    // the selectors this used to read (.travel-agency-market, .items-list
+    // li, .stck-amount) no longer exist at all - Torn's shop table now uses
+    // CSS-module hashed class names (e.g. "cell___wu8_h") that churn on
+    // every rebuild, so this reads the stable, semantic bits instead: each
+    // cell carries a data-tt-content-type attribute ("stock", "name", ...)
+    // regardless of build hash, and the country name lives on
+    // document.body's own data-country attribute (confirmed present on
+    // every travel-related page, not just this shop), not anything scraped
+    // out of the shop markup itself.
     let lastMarketSignature = '';
     function scrapeItemMarket() {
-        const countryTitle = document.querySelector('.travel-agency-market .title-black');
-        if (!countryTitle) return;
-        const countryName = countryTitle.innerText.trim();
+        const countryName = document.body && document.body.dataset && document.body.dataset.country;
+        if (!countryName) return;
         const items = [];
 
-        document.querySelectorAll('.items-list li').forEach(li => {
-            const idMatch = li.className.match(/item-(\d+)/);
-            if (!idMatch) return;
-            const qtyElement = li.querySelector('.stck-amount');
-            if (qtyElement) {
-                items.push({ id: parseInt(idMatch[1]), quantity: parseInt(qtyElement.innerText.replace(/,/g, ''), 10) || 0 });
-            }
+        document.querySelectorAll('[data-tt-content-type="stock"]').forEach(stockCell => {
+            const row = stockCell.closest('li') || stockCell.parentElement;
+            if (!row) return;
+            // The image cell's filename is the most reliable id source (every
+            // row has one, even a sold-out row that might be missing the
+            // expandable name button's aria-controls) - the name button is
+            // kept as a fallback in case the image ever fails to load/render.
+            const img = row.querySelector('[data-tt-content-type="item"] img');
+            const imgMatch = img && img.src && img.src.match(/\/items\/(\d+)\//);
+            const nameBtn = !imgMatch && row.querySelector('[data-tt-content-type="name"] button[aria-controls]');
+            const btnMatch = nameBtn && nameBtn.getAttribute('aria-controls').match(/^item-(\d+)-/);
+            const id = imgMatch ? parseInt(imgMatch[1], 10) : (btnMatch ? parseInt(btnMatch[1], 10) : null);
+            if (!id) return;
+            // Grabs the first run of digits in the cell's own text rather
+            // than trying to strip an exact label - the sr-only "stock "
+            // prefix (a non-breaking space, not a plain one) is otherwise
+            // easy to get subtly wrong.
+            const qtyMatch = stockCell.textContent.replace(/,/g, '').match(/\d+/);
+            if (!qtyMatch) return;
+            items.push({ id: id, quantity: parseInt(qtyMatch[0], 10) });
         });
 
         if (items.length === 0) return;
