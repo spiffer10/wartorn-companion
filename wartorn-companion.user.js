@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.31.2
+// @version      3.32
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -122,9 +122,40 @@
                 })
                 .catch(() => {});
         }
+
+        // Consumes a "add to trip planner" request from the in-game shop
+        // modal (see showItemHistoryModal on the torn.com side) - that
+        // side can only write to shared GM storage (a different origin
+        // entirely from here), it has no access to this page's own
+        // window.flightDataRows/populateScheduler. This side reaches into
+        // those directly via unsafeWindow instead of asking flight-
+        // planner.js to also know about GM storage, which it has no
+        // access to as a plain page script.
+        const pendingTarget = safeGmGet('wt_pending_scheduler_target', null);
+        if (pendingTarget && (Date.now() - (pendingTarget.ts || 0)) < 5 * 60 * 1000) {
+            safeGmSet('wt_pending_scheduler_target', null); // consume once regardless of match outcome below
+            let attempts = 0;
+            const tryPopulate = () => {
+                attempts++;
+                const rows = unsafeWindow.flightDataRows;
+                if (Array.isArray(rows) && rows.length) {
+                    const match = rows.find(r => r.countryRaw === pendingTarget.country && r.item && r.item.toLowerCase() === String(pendingTarget.itemName).toLowerCase());
+                    if (match && typeof unsafeWindow.populateScheduler === 'function') {
+                        unsafeWindow.populateScheduler(match.countryRaw, match.restockMs);
+                    }
+                    return;
+                }
+                // Flight Planner's own data loads async and this may run
+                // before the Flights tab has even been opened yet this
+                // session - keeps trying briefly rather than giving up on
+                // the very first empty check.
+                if (attempts < 20) setTimeout(tryPopulate, 500);
+            };
+            tryPopulate();
+        }
         return;
     }
- 
+
     // --- 0. HIDE CHAT ON THE ATTACK POPUP ---
     // The dashboard's Attack button opens Torn's attack page in a small
     // popup (window.open(..., 'attack_window', 'width=450,height=750,...'))
@@ -789,6 +820,170 @@
         sendToWartorn('market', { country: countryName, items: items });
     }
 
+    // Small 📊 button injected into each item row, opening a history/
+    // planning modal - kept entirely separate from Torn's own name-button
+    // click (which expands their own info panel) rather than hijacking
+    // it, so this can't break if that interaction changes shape again.
+    // Idempotent (checks for its own marker before adding) since this
+    // runs on the same poll as the scraper above and rows aren't
+    // recreated on every tick.
+    function injectItemHistoryButtons() {
+        const countryName = document.body && document.body.dataset && document.body.dataset.country;
+        if (!countryName) return;
+        document.querySelectorAll('[data-tt-content-type="stock"]').forEach(stockCell => {
+            const row = stockCell.closest('li');
+            if (!row || row.querySelector('.wt-item-info-btn')) return;
+            const img = row.querySelector('[data-tt-content-type="item"] img');
+            const imgMatch = img && img.src && img.src.match(/\/items\/(\d+)\//);
+            const nameCell = row.querySelector('[data-tt-content-type="name"]');
+            const nameBtn = nameCell && nameCell.querySelector('button[aria-controls]');
+            const btnMatch = nameBtn && nameBtn.getAttribute('aria-controls').match(/^item-(\d+)-/);
+            const id = imgMatch ? parseInt(imgMatch[1], 10) : (btnMatch ? parseInt(btnMatch[1], 10) : null);
+            if (!id || !nameCell) return;
+            const itemName = (nameBtn ? nameBtn.textContent : nameCell.textContent).trim();
+            const btn = document.createElement('span');
+            btn.className = 'wt-item-info-btn';
+            btn.textContent = '📊';
+            btn.title = 'Wartorn: restock history & trip planner';
+            btn.style.cssText = 'cursor:pointer; margin-left:8px; font-size:0.95em; vertical-align:middle; display:inline-block;';
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                showItemHistoryModal(countryName, id, itemName);
+            });
+            nameCell.appendChild(btn);
+        });
+    }
+
+    function renderHistoryChart(canvas, samples) {
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width, h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+        if (!samples || samples.length < 2) {
+            ctx.fillStyle = '#666';
+            ctx.font = '13px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('Not enough history yet', w / 2, h / 2);
+            return;
+        }
+        const minTs = samples[0].sampled_at;
+        const maxTs = samples[samples.length - 1].sampled_at;
+        const maxQty = Math.max(1, ...samples.map(s => s.quantity));
+        const spanTs = Math.max(1, maxTs - minTs);
+        const x = ts => ((ts - minTs) / spanTs) * w;
+        const y = qty => h - (qty / maxQty) * (h - 10) - 5;
+
+        ctx.beginPath();
+        ctx.moveTo(x(samples[0].sampled_at), h);
+        samples.forEach(s => ctx.lineTo(x(s.sampled_at), y(s.quantity)));
+        ctx.lineTo(x(samples[samples.length - 1].sampled_at), h);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(0,229,255,0.15)';
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.strokeStyle = '#00e5ff';
+        ctx.lineWidth = 2;
+        samples.forEach((s, i) => {
+            const px = x(s.sampled_at), py = y(s.quantity);
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+    }
+
+    function showItemHistoryModal(countryName, itemId, itemName) {
+        if (document.getElementById('wt-item-modal')) return;
+        const overlay = document.createElement('div');
+        overlay.id = 'wt-item-modal';
+        overlay.style.cssText = 'position:fixed; inset:0; z-index:999999999; background:rgba(0,0,0,0.75); display:flex; align-items:center; justify-content:center; padding:20px;';
+        overlay.innerHTML = `
+            <div style="background:#15171c; border:1px solid #333; border-radius:10px; padding:22px; max-width:480px; width:100%; box-shadow:0 20px 60px rgba(0,0,0,0.7); font-family:sans-serif;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                    <div style="color:#00e5ff; font-weight:bold; font-size:1.05em;">${itemName}</div>
+                    <span id="wt-item-modal-close" style="cursor:pointer; color:#888; font-size:1.4em; line-height:1;">&times;</span>
+                </div>
+                <canvas id="wt-item-modal-chart" width="440" height="150" style="width:100%; height:150px; background:#0b0c10; border-radius:6px; display:block;"></canvas>
+                <div style="color:#555; font-size:0.7em; margin-top:6px;">Last 48h - stock quantity over time</div>
+                <div style="display:flex; flex-direction:column; gap:10px; margin-top:16px; border-top:1px solid #333; padding-top:14px;">
+                    <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
+                        <input type="checkbox" id="wt-item-modal-ignore" style="cursor:pointer;">
+                        Ignore this item in the Flight Planner
+                    </label>
+                    <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
+                        <input type="checkbox" id="wt-item-modal-trip" style="cursor:pointer;">
+                        Add to Time-On-Target scheduler
+                    </label>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+        const close = () => overlay.remove();
+        document.getElementById('wt-item-modal-close').addEventListener('click', close);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: `${WARTORN_HOST}/api/public/stock-history?country=${encodeURIComponent(countryName)}&item=${itemId}&hours=48`,
+            timeout: 8000,
+            onload: (res) => {
+                let data = null;
+                try { data = JSON.parse(res.responseText); } catch (e) {}
+                const canvas = document.getElementById('wt-item-modal-chart');
+                if (canvas) renderHistoryChart(canvas, data && data.samples);
+            },
+            onerror: () => { const c = document.getElementById('wt-item-modal-chart'); if (c) renderHistoryChart(c, null); },
+            ontimeout: () => { const c = document.getElementById('wt-item-modal-chart'); if (c) renderHistoryChart(c, null); }
+        });
+
+        // "Ignore" checkbox reflects/toggles the SAME hidden-items list the
+        // Flight Planner's own filter modal reads/writes (see
+        // /api/companion/hidden-items and wfSyncHiddenItems in
+        // flight-planner.js) - genuinely shared state, not a separate
+        // local-only toggle, despite this being a different origin.
+        const ignoreCb = document.getElementById('wt-item-modal-ignore');
+        const fetchHiddenItems = (cb) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `${WARTORN_HOST}/api/companion/hidden-items`,
+                headers: { 'x-wartorn-key': userApiKey },
+                timeout: 8000,
+                onload: (res) => {
+                    let data = null;
+                    try { data = JSON.parse(res.responseText); } catch (e) {}
+                    cb((data && data.items) || []);
+                },
+                onerror: () => cb([]),
+                ontimeout: () => cb([])
+            });
+        };
+        fetchHiddenItems(items => { ignoreCb.checked = items.includes(itemName); });
+        ignoreCb.addEventListener('change', () => {
+            fetchHiddenItems(items => {
+                let next = items.filter(x => x !== itemName);
+                if (ignoreCb.checked) next.push(itemName);
+                GM_xmlhttpRequest({
+                    method: 'POST',
+                    url: `${WARTORN_HOST}/api/companion/hidden-items`,
+                    headers: { 'x-wartorn-key': userApiKey, 'Content-Type': 'application/json' },
+                    data: JSON.stringify({ items: next }),
+                    timeout: 8000
+                });
+            });
+        });
+
+        // "Trip planner" hands off to the dashboard's own Time-On-Target
+        // scheduler - this side has no access to window.flightDataRows/
+        // populateScheduler (a different origin, and no DOM to reach into
+        // even with GM storage bridging that), so it just leaves a
+        // pending request for the dashboard-side companion instance to
+        // pick up and act on (see the DASHBOARD HANDSHAKE block above).
+        const tripCb = document.getElementById('wt-item-modal-trip');
+        tripCb.addEventListener('change', () => {
+            if (tripCb.checked) {
+                safeGmSet('wt_pending_scheduler_target', { country: countryName, itemName: itemName, ts: Date.now() });
+            }
+        });
+    }
+
     if (/sid=travel/.test(window.location.href)) {
         // A plain 500ms poll instead of a MutationObserver - a restock
         // doesn't add/remove any DOM nodes, React just updates the stock
@@ -819,15 +1014,16 @@
         // backgrounded too, so there's nothing newer to find while
         // hidden regardless of how fast this polls. That's Torn's own
         // ceiling, not something pollable around from here.
-        scrapeItemMarket();
+        const marketTick = () => { scrapeItemMarket(); injectItemHistoryButtons(); };
+        marketTick();
         try {
             const worker = new Worker(URL.createObjectURL(new Blob(
                 ['setInterval(() => postMessage(1), 500);'],
                 { type: 'application/javascript' }
             )));
-            worker.onmessage = scrapeItemMarket;
+            worker.onmessage = marketTick;
         } catch (e) {
-            setInterval(scrapeItemMarket, 500);
+            setInterval(marketTick, 500);
         }
     }
 
