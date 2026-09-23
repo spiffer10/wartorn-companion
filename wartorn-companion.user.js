@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.36
+// @version      3.37
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2358,8 +2358,11 @@
             if (!el) return;
             const target = safeGmGet('wt_active_flight_target', null);
             if (!target) {
-                el.style.cssText = FLIGHT_WIDGET_BASE_CSS + 'align-items:center; width:40px; height:40px; padding:0;';
-                el.innerHTML = '<span style="font-size:1.3em;">✈️</span>';
+                // Same footprint as the other side buttons (34x34) when
+                // idle - only grows past that once there's actually
+                // something to show (see the active branch below).
+                el.style.cssText = FLIGHT_WIDGET_BASE_CSS + 'align-items:center; width:34px; height:34px; padding:0;';
+                el.innerHTML = '<span style="font-size:1.1em;">✈️</span>';
                 el.title = 'Click to auto-pick a high-ROI flight target';
                 return;
             }
@@ -2387,9 +2390,24 @@
                     <span style="font-size:0.8em; color:#ddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${target.itemName || 'Item'}</span>
                 </div>
                 ${profitHtml}
-                <div style="font-size:1.15em; font-weight:bold; color:${countdownColor}; font-family:monospace;">${countdownText}</div>
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
+                    <span style="font-size:1.15em; font-weight:bold; color:${countdownColor}; font-family:monospace;">${countdownText}</span>
+                    <button id="wt-flight-cycle-btn" title="Try a different item" style="width:20px; height:20px; line-height:1; padding:0; flex-shrink:0; background:#252525; border:1px solid #444; color:#00e5ff; border-radius:4px; font-size:0.95em; font-weight:bold; cursor:pointer;">+</button>
+                </div>
             `;
             el.title = (target.itemName || 'Flight target') + ' - launch ' + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '. Click to hide.';
+            // Recreated every render (innerHTML replaces it each tick), so
+            // this has to be rewired every time rather than once at
+            // creation - stopPropagation keeps the click from also
+            // bubbling up to el's own listener, which would otherwise
+            // immediately dismiss the target this button just set.
+            const cycleBtn = document.getElementById('wt-flight-cycle-btn');
+            if (cycleBtn) {
+                cycleBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    cycleFlightCandidate();
+                });
+            }
         }
 
         // Cached briefly rather than re-fetched on every idle click - the
@@ -2410,18 +2428,11 @@
             });
             renderFlightWidget();
         }
-        function onFlightWidgetClick() {
-            // Something's currently showing (whether pushed from the
-            // dashboard or auto-picked) - a click just dismisses it. The
-            // cycle position itself is untouched here, so the NEXT time
-            // this reveals something fresh (idle -> active), it picks up
-            // from wherever it left off rather than restarting from the
-            // top every time.
-            if (safeGmGet('wt_active_flight_target', null)) {
-                safeGmSet('wt_active_flight_target', null);
-                renderFlightWidget();
-                return;
-            }
+        // Shared by the idle-click auto-pick and the expanded card's "+"
+        // cycle button - fetches a fresh ranking only if the cached one is
+        // stale/missing, otherwise just advances to the next candidate in
+        // whatever's already cached.
+        function cycleFlightCandidate() {
             const useCache = flightAutoCandidates && (Date.now() - flightAutoCandidatesFetchedAt) < 10 * 60 * 1000;
             if (useCache) { applyAutoFlightCandidate(); return; }
             GM_xmlhttpRequest({
@@ -2439,6 +2450,20 @@
                 onerror: () => {},
                 ontimeout: () => {}
             });
+        }
+        function onFlightWidgetClick() {
+            // Something's currently showing (whether pushed from the
+            // dashboard or auto-picked) - a click just dismisses it. The
+            // cycle position itself is untouched here, so the NEXT time
+            // this reveals something fresh (idle -> active), it picks up
+            // from wherever it left off rather than restarting from the
+            // top every time.
+            if (safeGmGet('wt_active_flight_target', null)) {
+                safeGmSet('wt_active_flight_target', null);
+                renderFlightWidget();
+                return;
+            }
+            cycleFlightCandidate();
         }
         let flightWidgetTickTimer = null;
         function createFlightWidget() {
