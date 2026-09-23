@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.28.3
+// @version      3.28.4
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -376,12 +376,32 @@
             setTimeout(() => notice.remove(), 450);
         }, 10000);
     }
-    function checkForCompanionUpdate() {
+    // Same visual pattern as the "Wartorn Companion linked!" banner in the
+    // dashboard handshake above - a real, visible result instead of a
+    // silent check, so a manual/verbose run can actually be debugged from
+    // what's on screen instead of only from Tampermonkey's storage viewer.
+    function showDiagnosticToast(html, borderColor) {
+        try {
+            const banner = document.createElement('div');
+            banner.style.cssText = `position:fixed; top:20px; left:50%; transform:translateX(-50%); z-index:99999999; background:#15171c; border:1px solid ${borderColor}; border-left:4px solid ${borderColor}; color:#fff; padding:14px 20px; border-radius:6px; font-family:sans-serif; font-size:0.9em; box-shadow:0 8px 24px rgba(0,0,0,0.6); max-width:90vw; text-align:center;`;
+            banner.innerHTML = html;
+            document.body.appendChild(banner);
+            setTimeout(() => banner.remove(), 8000);
+        } catch (e) {}
+    }
+    // verbose=true (the manual menu command below) always does a live
+    // network check and reports exactly what it found or why it failed -
+    // the throttled/silent path (a plain page load) only ever shows
+    // something when it already knows there's an update.
+    function checkForCompanionUpdate(verbose) {
         const currentVersion = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '';
-        if (!currentVersion) return;
+        if (!currentVersion) {
+            if (verbose) showDiagnosticToast('⚠️ <b>Update check failed</b><br><span style="color:#aaa;">GM_info.script.version is unavailable in this environment.</span>', '#f44336');
+            return;
+        }
         const lastChecked = safeGmGet('wt_version_checked_at', 0);
         const cachedLatest = safeGmGet('wt_latest_version', '');
-        if (Date.now() - lastChecked < VERSION_CHECK_INTERVAL_MS) {
+        if (!verbose && Date.now() - lastChecked < VERSION_CHECK_INTERVAL_MS) {
             if (cachedLatest && compareVersions(cachedLatest, currentVersion) > 0) showUpdateNotice();
             return;
         }
@@ -393,14 +413,27 @@
                 onload: (res) => {
                     safeGmSet('wt_version_checked_at', Date.now());
                     const match = res.responseText && res.responseText.match(/@version\s+([\d.]+)/);
-                    if (!match) return;
+                    if (!match) {
+                        if (verbose) showDiagnosticToast(`⚠️ <b>Update check failed</b><br><span style="color:#aaa;">Fetched the live script (HTTP ${res.status}, ${res.responseText ? res.responseText.length : 0} bytes) but couldn't find a @version line in it.</span>`, '#f44336');
+                        return;
+                    }
                     safeGmSet('wt_latest_version', match[1]);
-                    if (compareVersions(match[1], currentVersion) > 0) showUpdateNotice();
+                    const isNewer = compareVersions(match[1], currentVersion) > 0;
+                    if (isNewer) showUpdateNotice();
+                    if (verbose) showDiagnosticToast(`✅ <b>Checked for updates</b><br><span style="color:#aaa;">You have ${currentVersion} - latest is ${match[1]}${isNewer ? ' <b style="color:#00e5ff;">(update available!)</b>' : ' (up to date)'}</span>`, isNewer ? '#00e5ff' : '#4CAF50');
                 },
-                onerror: () => safeGmSet('wt_version_checked_at', Date.now()),
-                ontimeout: () => safeGmSet('wt_version_checked_at', Date.now())
+                onerror: () => {
+                    safeGmSet('wt_version_checked_at', Date.now());
+                    if (verbose) showDiagnosticToast(`⚠️ <b>Update check failed</b><br><span style="color:#aaa;">Network request to ${WARTORN_HOST} failed.</span>`, '#f44336');
+                },
+                ontimeout: () => {
+                    safeGmSet('wt_version_checked_at', Date.now());
+                    if (verbose) showDiagnosticToast('⚠️ <b>Update check failed</b><br><span style="color:#aaa;">Request timed out after 10s.</span>', '#f44336');
+                }
             });
-        } catch (e) {}
+        } catch (e) {
+            if (verbose) showDiagnosticToast(`⚠️ <b>Update check failed</b><br><span style="color:#aaa;">${e.message}</span>`, '#f44336');
+        }
     }
     checkForCompanionUpdate();
     // Manual override for the 6-hour throttle above - mainly useful right
@@ -409,7 +442,7 @@
     // for hours before naturally re-checking on its own.
     safeRegisterMenuCommand('🔄 Check for Companion update now', () => {
         safeGmSet('wt_version_checked_at', 0);
-        checkForCompanionUpdate();
+        checkForCompanionUpdate(true);
     });
 
     // --- 2. AUTHENTICATION ---
