@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.37
+// @version      3.38
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -168,7 +168,6 @@
                 itemId: target.itemId,
                 itemName: target.itemName,
                 profit: target.roi || null,
-                flagUrl: target.flagUrl || null,
                 launchMs: target.launchMs,
                 landMs: target.landMs,
                 ts: Date.now()
@@ -2327,7 +2326,14 @@
         // flightTimesStd (keyed by YATA code, not full country name, to
         // match what top-roi-items already returns) - duplicated rather
         // than shared since that file doesn't run on torn.com at all.
-        const FLIGHT_FLAG_MAP = { mex: 'mx', cay: 'ky', can: 'ca', haw: 'us-hi', uni: 'gb', arg: 'ar', swi: 'ch', jap: 'jp', chi: 'cn', uae: 'ae', sou: 'za' };
+        // Unicode flag emoji, not flagcdn.com images - TornPDA's webview
+        // doesn't reliably load images from arbitrary third-party domains
+        // (only torn.com's own CDN is guaranteed), so this is the one spot
+        // in the whole companion that ever depended on an external image
+        // host. Emoji render from the OS's own font, so this works
+        // identically in a normal browser and inside TornPDA. Hawaii isn't
+        // a country and has no real flag emoji - a palm tree stands in.
+        const FLIGHT_FLAG_EMOJI = { mex: '🇲🇽', cay: '🇰🇾', can: '🇨🇦', haw: '🌴', uni: '🇬🇧', arg: '🇦🇷', swi: '🇨🇭', jap: '🇯🇵', chi: '🇨🇳', uae: '🇦🇪', sou: '🇿🇦' };
         const FLIGHT_MINS_MAP = { mex: 24, cay: 33, can: 39, haw: 127, uni: 151, arg: 158, swi: 166, jap: 213, chi: 229, uae: 257, sou: 282 };
         // Same names/spellings as flight-planner.js's own yataMap, so the
         // widget's country label matches what the dashboard already shows.
@@ -2358,10 +2364,14 @@
             if (!el) return;
             const target = safeGmGet('wt_active_flight_target', null);
             if (!target) {
-                // Same footprint as the other side buttons (34x34) when
-                // idle - only grows past that once there's actually
-                // something to show (see the active branch below).
-                el.style.cssText = FLIGHT_WIDGET_BASE_CSS + 'align-items:center; width:34px; height:34px; padding:0;';
+                // Matches the other side buttons' actual rendered
+                // footprint. They're sized via width/height:34px with no
+                // box-sizing override, so their default content-box model
+                // renders 36px total once the 1px border is added on each
+                // side - explicit border-box here (see
+                // FLIGHT_WIDGET_BASE_CSS) means this has to ask for 36px
+                // directly to end up the same visible size, not 34px.
+                el.style.cssText = FLIGHT_WIDGET_BASE_CSS + 'align-items:center; width:36px; height:36px; padding:0;';
                 el.innerHTML = '<span style="font-size:1.1em;">✈️</span>';
                 el.title = 'Click to auto-pick a high-ROI flight target';
                 return;
@@ -2372,7 +2382,7 @@
             // stale value from before that fix is still sitting in storage.
             const code = target.code || target.country;
             const countryName = FLIGHT_COUNTRY_NAMES[code] || (code || '').toUpperCase();
-            const flagHtml = target.flagUrl ? `<img src="${target.flagUrl}" draggable="false" style="width:20px; border-radius:2px; flex-shrink:0;">` : '<span style="font-size:1em;">🏳️</span>';
+            const flagHtml = `<span style="font-size:1.1em; flex-shrink:0;">${FLIGHT_FLAG_EMOJI[code] || '🏳️'}</span>`;
             const itemImgHtml = target.itemId ? `<img src="https://www.torn.com/images/items/${target.itemId}/medium.png" draggable="false" style="width:28px; height:28px; object-fit:contain; flex-shrink:0;">` : '<span style="font-size:1.1em;">✈️</span>';
             const remainingMs = target.launchMs - Date.now();
             const { text: countdownText, color: countdownColor } = formatFlightCountdown(remainingMs);
@@ -2391,7 +2401,10 @@
                 </div>
                 ${profitHtml}
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
-                    <span style="font-size:1.15em; font-weight:bold; color:${countdownColor}; font-family:monospace;">${countdownText}</span>
+                    <div style="display:flex; align-items:baseline; gap:4px; overflow:hidden;">
+                        <span style="font-size:1.15em; font-weight:bold; color:${countdownColor}; font-family:monospace; white-space:nowrap;">${countdownText}</span>
+                        <span style="font-size:0.65em; color:#888; white-space:nowrap;">&gt; Takeoff</span>
+                    </div>
                     <button id="wt-flight-cycle-btn" title="Try a different item" style="width:20px; height:20px; line-height:1; padding:0; flex-shrink:0; background:#252525; border:1px solid #444; color:#00e5ff; border-radius:4px; font-size:0.95em; font-weight:bold; cursor:pointer;">+</button>
                 </div>
             `;
@@ -2420,11 +2433,10 @@
             const idx = safeGmGet('wt_flight_cycle_index', 0) % flightAutoCandidates.length;
             const c = flightAutoCandidates[idx];
             safeGmSet('wt_flight_cycle_index', (idx + 1) % flightAutoCandidates.length);
-            const flagUrl = FLIGHT_FLAG_MAP[c.code] ? `https://flagcdn.com/w40/${FLIGHT_FLAG_MAP[c.code]}.png` : null;
             const oneWayMins = Math.round((FLIGHT_MINS_MAP[c.code] || 0) * 0.7);
             safeGmSet('wt_active_flight_target', {
                 source: 'auto', code: c.code, itemId: c.itemId, itemName: c.itemName, profit: c.roi || null,
-                flagUrl, launchMs: c.restockMs - oneWayMins * 60000, landMs: c.restockMs, ts: Date.now()
+                launchMs: c.restockMs - oneWayMins * 60000, landMs: c.restockMs, ts: Date.now()
             });
             renderFlightWidget();
         }
