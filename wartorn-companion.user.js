@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.34
+// @version      3.35
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2328,38 +2328,62 @@
         // than shared since that file doesn't run on torn.com at all.
         const FLIGHT_FLAG_MAP = { mex: 'mx', cay: 'ky', can: 'ca', haw: 'us-hi', uni: 'gb', arg: 'ar', swi: 'ch', jap: 'jp', chi: 'cn', uae: 'ae', sou: 'za' };
         const FLIGHT_MINS_MAP = { mex: 24, cay: 33, can: 39, haw: 127, uni: 151, arg: 158, swi: 166, jap: 213, chi: 229, uae: 257, sou: 282 };
+        // Same names/spellings as flight-planner.js's own yataMap, so the
+        // widget's country label matches what the dashboard already shows.
+        const FLIGHT_COUNTRY_NAMES = { mex: 'Mexico', cay: 'Cayman', can: 'Canada', haw: 'Hawaii', uni: 'United Kingdom', arg: 'Argentina', swi: 'Switzerland', jap: 'Japan', chi: 'China', uae: 'UAE', sou: 'South Africa' };
+
+        const FLIGHT_WIDGET_BASE_CSS = 'display:flex; flex-direction:column; justify-content:center; gap:5px; background:rgba(21,23,28,0.92); border:1px solid #3a3f4b; border-radius:8px; cursor:pointer; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.88; box-sizing:border-box; user-select:none;';
 
         function getFlightWidgetEl() { return document.getElementById('wt-flight-widget'); }
+
+        // Cascades through h/m/s properly instead of collapsing straight to
+        // a lossy "Xh" once minutes cross 100 - an hour out shows "1:00:00"
+        // and keeps ticking down through every unit from there.
+        function formatFlightCountdown(remainingMs) {
+            if (remainingMs <= 0) return { text: 'GO', color: '#4CAF50' };
+            const totalSecs = Math.floor(remainingMs / 1000);
+            const hrs = Math.floor(totalSecs / 3600);
+            const mins = Math.floor((totalSecs % 3600) / 60);
+            const secs = totalSecs % 60;
+            const text = hrs > 0
+                ? `${hrs}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+                : `${mins}:${String(secs).padStart(2, '0')}`;
+            const color = remainingMs < 60000 ? '#f44336' : '#00e5ff';
+            return { text, color };
+        }
 
         function renderFlightWidget() {
             const el = getFlightWidgetEl();
             if (!el) return;
             const target = safeGmGet('wt_active_flight_target', null);
             if (!target) {
-                el.style.width = '34px';
-                el.style.height = '34px';
-                el.style.padding = '0';
-                el.innerHTML = '<span style="font-size:1.1em;">✈️</span>';
+                el.style.cssText = FLIGHT_WIDGET_BASE_CSS + 'align-items:center; width:40px; height:40px; padding:0;';
+                el.innerHTML = '<span style="font-size:1.3em;">✈️</span>';
                 el.title = 'Click to auto-pick a high-ROI flight target';
                 return;
             }
+            // Dashboard-pushed targets write `code`; auto-picked ones used
+            // to write `country` instead - normalized to `code` below (see
+            // applyAutoFlightCandidate) but tolerate either here in case a
+            // stale value from before that fix is still sitting in storage.
+            const code = target.code || target.country;
+            const countryName = FLIGHT_COUNTRY_NAMES[code] || (code || '').toUpperCase();
+            const flagHtml = target.flagUrl ? `<img src="${target.flagUrl}" draggable="false" style="width:20px; border-radius:2px; flex-shrink:0;">` : '<span style="font-size:1em;">🏳️</span>';
+            const itemImgHtml = target.itemId ? `<img src="https://www.torn.com/images/items/${target.itemId}/medium.png" draggable="false" style="width:28px; height:28px; object-fit:contain; flex-shrink:0;">` : '<span style="font-size:1.1em;">✈️</span>';
             const remainingMs = target.launchMs - Date.now();
-            const flagHtml = target.flagUrl ? `<img src="${target.flagUrl}" style="width:18px; border-radius:2px;">` : '';
-            const itemImgHtml = target.itemId ? `<img src="https://www.torn.com/images/items/${target.itemId}/medium.png" style="width:24px; height:24px; object-fit:contain;">` : '<span style="font-size:1.1em;">✈️</span>';
-            let countdownText, countdownColor;
-            if (remainingMs <= 0) {
-                countdownText = 'GO';
-                countdownColor = '#4CAF50';
-            } else {
-                const totalSecs = Math.floor(remainingMs / 1000);
-                const mins = Math.floor(totalSecs / 60);
-                countdownText = mins >= 100 ? Math.floor(mins / 60) + 'h' : mins + ':' + String(totalSecs % 60).padStart(2, '0');
-                countdownColor = remainingMs < 60000 ? '#f44336' : '#00e5ff';
-            }
-            el.style.width = '38px';
-            el.style.height = 'auto';
-            el.style.padding = '4px 0';
-            el.innerHTML = `${flagHtml}${itemImgHtml}<span style="font-size:0.62em; font-weight:bold; color:${countdownColor}; font-family:monospace;">${countdownText}</span>`;
+            const { text: countdownText, color: countdownColor } = formatFlightCountdown(remainingMs);
+            el.style.cssText = FLIGHT_WIDGET_BASE_CSS + 'align-items:stretch; width:180px; padding:8px 10px;';
+            el.innerHTML = `
+                <div style="display:flex; align-items:center; gap:6px;">
+                    ${flagHtml}
+                    <span style="font-size:0.8em; color:#ddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${countryName}</span>
+                </div>
+                <div style="display:flex; align-items:center; gap:6px;">
+                    ${itemImgHtml}
+                    <span style="font-size:0.8em; color:#ddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${target.itemName || 'Item'}</span>
+                </div>
+                <div style="font-size:1.15em; font-weight:bold; color:${countdownColor}; font-family:monospace; text-align:center; margin-top:1px;">${countdownText}</div>
+            `;
             el.title = (target.itemName || 'Flight target') + ' - launch ' + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '. Click to hide.';
         }
 
@@ -2376,7 +2400,7 @@
             const flagUrl = FLIGHT_FLAG_MAP[c.code] ? `https://flagcdn.com/w40/${FLIGHT_FLAG_MAP[c.code]}.png` : null;
             const oneWayMins = Math.round((FLIGHT_MINS_MAP[c.code] || 0) * 0.7);
             safeGmSet('wt_active_flight_target', {
-                source: 'auto', country: c.code, itemId: c.itemId, itemName: c.itemName,
+                source: 'auto', code: c.code, itemId: c.itemId, itemName: c.itemName,
                 flagUrl, launchMs: c.restockMs - oneWayMins * 60000, landMs: c.restockMs, ts: Date.now()
             });
             renderFlightWidget();
@@ -2414,9 +2438,11 @@
         function createFlightWidget() {
             const el = document.createElement('div');
             el.id = 'wt-flight-widget';
-            el.style.cssText = 'display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85; overflow:hidden;';
+            // Actual sizing/layout is fully owned by renderFlightWidget()
+            // (called immediately below) since idle vs active states need
+            // very different dimensions - this is just the bare element.
             el.addEventListener('mouseenter', () => { el.style.opacity = '1'; });
-            el.addEventListener('mouseleave', () => { el.style.opacity = '0.85'; });
+            el.addEventListener('mouseleave', () => { el.style.opacity = '0.88'; });
             el.addEventListener('click', onFlightWidgetClick);
             // One shared tick regardless of how many times this gets
             // (re)created - a fresh Torn page load only ever creates this
