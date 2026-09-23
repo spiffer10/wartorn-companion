@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.40
+// @version      3.41
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -2345,15 +2345,16 @@
         // flightTimesStd (keyed by YATA code, not full country name, to
         // match what top-roi-items already returns) - duplicated rather
         // than shared since that file doesn't run on torn.com at all.
-        // Neither of the two obvious ways to show a flag actually holds up
-        // everywhere: flagcdn.com images don't reliably load inside
-        // TornPDA's webview (only torn.com's own CDN is guaranteed there),
-        // and Unicode regional-indicator flag emoji - the very next thing
-        // tried - render as nothing at all on a lot of Windows/Chromium
-        // font combos instead of falling back to anything visible. A
-        // plain 3-letter code badge needs no image fetch and no emoji
-        // font support, so it's the one option that can't silently fail
-        // depending on where this is viewed.
+        // flagcdn.com images looked right in a normal browser from the
+        // start, so that stays the default there. TornPDA's webview is the
+        // one place that doesn't reliably load images from a third-party
+        // domain (only torn.com's own CDN is guaranteed) - isTornPDA()
+        // skips the image there entirely rather than let it fail, falling
+        // straight to the plain code-badge below. The badge also backs up
+        // the image in a normal browser too (see the onerror wiring in
+        // renderFlightWidget) in case flagcdn.com itself is unreachable
+        // there for some unrelated reason (blocked, offline, etc).
+        const FLIGHT_FLAG_ISO = { mex: 'mx', cay: 'ky', can: 'ca', haw: 'us-hi', uni: 'gb', arg: 'ar', swi: 'ch', jap: 'jp', chi: 'cn', uae: 'ae', sou: 'za' };
         const FLIGHT_MINS_MAP = { mex: 24, cay: 33, can: 39, haw: 127, uni: 151, arg: 158, swi: 166, jap: 213, chi: 229, uae: 257, sou: 282 };
         // Same names/spellings as flight-planner.js's own yataMap, so the
         // widget's country label matches what the dashboard already shows.
@@ -2402,7 +2403,12 @@
             // stale value from before that fix is still sitting in storage.
             const code = target.code || target.country;
             const countryName = FLIGHT_COUNTRY_NAMES[code] || (code || '').toUpperCase();
-            const flagHtml = `<span style="font-size:0.62em; font-weight:bold; letter-spacing:0.5px; background:#252525; border:1px solid #444; color:#00e5ff; border-radius:3px; padding:2px 4px; flex-shrink:0;">${(code || '??').toUpperCase()}</span>`;
+            const showFlagImg = !isTornPDA() && FLIGHT_FLAG_ISO[code];
+            const flagImgHtml = showFlagImg
+                ? `<img id="wt-flight-flag-img" src="https://flagcdn.com/w40/${FLIGHT_FLAG_ISO[code]}.png" draggable="false" style="width:20px; border-radius:2px; flex-shrink:0;">`
+                : '';
+            const flagBadgeHtml = `<span id="wt-flight-flag-badge" style="font-size:0.62em; font-weight:bold; letter-spacing:0.5px; background:#252525; border:1px solid #444; color:#00e5ff; border-radius:3px; padding:2px 4px; flex-shrink:0; ${showFlagImg ? 'display:none;' : ''}">${(code || '??').toUpperCase()}</span>`;
+            const flagHtml = flagImgHtml + flagBadgeHtml;
             const itemImgHtml = target.itemId ? `<img src="https://www.torn.com/images/items/${target.itemId}/medium.png" draggable="false" style="width:28px; height:28px; object-fit:contain; flex-shrink:0;">` : '<span style="font-size:1.1em;">✈️</span>';
             const remainingMs = target.launchMs - Date.now();
             const { text: countdownText, color: countdownColor } = formatFlightCountdown(remainingMs);
@@ -2434,6 +2440,14 @@
             // creation - stopPropagation keeps the click from also
             // bubbling up to el's own listener, which would otherwise
             // immediately dismiss the target this button just set.
+            const flagImgEl = document.getElementById('wt-flight-flag-img');
+            if (flagImgEl) {
+                flagImgEl.addEventListener('error', () => {
+                    flagImgEl.style.display = 'none';
+                    const badge = document.getElementById('wt-flight-flag-badge');
+                    if (badge) badge.style.display = 'inline-block';
+                });
+            }
             const cycleBtn = document.getElementById('wt-flight-cycle-btn');
             if (cycleBtn) {
                 cycleBtn.addEventListener('click', (e) => {
