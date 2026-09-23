@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.30
+// @version      3.31
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -799,8 +799,29 @@
         // changed since the last scrape, so a live shop page is the only
         // place this runs at all, and it's cheap even there (a few dozen
         // cells, not thousands).
-        setInterval(scrapeItemMarket, 500);
+        //
+        // A plain setInterval on the main thread is exactly what stops
+        // updating while this tab is unfocused - Chrome throttles a
+        // backgrounded page's own timers hard (clamped to roughly once a
+        // minute after a few minutes away), which is fine for most things
+        // but defeats the entire point here. A dedicated Worker's own
+        // timers aren't subject to that same page-visibility throttling,
+        // so the actual 500ms tick lives there instead - it has no DOM
+        // access of its own, so it just posts a message back for the main
+        // thread to do the real scrape on. Falls back to the plain timer
+        // if Worker construction is blocked for any reason (e.g. a
+        // restrictive CSP) - at least keeps working while focused instead
+        // of losing the feature outright.
         scrapeItemMarket();
+        try {
+            const worker = new Worker(URL.createObjectURL(new Blob(
+                ['setInterval(() => postMessage(1), 500);'],
+                { type: 'application/javascript' }
+            )));
+            worker.onmessage = scrapeItemMarket;
+        } catch (e) {
+            setInterval(scrapeItemMarket, 500);
+        }
     }
 
     // --- 5. MODULE: LEFT-EDGE CONDENSED PANELS ---
