@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.35
+// @version      3.36
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -167,6 +167,7 @@
                 code: target.countryRaw,
                 itemId: target.itemId,
                 itemName: target.itemName,
+                profit: target.roi || null,
                 flagUrl: target.flagUrl || null,
                 launchMs: target.launchMs,
                 landMs: target.landMs,
@@ -995,10 +996,7 @@
                         <input type="checkbox" id="wt-item-modal-ignore" style="cursor:pointer;">
                         Ignore this item in the Flight Planner
                     </label>
-                    <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
-                        <input type="checkbox" id="wt-item-modal-trip" style="cursor:pointer;">
-                        Add to Time-On-Target scheduler
-                    </label>
+                    <button id="wt-item-modal-trip" style="background:#252525; border:1px solid #444; color:#00e5ff; padding:9px 12px; border-radius:4px; font-size:0.85em; font-weight:bold; cursor:pointer; text-align:left;">➕ Add to Time-On-Target Scheduler</button>
                 </div>
             </div>`;
         document.body.appendChild(overlay);
@@ -1062,11 +1060,14 @@
         // even with GM storage bridging that), so it just leaves a
         // pending request for the dashboard-side companion instance to
         // pick up and act on (see the DASHBOARD HANDSHAKE block above).
-        const tripCb = document.getElementById('wt-item-modal-trip');
-        tripCb.addEventListener('change', () => {
-            if (tripCb.checked) {
-                safeGmSet('wt_pending_scheduler_target', { country: countryName, itemName: itemName, ts: Date.now() });
-            }
+        const tripBtn = document.getElementById('wt-item-modal-trip');
+        tripBtn.addEventListener('click', () => {
+            safeGmSet('wt_pending_scheduler_target', { country: countryName, itemName: itemName, ts: Date.now() });
+            tripBtn.disabled = true;
+            tripBtn.innerText = '✓ Sent to Scheduler';
+            tripBtn.style.color = '#4CAF50';
+            tripBtn.style.borderColor = '#4CAF50';
+            tripBtn.style.cursor = 'default';
         });
     }
 
@@ -2372,6 +2373,9 @@
             const itemImgHtml = target.itemId ? `<img src="https://www.torn.com/images/items/${target.itemId}/medium.png" draggable="false" style="width:28px; height:28px; object-fit:contain; flex-shrink:0;">` : '<span style="font-size:1.1em;">✈️</span>';
             const remainingMs = target.launchMs - Date.now();
             const { text: countdownText, color: countdownColor } = formatFlightCountdown(remainingMs);
+            const profitHtml = (target.profit != null)
+                ? `<div style="font-size:0.72em; color:#4CAF50; font-weight:bold;">+$${Math.round(target.profit).toLocaleString()} est.</div>`
+                : '';
             el.style.cssText = FLIGHT_WIDGET_BASE_CSS + 'align-items:stretch; width:180px; padding:8px 10px;';
             el.innerHTML = `
                 <div style="display:flex; align-items:center; gap:6px;">
@@ -2382,7 +2386,8 @@
                     ${itemImgHtml}
                     <span style="font-size:0.8em; color:#ddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${target.itemName || 'Item'}</span>
                 </div>
-                <div style="font-size:1.15em; font-weight:bold; color:${countdownColor}; font-family:monospace; text-align:center; margin-top:1px;">${countdownText}</div>
+                ${profitHtml}
+                <div style="font-size:1.15em; font-weight:bold; color:${countdownColor}; font-family:monospace;">${countdownText}</div>
             `;
             el.title = (target.itemName || 'Flight target') + ' - launch ' + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '. Click to hide.';
         }
@@ -2400,7 +2405,7 @@
             const flagUrl = FLIGHT_FLAG_MAP[c.code] ? `https://flagcdn.com/w40/${FLIGHT_FLAG_MAP[c.code]}.png` : null;
             const oneWayMins = Math.round((FLIGHT_MINS_MAP[c.code] || 0) * 0.7);
             safeGmSet('wt_active_flight_target', {
-                source: 'auto', code: c.code, itemId: c.itemId, itemName: c.itemName,
+                source: 'auto', code: c.code, itemId: c.itemId, itemName: c.itemName, profit: c.roi || null,
                 flagUrl, launchMs: c.restockMs - oneWayMins * 60000, landMs: c.restockMs, ts: Date.now()
             });
             renderFlightWidget();
@@ -2422,6 +2427,7 @@
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: `${WARTORN_HOST}/api/public/top-roi-items`,
+                headers: { 'x-wartorn-key': userApiKey },
                 timeout: 8000,
                 onload: (res) => {
                     let data = null;
