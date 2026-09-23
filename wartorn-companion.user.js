@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.31.1
+// @version      3.31.2
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -812,33 +812,22 @@
         // if Worker construction is blocked for any reason (e.g. a
         // restrictive CSP) - at least keeps working while focused instead
         // of losing the feature outright.
-        // Temporary diagnostic - logs whether the Worker actually started
-        // (vs. silently falling back to the throttled plain timer), and a
-        // tick count/timestamp every ~10s so it's visible in the console
-        // whether ticks keep firing at all while this tab is hidden, as
-        // opposed to firing fine but genuinely finding nothing changed
-        // (Torn's own page may just not be refreshing the stock numbers
-        // it displays while backgrounded either, in which case no amount
-        // of polling on this end would show anything different).
-        let wtTickCount = 0;
-        function wtMarketTick() {
-            wtTickCount++;
-            if (wtTickCount % 20 === 0) {
-                console.log('[Wartorn] market tick #' + wtTickCount + ' - hidden=' + document.hidden + ' at ' + new Date().toLocaleTimeString());
-            }
-            scrapeItemMarket();
-        }
+        // Confirmed live 2026-09-23: the Worker tick keeps firing at the
+        // real 500ms rate regardless of focus (verified via a temporary
+        // tick-counter log, since removed) - Torn's own page apparently
+        // pauses refreshing the stock numbers it displays while
+        // backgrounded too, so there's nothing newer to find while
+        // hidden regardless of how fast this polls. That's Torn's own
+        // ceiling, not something pollable around from here.
         scrapeItemMarket();
         try {
             const worker = new Worker(URL.createObjectURL(new Blob(
                 ['setInterval(() => postMessage(1), 500);'],
                 { type: 'application/javascript' }
             )));
-            worker.onmessage = wtMarketTick;
-            console.log('[Wartorn] market scraper: Worker tick started');
+            worker.onmessage = scrapeItemMarket;
         } catch (e) {
-            console.error('[Wartorn] market scraper: Worker blocked, falling back to plain timer:', e.message);
-            setInterval(wtMarketTick, 500);
+            setInterval(scrapeItemMarket, 500);
         }
     }
 
