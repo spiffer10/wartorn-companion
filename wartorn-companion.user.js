@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.46
+// @version      3.47
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -27,6 +27,19 @@
     // Gates the radio button (see MODULE: LEFT-EDGE CONDENSED PANELS below)
     // to Tesseract's own faction for now, per an explicit ask.
     const TESSERACT_FACTION_ID = 53940;
+
+    // Confirmed live 2026-09-24: GM_info.script.version reads as undefined
+    // in at least one real TornPDA session (its own version display fell
+    // back to "v?", and the admin panel showed no companion_version for
+    // that same user) - TornPDA's script engine apparently doesn't always
+    // populate GM_info the way Tampermonkey does. This hardcoded literal
+    // is the one thing guaranteed to exist regardless of GM_info support -
+    // used wherever GM_info.script.version is read below. Keep it equal to
+    // the @version line above on every bump, or this becomes a silent lie
+    // instead of a useful fallback. Declared up here specifically (not
+    // nearer its first use) since checkForCompanionUpdate() below calls
+    // itself before the file reaches most other module-level consts.
+    const COMPANION_VERSION_FALLBACK = '3.47';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -468,11 +481,7 @@
     // if something went wrong - the normal silent path (every page load)
     // only ever shows anything when there's actually an update.
     function checkForCompanionUpdate(verbose) {
-        const currentVersion = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '';
-        if (!currentVersion) {
-            if (verbose) showDiagnosticToast('⚠️ <b>Update check failed</b><br><span style="color:#aaa;">GM_info.script.version is unavailable in this environment.</span>', '#f44336');
-            return;
-        }
+        const currentVersion = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || COMPANION_VERSION_FALLBACK;
         try {
             GM_xmlhttpRequest({
                 method: 'GET',
@@ -513,8 +522,9 @@
     // below so the admin panel's online-users table can show which build
     // someone's actually running - previously the only way to know was
     // asking, since this side never told the backend anything about
-    // itself beyond the linked key.
-    const COMPANION_VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '';
+    // itself beyond the linked key. See COMPANION_VERSION_FALLBACK near
+    // the top of the file for why this can't just read GM_info directly.
+    const COMPANION_VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || COMPANION_VERSION_FALLBACK;
 
     // The dashboard-side auto-link (see DASHBOARD HANDSHAKE above) writes
     // the key via safeGmSet() on wartorn.spiffer10.com, and this side reads
@@ -819,30 +829,58 @@
     // document.body's own data-country attribute (confirmed present on
     // every travel-related page, not just this shop), not anything scraped
     // out of the shop markup itself.
+    //
+    // Confirmed live 2026-09-24 (real markup pulled from a live TornPDA
+    // session, via a temporary debug endpoint) that data-tt-content-type
+    // is missing ENTIRELY inside TornPDA's webview, on the exact same page
+    // (identical cell/row classes otherwise) that has it on desktop -
+    // scrapeItemMarket() was finding zero stock cells there as a result,
+    // hence stock never updating. findShopRows() below tries the data
+    // attribute first (desktop's existing, unchanged path) and only falls
+    // back to a pure text/structure match - a screen-reader-only span
+    // whose own text is exactly "stock", immediately followed by the
+    // quantity - when that finds nothing. That fallback depends on
+    // neither the data attribute nor any hashed class name, both of which
+    // have now independently broken once already.
+    function findShopRows() {
+        const attrCells = document.querySelectorAll('[data-tt-content-type="stock"]');
+        if (attrCells.length > 0) {
+            return Array.from(attrCells).map(cell => ({ row: cell.closest('li') || cell.parentElement, stockText: cell.textContent }));
+        }
+        const labels = Array.from(document.querySelectorAll('span')).filter(el =>
+            el.children.length === 0 && el.textContent.replace(/\u00a0/g, ' ').trim().toLowerCase() === 'stock'
+        );
+        return labels.map(label => ({
+            row: label.closest('li'),
+            stockText: label.parentElement ? label.parentElement.textContent : ''
+        })).filter(x => x.row);
+    }
+
     let lastMarketSignature = '';
     function scrapeItemMarket() {
         const countryName = document.body && document.body.dataset && document.body.dataset.country;
         if (!countryName) return;
         const items = [];
 
-        document.querySelectorAll('[data-tt-content-type="stock"]').forEach(stockCell => {
-            const row = stockCell.closest('li') || stockCell.parentElement;
+        findShopRows().forEach(({ row, stockText }) => {
             if (!row) return;
             // The image cell's filename is the most reliable id source (every
             // row has one, even a sold-out row that might be missing the
             // expandable name button's aria-controls) - the name button is
             // kept as a fallback in case the image ever fails to load/render.
-            const img = row.querySelector('[data-tt-content-type="item"] img');
+            // Each also falls back from the data-attribute-scoped lookup to a
+            // plain element lookup, same reasoning as findShopRows() above.
+            const img = row.querySelector('[data-tt-content-type="item"] img') || row.querySelector('img');
             const imgMatch = img && img.src && img.src.match(/\/items\/(\d+)\//);
-            const nameBtn = !imgMatch && row.querySelector('[data-tt-content-type="name"] button[aria-controls]');
-            const btnMatch = nameBtn && nameBtn.getAttribute('aria-controls').match(/^item-(\d+)-/);
+            const nameBtn = !imgMatch && (row.querySelector('[data-tt-content-type="name"] button[aria-controls]') || row.querySelector('button[aria-controls]'));
+            const btnMatch = nameBtn && nameBtn.getAttribute('aria-controls') && nameBtn.getAttribute('aria-controls').match(/^item-(\d+)-/);
             const id = imgMatch ? parseInt(imgMatch[1], 10) : (btnMatch ? parseInt(btnMatch[1], 10) : null);
             if (!id) return;
             // Grabs the first run of digits in the cell's own text rather
             // than trying to strip an exact label - the sr-only "stock "
             // prefix (a non-breaking space, not a plain one) is otherwise
             // easy to get subtly wrong.
-            const qtyMatch = stockCell.textContent.replace(/,/g, '').match(/\d+/);
+            const qtyMatch = stockText.replace(/,/g, '').match(/\d+/);
             if (!qtyMatch) return;
             items.push({ id: id, quantity: parseInt(qtyMatch[0], 10) });
         });
@@ -869,17 +907,21 @@
     function injectItemHistoryButtons() {
         const countryName = document.body && document.body.dataset && document.body.dataset.country;
         if (!countryName) return;
-        document.querySelectorAll('[data-tt-content-type="stock"]').forEach(stockCell => {
-            const row = stockCell.closest('li');
+        findShopRows().forEach(({ row }) => {
             if (!row || row.querySelector('.wt-item-info-btn')) return;
-            const img = row.querySelector('[data-tt-content-type="item"] img');
+            const img = row.querySelector('[data-tt-content-type="item"] img') || row.querySelector('img');
             const imgMatch = img && img.src && img.src.match(/\/items\/(\d+)\//);
             const nameCell = row.querySelector('[data-tt-content-type="name"]');
-            const nameBtn = nameCell && nameCell.querySelector('button[aria-controls]');
-            const btnMatch = nameBtn && nameBtn.getAttribute('aria-controls').match(/^item-(\d+)-/);
+            const nameBtn = (nameCell && nameCell.querySelector('button[aria-controls]')) || row.querySelector('button[aria-controls]');
+            const btnMatch = nameBtn && nameBtn.getAttribute('aria-controls') && nameBtn.getAttribute('aria-controls').match(/^item-(\d+)-/);
             const id = imgMatch ? parseInt(imgMatch[1], 10) : (btnMatch ? parseInt(btnMatch[1], 10) : null);
-            if (!id || !nameCell) return;
-            const itemName = (nameBtn ? nameBtn.textContent : nameCell.textContent).trim();
+            // Falls back to the name button's own parent when there's no
+            // data-tt-content-type="name" wrapper to append the 📊 button
+            // to - see findShopRows() above for why that attribute can be
+            // absent entirely.
+            const targetCell = nameCell || (nameBtn && nameBtn.parentElement);
+            if (!id || !targetCell) return;
+            const itemName = (nameBtn ? nameBtn.textContent : targetCell.textContent).trim();
             const btn = document.createElement('span');
             btn.className = 'wt-item-info-btn';
             btn.textContent = '📊';
@@ -890,7 +932,7 @@
                 e.stopPropagation();
                 showItemHistoryModal(countryName, id, itemName);
             });
-            nameCell.appendChild(btn);
+            targetCell.appendChild(btn);
         });
     }
 
@@ -1121,52 +1163,6 @@
         // ceiling, not something pollable around from here.
         const marketTick = () => { scrapeItemMarket(); injectItemHistoryButtons(); };
         marketTick();
-        // TEMPORARY - one-time on-screen diagnostic, TornPDA only. Round 1
-        // (3.44) confirmed body.dataset.country IS present there but both
-        // data-tt-content-type selectors find zero cells - so that page
-        // isn't rendering the same markup this scraper was written
-        // against. Round 2: grab a real shop row's actual outerHTML from
-        // that device (any <li> whose <img> src looks like an item icon,
-        // since that pattern held even under the OLD pre-rebuild markup)
-        // and send it to a temp debug endpoint instead of guessing at a
-        // second selector blind. Remove this block, the endpoint, and
-        // wtDebugDomLog server-side once diagnosed.
-        if (isTornPDA()) {
-            try {
-                const country = document.body && document.body.dataset && document.body.dataset.country;
-                const stockCells = document.querySelectorAll('[data-tt-content-type="stock"]').length;
-                const nameCells = document.querySelectorAll('[data-tt-content-type="name"]').length;
-                showDiagnosticToast(
-                    `🔧 <b>Wartorn diagnostic</b><br><span style="color:#aaa;">country: ${country || 'MISSING'}<br>stock cells: ${stockCells}<br>name cells: ${nameCells}<br>sending sample row...</span>`,
-                    '#00e5ff'
-                );
-                // Round 2's "first <li> with an item icon" grabbed the
-                // wrong thing - an inventory/packing slot (a plain icon
-                // button, no price anywhere near it), not an actual shop
-                // row. A real shop row shows a price, so filtering on that
-                // instead should land on the right element this time.
-                const priceLis = Array.from(document.querySelectorAll('li')).filter(li => /\$[\d,]+/.test(li.textContent));
-                const sampleRow = priceLis[0] || null;
-                const dollarLines = document.body.innerText.split('\n').map(l => l.trim()).filter(l => /\$[\d,]+/.test(l)).slice(0, 12);
-                GM_xmlhttpRequest({
-                    method: 'POST',
-                    url: `${WARTORN_HOST}/api/companion/debug-dom`,
-                    headers: { 'x-wartorn-key': userApiKey, 'Content-Type': 'application/json', 'x-wartorn-companion-version': COMPANION_VERSION },
-                    data: JSON.stringify({
-                        country: country || null,
-                        stockCells, nameCells,
-                        url: window.location.href,
-                        priceLiCount: priceLis.length,
-                        sampleRowHtml: sampleRow ? sampleRow.outerHTML.slice(0, 2000) : null,
-                        dollarLines,
-                        liCount: document.querySelectorAll('li').length
-                    }),
-                    timeout: 8000
-                });
-            } catch (e) {
-                showDiagnosticToast(`🔧 <b>Wartorn diagnostic</b><br><span style="color:#aaa;">threw: ${(e && e.message) || e}</span>`, '#f44336');
-            }
-        }
         // The try/catch below only catches Worker CONSTRUCTION throwing -
         // in TornPDA's webview it's been reported not to scrape stock at
         // all past the first tick, with no error logged anywhere, which
@@ -2152,7 +2148,7 @@
                     </div>
 
                     <div style="text-align:center; color:#555; font-size:0.7em; padding-top:4px;">
-                        Wartorn Companion v${(typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '?'}
+                        Wartorn Companion v${(typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || COMPANION_VERSION_FALLBACK}
                     </div>
                 </div>
             `;
