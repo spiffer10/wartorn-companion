@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.45
+// @version      3.46
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1140,8 +1140,14 @@
                     `🔧 <b>Wartorn diagnostic</b><br><span style="color:#aaa;">country: ${country || 'MISSING'}<br>stock cells: ${stockCells}<br>name cells: ${nameCells}<br>sending sample row...</span>`,
                     '#00e5ff'
                 );
-                const itemImg = Array.from(document.querySelectorAll('li img')).find(img => /\/items\/\d+\//.test(img.src));
-                const sampleRow = itemImg ? itemImg.closest('li') : null;
+                // Round 2's "first <li> with an item icon" grabbed the
+                // wrong thing - an inventory/packing slot (a plain icon
+                // button, no price anywhere near it), not an actual shop
+                // row. A real shop row shows a price, so filtering on that
+                // instead should land on the right element this time.
+                const priceLis = Array.from(document.querySelectorAll('li')).filter(li => /\$[\d,]+/.test(li.textContent));
+                const sampleRow = priceLis[0] || null;
+                const dollarLines = document.body.innerText.split('\n').map(l => l.trim()).filter(l => /\$[\d,]+/.test(l)).slice(0, 12);
                 GM_xmlhttpRequest({
                     method: 'POST',
                     url: `${WARTORN_HOST}/api/companion/debug-dom`,
@@ -1150,7 +1156,9 @@
                         country: country || null,
                         stockCells, nameCells,
                         url: window.location.href,
+                        priceLiCount: priceLis.length,
                         sampleRowHtml: sampleRow ? sampleRow.outerHTML.slice(0, 2000) : null,
+                        dollarLines,
                         liCount: document.querySelectorAll('li').length
                     }),
                     timeout: 8000
