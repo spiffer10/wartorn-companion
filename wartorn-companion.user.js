@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.43
+// @version      3.44
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1121,6 +1121,25 @@
         // ceiling, not something pollable around from here.
         const marketTick = () => { scrapeItemMarket(); injectItemHistoryButtons(); };
         marketTick();
+        // TEMPORARY - one-time on-screen diagnostic, TornPDA only. The
+        // timer-tick fix below didn't resolve a real report of stock not
+        // scraping there, so this surfaces exactly what scrapeItemMarket()
+        // sees on that device (is body.dataset.country even present? does
+        // the stock-cell selector find anything at all?) instead of
+        // guessing blind a second time. Remove once that's answered.
+        if (isTornPDA()) {
+            try {
+                const country = document.body && document.body.dataset && document.body.dataset.country;
+                const stockCells = document.querySelectorAll('[data-tt-content-type="stock"]').length;
+                const nameCells = document.querySelectorAll('[data-tt-content-type="name"]').length;
+                showDiagnosticToast(
+                    `🔧 <b>Wartorn diagnostic</b><br><span style="color:#aaa;">country: ${country || 'MISSING'}<br>stock cells: ${stockCells}<br>name cells: ${nameCells}</span>`,
+                    '#00e5ff'
+                );
+            } catch (e) {
+                showDiagnosticToast(`🔧 <b>Wartorn diagnostic</b><br><span style="color:#aaa;">threw: ${(e && e.message) || e}</span>`, '#f44336');
+            }
+        }
         // The try/catch below only catches Worker CONSTRUCTION throwing -
         // in TornPDA's webview it's been reported not to scrape stock at
         // all past the first tick, with no error logged anywhere, which
