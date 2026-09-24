@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.47
+// @version      3.48
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.47';
+    const COMPANION_VERSION_FALLBACK = '3.48';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -847,22 +847,34 @@
         if (attrCells.length > 0) {
             return Array.from(attrCells).map(cell => ({ row: cell.closest('li') || cell.parentElement, stockText: cell.textContent }));
         }
-        const labels = Array.from(document.querySelectorAll('span')).filter(el =>
-            el.children.length === 0 && el.textContent.replace(/\u00a0/g, ' ').trim().toLowerCase() === 'stock'
-        );
-        return labels.map(label => ({
-            row: label.closest('li'),
-            stockText: label.parentElement ? label.parentElement.textContent : ''
-        })).filter(x => x.row);
+        // Scanning every <span> on the whole page (a busy Torn page easily
+        // has hundreds - icons, tooltips, chat, sidebar) to find the one
+        // "stock" label per row, on every 500ms tick, was heavy enough to
+        // visibly lock up the page on TornPDA. Anchoring on the item name
+        // buttons instead (aria-controls="item-{id}-..." is far rarer -
+        // roughly one per shop row) and scoping the label search to just
+        // that one row's own handful of children cuts this from "scan the
+        // whole document" down to "scan ~20-30 small subtrees".
+        const rows = [];
+        document.querySelectorAll('button[aria-controls^="item-"]').forEach(btn => {
+            const row = btn.closest('li');
+            if (!row) return;
+            const label = Array.from(row.querySelectorAll('span')).find(el =>
+                el.children.length === 0 && el.textContent.replace(/\u00a0/g, ' ').trim().toLowerCase() === 'stock'
+            );
+            if (!label) return;
+            rows.push({ row, stockText: label.parentElement ? label.parentElement.textContent : '' });
+        });
+        return rows;
     }
 
     let lastMarketSignature = '';
-    function scrapeItemMarket() {
+    function scrapeItemMarket(shopRows) {
         const countryName = document.body && document.body.dataset && document.body.dataset.country;
         if (!countryName) return;
         const items = [];
 
-        findShopRows().forEach(({ row, stockText }) => {
+        shopRows.forEach(({ row, stockText }) => {
             if (!row) return;
             // The image cell's filename is the most reliable id source (every
             // row has one, even a sold-out row that might be missing the
@@ -904,10 +916,10 @@
     // Idempotent (checks for its own marker before adding) since this
     // runs on the same poll as the scraper above and rows aren't
     // recreated on every tick.
-    function injectItemHistoryButtons() {
+    function injectItemHistoryButtons(shopRows) {
         const countryName = document.body && document.body.dataset && document.body.dataset.country;
         if (!countryName) return;
-        findShopRows().forEach(({ row }) => {
+        shopRows.forEach(({ row }) => {
             if (!row || row.querySelector('.wt-item-info-btn')) return;
             const img = row.querySelector('[data-tt-content-type="item"] img') || row.querySelector('img');
             const imgMatch = img && img.src && img.src.match(/\/items\/(\d+)\//);
@@ -1161,7 +1173,14 @@
         // backgrounded too, so there's nothing newer to find while
         // hidden regardless of how fast this polls. That's Torn's own
         // ceiling, not something pollable around from here.
-        const marketTick = () => { scrapeItemMarket(); injectItemHistoryButtons(); };
+        // Computed once and shared - findShopRows() was being called twice
+        // per tick (once from each function below), doubling the cost of
+        // an already-expensive DOM scan for no reason.
+        const marketTick = () => {
+            const shopRows = findShopRows();
+            scrapeItemMarket(shopRows);
+            injectItemHistoryButtons(shopRows);
+        };
         marketTick();
         // The try/catch below only catches Worker CONSTRUCTION throwing -
         // in TornPDA's webview it's been reported not to scrape stock at
