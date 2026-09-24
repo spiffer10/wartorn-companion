@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.44
+// @version      3.45
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1121,21 +1121,40 @@
         // ceiling, not something pollable around from here.
         const marketTick = () => { scrapeItemMarket(); injectItemHistoryButtons(); };
         marketTick();
-        // TEMPORARY - one-time on-screen diagnostic, TornPDA only. The
-        // timer-tick fix below didn't resolve a real report of stock not
-        // scraping there, so this surfaces exactly what scrapeItemMarket()
-        // sees on that device (is body.dataset.country even present? does
-        // the stock-cell selector find anything at all?) instead of
-        // guessing blind a second time. Remove once that's answered.
+        // TEMPORARY - one-time on-screen diagnostic, TornPDA only. Round 1
+        // (3.44) confirmed body.dataset.country IS present there but both
+        // data-tt-content-type selectors find zero cells - so that page
+        // isn't rendering the same markup this scraper was written
+        // against. Round 2: grab a real shop row's actual outerHTML from
+        // that device (any <li> whose <img> src looks like an item icon,
+        // since that pattern held even under the OLD pre-rebuild markup)
+        // and send it to a temp debug endpoint instead of guessing at a
+        // second selector blind. Remove this block, the endpoint, and
+        // wtDebugDomLog server-side once diagnosed.
         if (isTornPDA()) {
             try {
                 const country = document.body && document.body.dataset && document.body.dataset.country;
                 const stockCells = document.querySelectorAll('[data-tt-content-type="stock"]').length;
                 const nameCells = document.querySelectorAll('[data-tt-content-type="name"]').length;
                 showDiagnosticToast(
-                    `🔧 <b>Wartorn diagnostic</b><br><span style="color:#aaa;">country: ${country || 'MISSING'}<br>stock cells: ${stockCells}<br>name cells: ${nameCells}</span>`,
+                    `🔧 <b>Wartorn diagnostic</b><br><span style="color:#aaa;">country: ${country || 'MISSING'}<br>stock cells: ${stockCells}<br>name cells: ${nameCells}<br>sending sample row...</span>`,
                     '#00e5ff'
                 );
+                const itemImg = Array.from(document.querySelectorAll('li img')).find(img => /\/items\/\d+\//.test(img.src));
+                const sampleRow = itemImg ? itemImg.closest('li') : null;
+                GM_xmlhttpRequest({
+                    method: 'POST',
+                    url: `${WARTORN_HOST}/api/companion/debug-dom`,
+                    headers: { 'x-wartorn-key': userApiKey, 'Content-Type': 'application/json', 'x-wartorn-companion-version': COMPANION_VERSION },
+                    data: JSON.stringify({
+                        country: country || null,
+                        stockCells, nameCells,
+                        url: window.location.href,
+                        sampleRowHtml: sampleRow ? sampleRow.outerHTML.slice(0, 2000) : null,
+                        liCount: document.querySelectorAll('li').length
+                    }),
+                    timeout: 8000
+                });
             } catch (e) {
                 showDiagnosticToast(`🔧 <b>Wartorn diagnostic</b><br><span style="color:#aaa;">threw: ${(e && e.message) || e}</span>`, '#f44336');
             }
