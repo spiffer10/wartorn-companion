@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.48
+// @version      3.49
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.48';
+    const COMPANION_VERSION_FALLBACK = '3.49';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -440,16 +440,13 @@
         // sliding OUT from behind the logo rather than fading in beside it.
         notice.style.cssText = 'position:fixed; z-index:9999998; height:40px; width:0; overflow:hidden; background:#15171c; border:1px solid #00e5ff; border-radius:0 6px 6px 0; box-shadow:0 4px 15px rgba(0,0,0,0.6); transition:width 0.4s ease; display:flex; align-items:center; white-space:nowrap; cursor:pointer;';
         notice.innerHTML = '<span style="padding:0 14px; color:#00e5ff; font-size:0.8em; font-weight:bold;">🚀 New version available - click to update</span>';
-        notice.title = 'Opens the GreasyFork page - use its own Install/Update button there.';
+        notice.title = 'Opens the update file directly - your script manager should offer to install/update from it.';
         notice.addEventListener('click', () => {
-            // Confirmed live: opening the raw .user.js file directly (even
-            // though it's the exact file Tampermonkey's own update
-            // mechanism pulls from) just displayed as plain text instead of
-            // triggering Tampermonkey's install/update prompt - something
-            // about that flow specifically doesn't fire it reliably.
-            // GreasyFork's own script page - the same page/button already
-            // confirmed to work - does.
-            window.open('https://greasyfork.org/en/scripts/595166-wartorn-companion', '_blank');
+            // Links straight to the @downloadURL/@updateURL file itself
+            // (update.greasyfork.org, not the greasyfork.org info page) -
+            // per an explicit ask, this is the one that actually triggers
+            // the script manager's install/update prompt.
+            window.open('https://update.greasyfork.org/scripts/595166/Wartorn%20Companion.user.js', '_blank');
         });
         document.body.appendChild(notice);
         applyCompanionAnchor();
