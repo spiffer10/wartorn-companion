@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.41
+// @version      3.42
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -509,6 +509,12 @@
     // this just sends you to log in there instead of asking you to hand
     // your key to a popup dialog directly.
     let userApiKey = safeGmGet('wt_api_key', '');
+    // Sent as x-wartorn-companion-version on every authenticated request
+    // below so the admin panel's online-users table can show which build
+    // someone's actually running - previously the only way to know was
+    // asking, since this side never told the backend anything about
+    // itself beyond the linked key.
+    const COMPANION_VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '';
 
     // The dashboard-side auto-link (see DASHBOARD HANDSHAKE above) writes
     // the key via safeGmSet() on wartorn.spiffer10.com, and this side reads
@@ -787,7 +793,7 @@
         GM_xmlhttpRequest({
             method: "POST",
             url: `${WARTORN_HOST}/api/companion/${endpoint}`,
-            headers: { "Content-Type": "application/json", "x-wartorn-key": userApiKey },
+            headers: { "Content-Type": "application/json", "x-wartorn-key": userApiKey, "x-wartorn-companion-version": COMPANION_VERSION },
             data: JSON.stringify(payload)
         });
     }
@@ -1040,7 +1046,7 @@
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: `${WARTORN_HOST}/api/companion/hidden-items`,
-                headers: { 'x-wartorn-key': userApiKey },
+                headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
                 timeout: 8000,
                 onload: (res) => {
                     let data = null;
@@ -1059,7 +1065,7 @@
                 GM_xmlhttpRequest({
                     method: 'POST',
                     url: `${WARTORN_HOST}/api/companion/hidden-items`,
-                    headers: { 'x-wartorn-key': userApiKey, 'Content-Type': 'application/json' },
+                    headers: { 'x-wartorn-key': userApiKey, 'Content-Type': 'application/json', 'x-wartorn-companion-version': COMPANION_VERSION },
                     data: JSON.stringify({ items: next }),
                     timeout: 8000
                 });
@@ -1159,7 +1165,7 @@
                 GM_xmlhttpRequest({
                     method: 'GET',
                     url: `${WARTORN_HOST}/api/companion/${endpoint}`,
-                    headers: { 'x-wartorn-key': userApiKey },
+                    headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
                     timeout: 10000,
                     onload: (res) => {
                         try { resolve(JSON.parse(res.responseText)); }
@@ -1180,7 +1186,7 @@
                 GM_xmlhttpRequest({
                     method: 'POST',
                     url: `${WARTORN_HOST}/api/companion/${endpoint}`,
-                    headers: { 'Content-Type': 'application/json', 'x-wartorn-key': userApiKey },
+                    headers: { 'Content-Type': 'application/json', 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
                     data: JSON.stringify(payload),
                     timeout: 10000,
                     onload: (res) => {
@@ -1201,7 +1207,7 @@
                 GM_xmlhttpRequest({
                     method: 'DELETE',
                     url: `${WARTORN_HOST}/api/companion/${endpoint}`,
-                    headers: { 'x-wartorn-key': userApiKey },
+                    headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
                     timeout: 10000,
                     onload: (res) => {
                         let data = {};
@@ -2484,7 +2490,7 @@
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: `${WARTORN_HOST}/api/public/top-roi-items`,
-                headers: { 'x-wartorn-key': userApiKey },
+                headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
                 timeout: 8000,
                 onload: (res) => {
                     let data = null;
