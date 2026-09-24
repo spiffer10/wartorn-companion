@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.42
+// @version      3.43
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -1121,14 +1121,30 @@
         // ceiling, not something pollable around from here.
         const marketTick = () => { scrapeItemMarket(); injectItemHistoryButtons(); };
         marketTick();
-        try {
-            const worker = new Worker(URL.createObjectURL(new Blob(
-                ['setInterval(() => postMessage(1), 500);'],
-                { type: 'application/javascript' }
-            )));
-            worker.onmessage = marketTick;
-        } catch (e) {
+        // The try/catch below only catches Worker CONSTRUCTION throwing -
+        // in TornPDA's webview it's been reported not to scrape stock at
+        // all past the first tick, with no error logged anywhere, which
+        // points at the worker being silently blocked from actually
+        // running its blob: script (e.g. a strict worker-src CSP) rather
+        // than failing to construct. New Worker(...) succeeds, onmessage
+        // just never fires, and nothing here would ever know. Skipping
+        // straight to the plain-timer fallback there avoids betting on a
+        // failure mode with no way to detect it - and TornPDA's webview is
+        // the visible foreground app while it's actually being used, not a
+        // backgrounded browser tab, so the throttling the Worker exists to
+        // route around doesn't apply there anyway.
+        if (isTornPDA()) {
             setInterval(marketTick, 500);
+        } else {
+            try {
+                const worker = new Worker(URL.createObjectURL(new Blob(
+                    ['setInterval(() => postMessage(1), 500);'],
+                    { type: 'application/javascript' }
+                )));
+                worker.onmessage = marketTick;
+            } catch (e) {
+                setInterval(marketTick, 500);
+            }
         }
     }
 
