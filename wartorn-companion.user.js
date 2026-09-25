@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.50
+// @version      3.51
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.50';
+    const COMPANION_VERSION_FALLBACK = '3.51';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -96,7 +96,14 @@
     }
  
     // --- DASHBOARD HANDSHAKE ---
-    if (window.location.href.includes('wartorn.spiffer10.com')) {
+    // Derived from WARTORN_HOST itself rather than a separate hardcoded
+    // domain literal - a second copy of this exact code (staging, on a
+    // different hostname) had its own WARTORN_HOST updated correctly but
+    // this check was a SEPARATE hardcoded string that never matched the
+    // staging domain, so this entire block - including auto-link - never
+    // ran there at all. Exact hostname comparison, not .includes(), so
+    // one domain can never accidentally match another as a substring.
+    if (window.location.hostname === new URL(WARTORN_HOST).hostname) {
         // Flag the DOM so the dashboard knows the script is installed
         document.body.dataset.companionInstalled = 'true';
 
