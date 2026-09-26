@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.51
+// @version      3.52
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.51';
+    const COMPANION_VERSION_FALLBACK = '3.52';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -747,6 +747,18 @@
 
     safeRegisterMenuCommand(userApiKey ? '✅ Wartorn Linked (re-link)' : '🔑 Link Wartorn Account', linkWartornManually);
     safeRegisterMenuCommand('🔗 Auto-link from dashboard session', linkWartorn);
+    // Previously the only way to clear a stored key was Tampermonkey's own
+    // Storage tab (hidden unless it's out of Beginner config mode) or
+    // DevTools. Genuinely useful for testing relink flows, not just a
+    // one-off - GM_setValue (already granted) is enough, no need for the
+    // separate GM_deleteValue grant since an empty string already reads as
+    // "no key" everywhere this is checked.
+    if (userApiKey) {
+        safeRegisterMenuCommand('🔓 Unlink Wartorn', () => {
+            safeGmSet('wt_api_key', '');
+            location.reload();
+        });
+    }
 
     // Pasting a key directly (linkWartornManually) is the PRIMARY path now -
     // it works standalone, entirely from torn.com, for both an existing
