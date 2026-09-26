@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.56
+// @version      3.57
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.56';
+    const COMPANION_VERSION_FALLBACK = '3.57';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2809,6 +2809,25 @@
             if (current) {
                 safeGmSet('wt_active_flight_target', null);
                 renderFlightWidget();
+                return;
+            }
+            // Idle (nothing showing). If you're actually mid-flight right
+            // now (travelLandAtMs/travelDestination set), reopening should
+            // bring back THIS trip's flight-detected pick, not the
+            // cross-country auto-pick "+" mode below - that mode is for
+            // planning a flight while sitting in Torn, and makes no sense
+            // once you're already committed to a destination.
+            if (travelLandAtMs !== null && travelDestination) {
+                dismissedFlightDetectLandAtMs = null;
+                if (flightDetectCandidates.length) {
+                    applyFlightDetectCandidate(flightDetectCandidateIndex);
+                } else {
+                    // No cached pick for this trip (e.g. nothing was ever
+                    // catchable) - force a fresh fetch instead of just
+                    // sitting idle.
+                    flightDetectFetchedForLandAtMs = null;
+                    updateFlightWidgetForTravel();
+                }
                 return;
             }
             cycleFlightCandidate();
