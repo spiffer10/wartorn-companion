@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.55
+// @version      3.56
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.55';
+    const COMPANION_VERSION_FALLBACK = '3.56';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2459,7 +2459,7 @@
         // widget's country label matches what the dashboard already shows.
         const FLIGHT_COUNTRY_NAMES = { mex: 'Mexico', cay: 'Cayman', can: 'Canada', haw: 'Hawaii', uni: 'United Kingdom', arg: 'Argentina', swi: 'Switzerland', jap: 'Japan', chi: 'China', uae: 'UAE', sou: 'South Africa' };
 
-        const FLIGHT_WIDGET_BASE_CSS = 'display:flex; flex-direction:column; justify-content:center; gap:5px; background:rgba(21,23,28,0.92); border:1px solid #3a3f4b; border-radius:8px; cursor:pointer; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.88; box-sizing:border-box; user-select:none;';
+        const FLIGHT_WIDGET_BASE_CSS = 'display:flex; flex-direction:column; justify-content:center; gap:5px; background:rgba(21,23,28,0.92); border:1px solid #3a3f4b; border-radius:8px; cursor:pointer; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.88; box-sizing:border-box; user-select:none; position:relative;';
 
         function getFlightWidgetEl() { return document.getElementById('wt-flight-widget'); }
 
@@ -2520,12 +2520,18 @@
             // Torn's own in-flight timer already covers time-to-landing, and
             // it doesn't line up with our locally-computed remainingMs closely
             // enough to be trustworthy next to it. Stock count has no such
-            // clock-sync problem. Same teal the countdown itself used
-            // (formatFlightCountdown's normal, non-urgent color) rather than
-            // a green/red stock-level color, to match the rest of the
-            // widget's look.
+            // clock-sync problem. Alternates every few seconds with an
+            // estimated quantity AT landing (expectedQty, from the server's
+            // linear-depletion model over stock_history's own observed
+            // peak) when that estimate is available - falls back to just
+            // the live current number on repeat if it isn't (e.g. no
+            // history yet for a brand new item/country pairing). Same teal
+            // the countdown itself used (formatFlightCountdown's normal,
+            // non-urgent color) rather than a green/red stock-level color,
+            // to match the rest of the widget's look.
+            const showExpected = isInFlight && target.expectedQty != null && Math.floor(Date.now() / 4000) % 2 === 1;
             const { text: countdownText, color: countdownColor } = isInFlight
-                ? { text: `Stock: ${target.stockQty ?? '?'}`, color: '#00e5ff' }
+                ? { text: showExpected ? `Land: ~${target.expectedQty}` : `Stock: ${target.stockQty ?? '?'}`, color: '#00e5ff' }
                 : formatFlightCountdown(remainingMs);
             const profitHtml = (target.profit != null)
                 ? `<div style="font-size:0.72em; color:#4CAF50; font-weight:bold;">+$${Math.round(target.profit).toLocaleString()} est.</div>`
@@ -2535,8 +2541,13 @@
             // mid-flight - hidden for this source rather than offering an
             // action that would just replace it with an unrelated country.
             const cycleBtnHtml = isInFlight ? '' : `<button id="wt-flight-cycle-btn" title="Try a different item" style="width:20px; height:20px; line-height:1; padding:0; flex-shrink:0; background:#252525; border:1px solid #444; color:#00e5ff; border-radius:4px; font-size:0.95em; font-weight:bold; cursor:pointer;">+</button>`;
+            // Clicking anywhere else on an in-flight target now cycles
+            // items instead of dismissing (see onFlightWidgetClick) - this
+            // is the only way left to close the widget mid-flight.
+            const closeBtnHtml = isInFlight ? `<span id="wt-flight-close-btn" title="Hide" style="position:absolute; top:3px; right:5px; font-size:0.85em; line-height:1; color:#777; cursor:pointer;">&times;</span>` : '';
             el.style.cssText = FLIGHT_WIDGET_BASE_CSS + `align-items:stretch; width:180px; padding:8px 10px; font-size:${fontSizeSetting}px;`;
             el.innerHTML = `
+                ${closeBtnHtml}
                 <div style="display:flex; align-items:center; gap:6px;">
                     ${flagHtml}
                     <span style="font-size:0.8em; color:#ddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${countryName}</span>
@@ -2555,7 +2566,7 @@
                 </div>
             `;
             el.title = isInFlight
-                ? (target.itemName || 'Flight target') + ' - ' + countdownText + ' right now. Click to try another item.'
+                ? (target.itemName || 'Flight target') + ' - stock: ' + (target.stockQty ?? '?') + (target.expectedQty != null ? `, ~${target.expectedQty} expected on landing` : '') + '. Click to try another item.'
                 : (target.itemName || 'Flight target') + ' - launch ' + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '. Click to hide.';
             // Recreated every render (innerHTML replaces it each tick), so
             // this has to be rewired every time rather than once at
@@ -2575,6 +2586,13 @@
                 cycleBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
                     cycleFlightCandidate();
+                });
+            }
+            const closeBtn = document.getElementById('wt-flight-close-btn');
+            if (closeBtn) {
+                closeBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    dismissFlightDetectedTarget();
                 });
             }
         }
@@ -2619,9 +2637,18 @@
                 itemName: c.itemName,
                 profit: c.roi || null,
                 stockQty: c.quantity,
+                expectedQty: (c.expectedQty != null) ? c.expectedQty : null,
                 landMs: travelLandAtMs,
                 ts: Date.now()
             });
+            renderFlightWidget();
+        }
+        // Shared by the close (x) button and onFlightWidgetClick's
+        // no-other-candidates fallback - remembers the dismissal so it
+        // doesn't just pop back on the next travel poll for this same trip.
+        function dismissFlightDetectedTarget() {
+            dismissedFlightDetectLandAtMs = travelLandAtMs;
+            safeGmSet('wt_active_flight_target', null);
             renderFlightWidget();
         }
         function updateFlightWidgetForTravel() {
@@ -2769,9 +2796,7 @@
                 if (flightDetectCandidates.length > 1) {
                     applyFlightDetectCandidate((flightDetectCandidateIndex + 1) % flightDetectCandidates.length);
                 } else {
-                    dismissedFlightDetectLandAtMs = travelLandAtMs;
-                    safeGmSet('wt_active_flight_target', null);
-                    renderFlightWidget();
+                    dismissFlightDetectedTarget();
                 }
                 return;
             }
