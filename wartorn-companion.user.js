@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.58
+// @version      3.59
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, and Vendettas right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.58';
+    const COMPANION_VERSION_FALLBACK = '3.59';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2698,6 +2698,23 @@
                 ontimeout: () => { flightDetectRequestInFlight = false; }
             });
         }
+        // TEMPORARY - flight data reportedly not showing while traveling,
+        // no console error either, so there's no visible signal to work
+        // from. Exposes the actual internal state so this can be
+        // diagnosed from the browser console (torn.com) with a single
+        // call: unsafeWindow.wtFlightDebug() - remove once root-caused.
+        try {
+            (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).wtFlightDebug = function() {
+                return {
+                    userApiKey: !!userApiKey,
+                    travelLandAtMs, travelDestination,
+                    current: safeGmGet('wt_active_flight_target', null),
+                    flightDetectCandidates, flightDetectCandidateIndex, flightDetectCode,
+                    flightDetectFetchedForLandAtMs, dismissedFlightDetectLandAtMs,
+                    flightDetectRequestInFlight, flightDetectLastStockRefresh
+                };
+            };
+        } catch (e) {}
         // Re-polls landing-pick periodically for as long as a
         // flight-detected target is on screen, so the stock number keeps
         // catching up to the server's own YATA sync instead of freezing at
