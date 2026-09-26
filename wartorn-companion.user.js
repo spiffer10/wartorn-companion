@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.53
+// @version      3.54
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.53';
+    const COMPANION_VERSION_FALLBACK = '3.54';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2516,7 +2516,14 @@
             // launchMs same as before.
             const isInFlight = target.source === 'flight-detected';
             const remainingMs = (isInFlight ? target.landMs : target.launchMs) - Date.now();
-            const { text: countdownText, color: countdownColor } = formatFlightCountdown(remainingMs);
+            // In-flight targets show live stock left instead of a countdown -
+            // Torn's own in-flight timer already covers time-to-landing, and
+            // it doesn't line up with our locally-computed remainingMs closely
+            // enough to be trustworthy next to it. Stock count has no such
+            // clock-sync problem.
+            const { text: countdownText, color: countdownColor } = isInFlight
+                ? { text: `Stock: ${target.stockQty ?? '?'}`, color: (target.stockQty > 0) ? '#4CAF50' : '#f44336' }
+                : formatFlightCountdown(remainingMs);
             const profitHtml = (target.profit != null)
                 ? `<div style="font-size:0.72em; color:#4CAF50; font-weight:bold;">+$${Math.round(target.profit).toLocaleString()} est.</div>`
                 : '';
@@ -2539,12 +2546,14 @@
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
                     <div style="display:flex; align-items:baseline; gap:4px; overflow:hidden;">
                         <span style="font-size:1.15em; font-weight:bold; color:${countdownColor}; font-family:monospace; white-space:nowrap;">${countdownText}</span>
-                        <span style="font-size:0.65em; color:${countdownColor}; white-space:nowrap;">&gt; ${isInFlight ? 'Landing' : 'Takeoff'}</span>
+                        <span style="font-size:0.65em; color:${countdownColor}; white-space:nowrap;">${isInFlight ? 'in stock now' : '&gt; Takeoff'}</span>
                     </div>
                     ${cycleBtnHtml}
                 </div>
             `;
-            el.title = (target.itemName || 'Flight target') + (isInFlight ? ' - landing ' : ' - launch ') + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '. Click to hide.';
+            el.title = isInFlight
+                ? (target.itemName || 'Flight target') + ' - ' + countdownText + ' right now. Click to hide.'
+                : (target.itemName || 'Flight target') + ' - launch ' + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '. Click to hide.';
             // Recreated every render (innerHTML replaces it each tick), so
             // this has to be rewired every time rather than once at
             // creation - stopPropagation keeps the click from also
@@ -2621,6 +2630,7 @@
                         itemId: data.item.itemId,
                         itemName: data.item.itemName,
                         profit: data.item.roi || null,
+                        stockQty: data.item.quantity,
                         landMs: travelLandAtMs,
                         ts: Date.now()
                     });
