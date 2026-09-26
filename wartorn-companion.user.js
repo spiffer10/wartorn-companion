@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.52
+// @version      3.53
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.52';
+    const COMPANION_VERSION_FALLBACK = '3.53';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2509,11 +2509,22 @@
             const flagBadgeHtml = `<span id="wt-flight-flag-badge" style="font-size:0.62em; font-weight:bold; letter-spacing:0.5px; background:#252525; border:1px solid #444; color:#00e5ff; border-radius:3px; padding:2px 4px; flex-shrink:0; ${showFlagImg ? 'display:none;' : ''}">${(code || '??').toUpperCase()}</span>`;
             const flagHtml = flagImgHtml + flagBadgeHtml;
             const itemImgHtml = target.itemId ? `<img src="https://www.torn.com/images/items/${target.itemId}/medium.png" draggable="false" style="width:28px; height:28px; object-fit:contain; flex-shrink:0;">` : '<span style="font-size:1.1em;">✈️</span>';
-            const remainingMs = target.launchMs - Date.now();
+            // A flight-detected target means you're already in the air -
+            // there's no "time until launch" left to show, what matters
+            // now is time until LANDING. Every other source (dashboard
+            // push, auto-pick) is still pre-flight, counting down to
+            // launchMs same as before.
+            const isInFlight = target.source === 'flight-detected';
+            const remainingMs = (isInFlight ? target.landMs : target.launchMs) - Date.now();
             const { text: countdownText, color: countdownColor } = formatFlightCountdown(remainingMs);
             const profitHtml = (target.profit != null)
                 ? `<div style="font-size:0.72em; color:#4CAF50; font-weight:bold;">+$${Math.round(target.profit).toLocaleString()} est.</div>`
                 : '';
+            // Cycling picks from the cross-country ranking, which makes
+            // no sense once you're already committed to one destination
+            // mid-flight - hidden for this source rather than offering an
+            // action that would just replace it with an unrelated country.
+            const cycleBtnHtml = isInFlight ? '' : `<button id="wt-flight-cycle-btn" title="Try a different item" style="width:20px; height:20px; line-height:1; padding:0; flex-shrink:0; background:#252525; border:1px solid #444; color:#00e5ff; border-radius:4px; font-size:0.95em; font-weight:bold; cursor:pointer;">+</button>`;
             el.style.cssText = FLIGHT_WIDGET_BASE_CSS + `align-items:stretch; width:180px; padding:8px 10px; font-size:${fontSizeSetting}px;`;
             el.innerHTML = `
                 <div style="display:flex; align-items:center; gap:6px;">
@@ -2528,12 +2539,12 @@
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
                     <div style="display:flex; align-items:baseline; gap:4px; overflow:hidden;">
                         <span style="font-size:1.15em; font-weight:bold; color:${countdownColor}; font-family:monospace; white-space:nowrap;">${countdownText}</span>
-                        <span style="font-size:0.65em; color:${countdownColor}; white-space:nowrap;">&gt; Takeoff</span>
+                        <span style="font-size:0.65em; color:${countdownColor}; white-space:nowrap;">&gt; ${isInFlight ? 'Landing' : 'Takeoff'}</span>
                     </div>
-                    <button id="wt-flight-cycle-btn" title="Try a different item" style="width:20px; height:20px; line-height:1; padding:0; flex-shrink:0; background:#252525; border:1px solid #444; color:#00e5ff; border-radius:4px; font-size:0.95em; font-weight:bold; cursor:pointer;">+</button>
+                    ${cycleBtnHtml}
                 </div>
             `;
-            el.title = (target.itemName || 'Flight target') + ' - launch ' + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '. Click to hide.';
+            el.title = (target.itemName || 'Flight target') + (isInFlight ? ' - landing ' : ' - launch ') + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '. Click to hide.';
             // Recreated every render (innerHTML replaces it each tick), so
             // this has to be rewired every time rather than once at
             // creation - stopPropagation keeps the click from also
@@ -2554,6 +2565,70 @@
                     cycleFlightCandidate();
                 });
             }
+        }
+
+        // Real-flight detection: when checkTravelStatus (further down,
+        // where the actual selections=travel poll lives) finds you're
+        // genuinely traveling right now, this looks up the single best
+        // catchable item for that EXACT destination + landing time and
+        // shows it automatically - no click needed, unlike the idle-state
+        // auto-pick, since there's nothing to choose here, just something
+        // worth knowing about where you're already headed. Won't override
+        // an explicit dashboard-pushed target (source: 'dashboard') -
+        // that's a deliberate choice you made, not something this should
+        // silently replace.
+        let flightDetectRequestInFlight = false;
+        let flightDetectFetchedForLandAtMs = null;
+        let dismissedFlightDetectLandAtMs = null;
+        function updateFlightWidgetForTravel() {
+            const current = safeGmGet('wt_active_flight_target', null);
+            if (travelLandAtMs === null || !travelDestination) {
+                // Trip's over (or never started) - clear it, but only if
+                // THIS mechanism is what set it. A dashboard push or a
+                // manually-cycled pick should survive landing, same as
+                // they always have.
+                if (current && current.source === 'flight-detected') {
+                    safeGmSet('wt_active_flight_target', null);
+                    renderFlightWidget();
+                }
+                flightDetectFetchedForLandAtMs = null;
+                dismissedFlightDetectLandAtMs = null;
+                return;
+            }
+            if (current && current.source === 'dashboard') return;
+            if (dismissedFlightDetectLandAtMs === travelLandAtMs) return;
+            // Only re-fetch on a genuinely new trip (a different landing
+            // time) - the destination/landing time barely move between
+            // polls once a flight's confirmed, so there's nothing new to
+            // ask for most of the time this runs.
+            if (flightDetectFetchedForLandAtMs === travelLandAtMs) return;
+            if (flightDetectRequestInFlight) return;
+            flightDetectRequestInFlight = true;
+            flightDetectFetchedForLandAtMs = travelLandAtMs;
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `${WARTORN_HOST}/api/public/landing-pick?country=${encodeURIComponent(travelDestination)}&landAtMs=${travelLandAtMs}`,
+                headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
+                timeout: 8000,
+                onload: (res) => {
+                    flightDetectRequestInFlight = false;
+                    let data = null;
+                    try { data = JSON.parse(res.responseText); } catch (e) {}
+                    if (!data || !data.item || !data.code) return;
+                    safeGmSet('wt_active_flight_target', {
+                        source: 'flight-detected',
+                        code: data.code,
+                        itemId: data.item.itemId,
+                        itemName: data.item.itemName,
+                        profit: data.item.roi || null,
+                        landMs: travelLandAtMs,
+                        ts: Date.now()
+                    });
+                    renderFlightWidget();
+                },
+                onerror: () => { flightDetectRequestInFlight = false; },
+                ontimeout: () => { flightDetectRequestInFlight = false; }
+            });
         }
 
         // Cached briefly rather than re-fetched on every idle click - the
@@ -2603,7 +2678,14 @@
             // this reveals something fresh (idle -> active), it picks up
             // from wherever it left off rather than restarting from the
             // top every time.
-            if (safeGmGet('wt_active_flight_target', null)) {
+            const current = safeGmGet('wt_active_flight_target', null);
+            if (current) {
+                // A flight-detected target reappears on its own (no click
+                // needed) every time checkTravelStatus polls, for as long
+                // as you're on this same trip - without remembering the
+                // dismissal, clicking it away would just have it pop back
+                // a few seconds later for the entire rest of the flight.
+                if (current.source === 'flight-detected') dismissedFlightDetectLandAtMs = travelLandAtMs;
                 safeGmSet('wt_active_flight_target', null);
                 renderFlightWidget();
                 return;
@@ -4459,6 +4541,13 @@
         // trip rather than jitter - that's the only case allowed to push
         // it later, and it also re-arms the alert for the new countdown.
         let travelLandAtMs = null;
+        // Destination alongside the landing timestamp - added for the
+        // flight widget's real-flight-detection mode (see
+        // updateFlightWidgetForTravel below), which needs to know WHERE
+        // you're actually headed, not just when you land. Torn's own
+        // selections=travel response names this "destination" directly
+        // (a plain country name like "Mexico"), no guessing needed.
+        let travelDestination = null;
         const TRAVEL_NEW_TRIP_JUMP_SECS = 60;
 
         function fetchTornTravel() {
@@ -4492,13 +4581,22 @@
         const MIN_FRESH_TRAVEL_SECS = 45;
 
         async function checkTravelStatus() {
-            if (!flightSoundEnabled || !userApiKey) { travelLandAtMs = null; return; }
+            // Only userApiKey gates this now - flightSoundEnabled used to
+            // gate the whole poll, but the flight widget's real-flight
+            // detection (updateFlightWidgetForTravel below) needs this
+            // tracked regardless of whether the sound alert itself is on.
+            // The sound's own on/off check stays separate, right where it
+            // actually plays.
+            if (!userApiKey) { travelLandAtMs = null; travelDestination = null; updateFlightWidgetForTravel(); return; }
             const travel = await fetchTornTravel();
             if (!travel || typeof travel.time_left !== 'number' || travel.time_left <= 0) {
                 travelLandAtMs = null;
+                travelDestination = null;
+                updateFlightWidgetForTravel();
                 return;
             }
             if (travelLandAtMs === null && travel.time_left < MIN_FRESH_TRAVEL_SECS) return;
+            travelDestination = travel.destination || null;
             const candidateLandAtMs = Date.now() + travel.time_left * 1000;
             if (travelLandAtMs === null || candidateLandAtMs > travelLandAtMs + TRAVEL_NEW_TRIP_JUMP_SECS * 1000) {
                 travelLandAtMs = candidateLandAtMs;
@@ -4506,6 +4604,7 @@
             } else if (candidateLandAtMs < travelLandAtMs) {
                 travelLandAtMs = candidateLandAtMs;
             }
+            updateFlightWidgetForTravel();
         }
         // Once travelLandAtMs is locked in, the countdown itself ticks down
         // locally every second in tickLocalAlertClocks() below at zero API
