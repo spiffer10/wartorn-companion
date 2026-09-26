@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.54
+// @version      3.55
 // @description  Silently feeds live Torn DOM data to the Wartorn Dashboard, plus condensed left-edge panels. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.54';
+    const COMPANION_VERSION_FALLBACK = '3.55';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2520,9 +2520,12 @@
             // Torn's own in-flight timer already covers time-to-landing, and
             // it doesn't line up with our locally-computed remainingMs closely
             // enough to be trustworthy next to it. Stock count has no such
-            // clock-sync problem.
+            // clock-sync problem. Same teal the countdown itself used
+            // (formatFlightCountdown's normal, non-urgent color) rather than
+            // a green/red stock-level color, to match the rest of the
+            // widget's look.
             const { text: countdownText, color: countdownColor } = isInFlight
-                ? { text: `Stock: ${target.stockQty ?? '?'}`, color: (target.stockQty > 0) ? '#4CAF50' : '#f44336' }
+                ? { text: `Stock: ${target.stockQty ?? '?'}`, color: '#00e5ff' }
                 : formatFlightCountdown(remainingMs);
             const profitHtml = (target.profit != null)
                 ? `<div style="font-size:0.72em; color:#4CAF50; font-weight:bold;">+$${Math.round(target.profit).toLocaleString()} est.</div>`
@@ -2546,13 +2549,13 @@
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
                     <div style="display:flex; align-items:baseline; gap:4px; overflow:hidden;">
                         <span style="font-size:1.15em; font-weight:bold; color:${countdownColor}; font-family:monospace; white-space:nowrap;">${countdownText}</span>
-                        <span style="font-size:0.65em; color:${countdownColor}; white-space:nowrap;">${isInFlight ? 'in stock now' : '&gt; Takeoff'}</span>
+                        ${isInFlight ? '' : `<span style="font-size:0.65em; color:${countdownColor}; white-space:nowrap;">&gt; Takeoff</span>`}
                     </div>
                     ${cycleBtnHtml}
                 </div>
             `;
             el.title = isInFlight
-                ? (target.itemName || 'Flight target') + ' - ' + countdownText + ' right now. Click to hide.'
+                ? (target.itemName || 'Flight target') + ' - ' + countdownText + ' right now. Click to try another item.'
                 : (target.itemName || 'Flight target') + ' - launch ' + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '. Click to hide.';
             // Recreated every render (innerHTML replaces it each tick), so
             // this has to be rewired every time rather than once at
@@ -2589,6 +2592,38 @@
         let flightDetectRequestInFlight = false;
         let flightDetectFetchedForLandAtMs = null;
         let dismissedFlightDetectLandAtMs = null;
+        // Full ranked list of catchable items for the CURRENT trip (not
+        // just the single best one) - lets a click cycle through the rest
+        // of them without a round trip per click, same idea as
+        // flightAutoCandidates below but scoped to this one destination/
+        // landing time rather than the cross-country ranking. Re-derived
+        // from scratch on every genuinely new trip; refreshFlightDetectStock
+        // below refreshes quantities on this same list periodically without
+        // touching which item/index is currently selected.
+        let flightDetectCandidates = [];
+        let flightDetectCandidateIndex = 0;
+        let flightDetectCode = null;
+        let flightDetectLastStockRefresh = 0;
+        // Matches the server's own YATA_SYNC_INTERVAL_MS - polling our
+        // backend faster than its underlying stock data actually changes
+        // would just re-show the same numbers.
+        const FLIGHT_DETECT_STOCK_REFRESH_MS = 60000;
+        function applyFlightDetectCandidate(idx) {
+            const c = flightDetectCandidates[idx];
+            if (!c) return;
+            flightDetectCandidateIndex = idx;
+            safeGmSet('wt_active_flight_target', {
+                source: 'flight-detected',
+                code: flightDetectCode,
+                itemId: c.itemId,
+                itemName: c.itemName,
+                profit: c.roi || null,
+                stockQty: c.quantity,
+                landMs: travelLandAtMs,
+                ts: Date.now()
+            });
+            renderFlightWidget();
+        }
         function updateFlightWidgetForTravel() {
             const current = safeGmGet('wt_active_flight_target', null);
             if (travelLandAtMs === null || !travelDestination) {
@@ -2602,6 +2637,9 @@
                 }
                 flightDetectFetchedForLandAtMs = null;
                 dismissedFlightDetectLandAtMs = null;
+                flightDetectCandidates = [];
+                flightDetectCandidateIndex = 0;
+                flightDetectLastStockRefresh = 0;
                 return;
             }
             if (current && current.source === 'dashboard') return;
@@ -2624,22 +2662,59 @@
                     let data = null;
                     try { data = JSON.parse(res.responseText); } catch (e) {}
                     if (!data || !data.item || !data.code) return;
-                    safeGmSet('wt_active_flight_target', {
-                        source: 'flight-detected',
-                        code: data.code,
-                        itemId: data.item.itemId,
-                        itemName: data.item.itemName,
-                        profit: data.item.roi || null,
-                        stockQty: data.item.quantity,
-                        landMs: travelLandAtMs,
-                        ts: Date.now()
-                    });
-                    renderFlightWidget();
+                    flightDetectCode = data.code;
+                    flightDetectCandidates = data.items && data.items.length ? data.items : [data.item];
+                    flightDetectLastStockRefresh = Date.now();
+                    applyFlightDetectCandidate(0);
                 },
                 onerror: () => { flightDetectRequestInFlight = false; },
                 ontimeout: () => { flightDetectRequestInFlight = false; }
             });
         }
+        // Re-polls landing-pick periodically for as long as a
+        // flight-detected target is on screen, so the stock number keeps
+        // catching up to the server's own YATA sync instead of freezing at
+        // whatever it read the moment the flight was first detected.
+        // Deliberately tries to keep showing the SAME item across a
+        // refresh (matched back up by itemId) - only its quantity should
+        // visibly change here, not which item is displayed; that's still
+        // only ever a click away.
+        function refreshFlightDetectStock() {
+            const current = safeGmGet('wt_active_flight_target', null);
+            if (!current || current.source !== 'flight-detected') return;
+            if (travelLandAtMs === null || !travelDestination) return;
+            if (Date.now() - flightDetectLastStockRefresh < FLIGHT_DETECT_STOCK_REFRESH_MS) return;
+            if (flightDetectRequestInFlight) return;
+            flightDetectRequestInFlight = true;
+            flightDetectLastStockRefresh = Date.now();
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `${WARTORN_HOST}/api/public/landing-pick?country=${encodeURIComponent(travelDestination)}&landAtMs=${travelLandAtMs}`,
+                headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
+                timeout: 8000,
+                onload: (res) => {
+                    flightDetectRequestInFlight = false;
+                    let data = null;
+                    try { data = JSON.parse(res.responseText); } catch (e) {}
+                    if (!data || !data.code) return;
+                    flightDetectCode = data.code;
+                    flightDetectCandidates = data.items || (data.item ? [data.item] : []);
+                    if (!flightDetectCandidates.length) {
+                        // Nothing catchable here any more - clear rather
+                        // than keep showing a stale/wrong quantity.
+                        safeGmSet('wt_active_flight_target', null);
+                        renderFlightWidget();
+                        return;
+                    }
+                    const stillShowing = safeGmGet('wt_active_flight_target', null);
+                    const keepIdx = stillShowing ? flightDetectCandidates.findIndex(c => c.itemId === stillShowing.itemId) : -1;
+                    applyFlightDetectCandidate(keepIdx >= 0 ? keepIdx : 0);
+                },
+                onerror: () => { flightDetectRequestInFlight = false; },
+                ontimeout: () => { flightDetectRequestInFlight = false; }
+            });
+        }
+        setInterval(refreshFlightDetectStock, 15000);
 
         // Cached briefly rather than re-fetched on every idle click - the
         // ranking itself only changes as often as restocks do, not every
@@ -2682,20 +2757,31 @@
             });
         }
         function onFlightWidgetClick() {
-            // Something's currently showing (whether pushed from the
-            // dashboard or auto-picked) - a click just dismisses it. The
-            // cycle position itself is untouched here, so the NEXT time
-            // this reveals something fresh (idle -> active), it picks up
-            // from wherever it left off rather than restarting from the
-            // top every time.
             const current = safeGmGet('wt_active_flight_target', null);
+            if (current && current.source === 'flight-detected') {
+                // Mid-flight, a click cycles to the next catchable item for
+                // THIS destination instead of dismissing - there's nowhere
+                // else the trip could go, so "try a different item" is the
+                // only thing a click here could usefully mean. Only falls
+                // back to dismiss-and-remember when there's truly nothing
+                // else to cycle to, same dismissal memory as before so it
+                // doesn't just pop back on the next poll.
+                if (flightDetectCandidates.length > 1) {
+                    applyFlightDetectCandidate((flightDetectCandidateIndex + 1) % flightDetectCandidates.length);
+                } else {
+                    dismissedFlightDetectLandAtMs = travelLandAtMs;
+                    safeGmSet('wt_active_flight_target', null);
+                    renderFlightWidget();
+                }
+                return;
+            }
+            // Something's currently showing (dashboard push or an
+            // idle-state auto-pick) - a click just dismisses it. The cycle
+            // position itself is untouched here, so the NEXT time this
+            // reveals something fresh (idle -> active), it picks up from
+            // wherever it left off rather than restarting from the top
+            // every time.
             if (current) {
-                // A flight-detected target reappears on its own (no click
-                // needed) every time checkTravelStatus polls, for as long
-                // as you're on this same trip - without remembering the
-                // dismissal, clicking it away would just have it pop back
-                // a few seconds later for the entire rest of the flight.
-                if (current.source === 'flight-detected') dismissedFlightDetectLandAtMs = travelLandAtMs;
                 safeGmSet('wt_active_flight_target', null);
                 renderFlightWidget();
                 return;
