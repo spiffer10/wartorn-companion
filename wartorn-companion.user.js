@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.63
+// @version      3.64
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, and Vendettas right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.63';
+    const COMPANION_VERSION_FALLBACK = '3.64';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3691,16 +3691,27 @@
             const key = milkdropPresetKeys[Math.floor(Math.random() * milkdropPresetKeys.length)];
             try { milkdropViz.loadPreset(milkdropPresets[key], 1.5); } catch (e) {}
         }
+        // Previously ran at full resolution on the assumption that
+        // Butterchurn's WebGL rendering is GPU-bound and wouldn't compete
+        // with audio the way the CPU-drawn 2D canvas effects were found to
+        // on a real phone (see RADIO_VIZ_FRAME_MS above). That assumption
+        // doesn't hold on every device - a report of audibly reduced
+        // playback quality specifically while a visualizer is running
+        // (2026-09-30) points at the same class of main-thread/GPU
+        // contention, just on weaker hardware than whatever this was
+        // originally verified against. WebGL fill-rate cost scales with
+        // pixel count, so this scales the canvas down the same way the 2D
+        // styles already do (RADIO_VIZ_RES_SCALE, further down) - less
+        // aggressively (0.6 vs 0.5) since Milkdrop's actual imagery is
+        // detail-dependent in a way the deliberately chunky/retro 2D
+        // styles aren't, but still a real cut to per-frame GPU work.
+        const MILKDROP_RES_SCALE = 0.6;
         function sizeMilkdropCanvas() {
             const canvas = document.getElementById('wt-radio-viz-milkdrop');
             if (!canvas || !canvas.parentElement) return;
             const rect = canvas.parentElement.getBoundingClientRect();
-            // Full resolution (unlike the 2D styles' halved RADIO_VIZ_RES_SCALE) -
-            // Butterchurn's WebGL rendering is GPU-bound, not competing with
-            // audio decode on the same main thread the way the CPU-drawn 2D
-            // canvas effects were found to on a real phone.
-            const w = Math.max(1, Math.round(rect.width));
-            const h = Math.max(1, Math.round(rect.height));
+            const w = Math.max(1, Math.round(rect.width * MILKDROP_RES_SCALE));
+            const h = Math.max(1, Math.round(rect.height * MILKDROP_RES_SCALE));
             if (canvas.width === w && canvas.height === h) return;
             canvas.width = w;
             canvas.height = h;
