@@ -2477,7 +2477,7 @@
             const imgUrl = wtChatAbsUrl(m.imageUrl);
             const imgHtml = imgUrl ? `<a href="${wtChatEscapeHtml(imgUrl)}" target="_blank" rel="noopener"><img src="${wtChatEscapeHtml(imgUrl)}" loading="lazy" style="max-width:160px; max-height:160px; border-radius:6px; margin-top:4px; display:block;"></a>` : '';
             return `<div style="display:flex; gap:6px;">
-                <img src="${wtChatAbsUrl(m.avatarUrl)}" style="width:22px; height:22px; border-radius:50%; object-fit:cover; flex-shrink:0;" onerror="this.style.display='none';">
+                <img class="wt-chat-avatar" src="${wtChatAbsUrl(m.avatarUrl)}" style="width:22px; height:22px; border-radius:50%; object-fit:cover; flex-shrink:0;">
                 <div style="min-width:0; flex:1;">
                     <span style="color:#00e5ff; font-weight:bold; font-size:0.8em;">${wtChatEscapeHtml(m.name)}</span>
                     ${textHtml}${imgHtml}
@@ -2569,7 +2569,7 @@
             const opening = picker.style.display !== 'flex';
             if (opening && !picker.dataset.built) {
                 picker.innerHTML = WT_CHAT_EMOJIS.map(em =>
-                    `<span data-em="${em}" style="cursor:pointer; font-size:1.1em; padding:3px; border-radius:3px; line-height:1;" onmouseover="this.style.background='#2a2d34'" onmouseout="this.style.background='none'">${em}</span>`
+                    `<span class="wt-chat-emoji" data-em="${em}" style="cursor:pointer; font-size:1.1em; padding:3px; border-radius:3px; line-height:1;">${em}</span>`
                 ).join('');
                 picker.dataset.built = '1';
                 picker.querySelectorAll('span[data-em]').forEach(s => s.addEventListener('click', () => wtChatInsertEmoji(s.dataset.em)));
@@ -2653,6 +2653,21 @@
             const gifPicker = document.getElementById('wt-chat-gif-picker');
             if (gifPicker && gifPicker.style.display === 'flex' && !gifPicker.contains(e.target) && e.target.id !== 'wt-chat-gif-btn') gifPicker.style.display = 'none';
         });
+        // Hides a broken avatar image instead of leaving Torn's default
+        // broken-image icon showing. Torn's own page CSP blocks inline
+        // event handler attributes (confirmed live - an onerror="..."
+        // attribute here was silently never executing), which is exactly
+        // why every other interactive bit in this file already uses
+        // addEventListener instead of an inline on* attribute - this is
+        // delegated the same way, registered once on the document rather
+        // than per-image. 'error' doesn't bubble on media elements, so
+        // this has to listen in the CAPTURE phase (the third `true`) to
+        // see it at all via delegation.
+        document.addEventListener('error', (e) => {
+            if (e.target && e.target.classList && e.target.classList.contains('wt-chat-avatar')) {
+                e.target.style.display = 'none';
+            }
+        }, true);
         // The actual unread-detection loop - runs regardless of whether
         // the panel is open, unlike renderChatPanel above (which only
         // ever runs while its window exists). Started unconditionally
@@ -3367,6 +3382,7 @@
                 .wt-window-body::-webkit-scrollbar-track { background: transparent; }
                 .wt-window-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
                 .wt-window-body::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
+                .wt-chat-emoji:hover { background: #2a2d34; }
                 @keyframes wt-danger-pulse {
                     0%, 100% { filter: drop-shadow(0 0 3px rgba(244,67,54,0.9)) drop-shadow(0 0 2px rgba(244,67,54,0.9)); }
                     50% { filter: drop-shadow(0 0 16px rgba(244,67,54,1)) drop-shadow(0 0 8px rgba(244,67,54,1)); }
