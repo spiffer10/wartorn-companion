@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.65
+// @version      3.66
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, and Vendettas right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.65';
+    const COMPANION_VERSION_FALLBACK = '3.66';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3549,7 +3549,20 @@
                 radioShadowEl = document.createElement('audio');
                 radioShadowEl.crossOrigin = 'anonymous';
                 radioShadowEl.preload = 'auto';
-                radioShadowEl.muted = true;
+                // Deliberately NOT muted - confirmed live (both here and
+                // the pop-out page) that a muted element fed a flatline,
+                // never-changing analyser reading, on every platform
+                // tested. createMediaElementSource already disconnects an
+                // element from its own native output the moment it's
+                // called (see ensureRadioAnalyser below) - from then on,
+                // .muted/.volume can't make anything audible OR silent on
+                // their own, only the Web Audio graph's own nodes control
+                // that, and this graph's silentGain already guarantees
+                // silence there. Muting the element on top of that seems
+                // to additionally tell at least some browsers "don't
+                // bother actually decoding this," which is exactly the
+                // "no real signal reaches the analyser" symptom this was
+                // built to avoid in the first place.
                 reconnectRadioSrc(radioShadowEl);
                 // Only ever "on" exactly when the real element is - this
                 // exists purely to feed the analyser, not to play
@@ -3570,11 +3583,13 @@
                 const source = radioShadowAudioCtx.createMediaElementSource(shadow);
                 radioAnalyser = radioShadowAudioCtx.createAnalyser();
                 radioAnalyser.fftSize = 128;
-                // Never meant to be audible - muted at the element level
-                // above AND routed through a zero-gain node here rather
-                // than left unconnected, since some browsers deprioritize
-                // (or outright suspend) processing for a node with no
-                // downstream path to destination at all.
+                // Never meant to be audible - routed through a zero-gain
+                // node here rather than left unconnected, since some
+                // browsers deprioritize (or outright suspend) processing
+                // for a node with no downstream path to destination at
+                // all. This is the ONLY thing silencing the shadow
+                // element (see getRadioShadowEl above for why it's not
+                // also muted at the element level).
                 const silentGain = radioShadowAudioCtx.createGain();
                 silentGain.gain.value = 0;
                 source.connect(radioAnalyser);
