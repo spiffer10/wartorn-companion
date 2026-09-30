@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.61
+// @version      3.62
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, and Vendettas right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.61';
+    const COMPANION_VERSION_FALLBACK = '3.62';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -611,7 +611,7 @@
             const msg2 = document.getElementById('wt-manual-key-msg2');
             msg2.style.color = '#aaa'; msg2.innerText = 'Verifying...';
             try {
-                const res = await registerWithWartorn({ apiKey: apiKeyVal, ffscouterKey: apiKeyVal, tosAccepted: tosChecked, claimTrial });
+                const res = await registerWithWartorn({ apiKey: apiKeyVal, tosAccepted: tosChecked, claimTrial });
                 if (res.data && res.data.success) {
                     userApiKey = apiKeyVal;
                     safeGmSet('wt_api_key', userApiKey);
@@ -718,7 +718,7 @@
             msg.style.color = '#aaa';
             msg.innerText = '';
             try {
-                const res = await registerWithWartorn({ apiKey: val, ffscouterKey: val, tosAccepted: tosChecked, claimTrial: false });
+                const res = await registerWithWartorn({ apiKey: val, tosAccepted: tosChecked, claimTrial: false });
                 if (res.data && res.data.success) {
                     userApiKey = val;
                     safeGmSet('wt_api_key', userApiKey);
