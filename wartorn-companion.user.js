@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.64
+// @version      3.65
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, and Vendettas right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.64';
+    const COMPANION_VERSION_FALLBACK = '3.65';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3461,16 +3461,13 @@
                 // which is what made the very first sound after opening
                 // the panel take noticeably longer than it needed to.
                 radioAudioEl.preload = 'auto';
-                // Needed before the visualizer's Web Audio graph
-                // (createMediaElementSource) can read real frequency
-                // data - without it the stream still plays fine, but the
-                // analyser only ever sees silence (a "tainted" source).
-                // The stream itself already sends Access-Control-Allow-
-                // Origin: *, so this is just asking the browser to
-                // actually expose that CORS-cleared data to JS. Set at
-                // creation, before .src, since applying it after the
-                // element has already started loading doesn't reliably
-                // take effect.
+                // The visualizer no longer taps THIS element at all (see
+                // radioShadowEl further down), so this is really only for
+                // the iOS volume workaround's GainNode - harmless either
+                // way since the stream already sends Access-Control-
+                // Allow-Origin: *. Set at creation, before .src, since
+                // applying it after the element has already started
+                // loading doesn't reliably take effect.
                 radioAudioEl.crossOrigin = 'anonymous';
                 reconnectRadioSrc(radioAudioEl);
                 radioAudioEl.volume = (safeGmGet('wt_radio_volume', 80)) / 100;
@@ -3512,62 +3509,83 @@
             }, 30000);
         }
         // --- Visualizer: reads real frequency/waveform data off the
-        // stream itself via the Web Audio API, drawn as an "old school"
+        // stream via the Web Audio API, drawn as an "old school"
         // background behind the panel (classic spectrum bars, an
-        // oscilloscope-style waveform, or a dot-matrix EQ grid). The
-        // audio element can only ever be wired into a Web Audio graph
-        // ONCE (a second createMediaElementSource call on the same
-        // element throws), so this is set up lazily, once, and reused -
-        // same singleton pattern as radioAudioEl itself.
+        // oscilloscope-style waveform, or a dot-matrix EQ grid).
+        //
+        // This used to tap the signal by calling createMediaElementSource
+        // directly on radioAudioEl - the ONE element actually connected to
+        // the speakers. That call permanently reroutes an element's output
+        // through the Web Audio graph for the rest of the page's life (per
+        // spec, once wired in, its audio can only ever reach the speakers
+        // via that graph - there's no way back to native playback without
+        // a fresh element). A report of audibly reduced quality specific
+        // to a phone's built-in speaker, present with EVERY visualizer
+        // style (not just the GPU-heavy ones) and unrelated to how
+        // powerful the device was, pointed at that rerouting itself, not
+        // render cost: some phones apply speaker-specific tuning
+        // (protection limiting, small-driver EQ compensation) only to the
+        // OS's native media playback pipeline, not to raw Web Audio API
+        // output, so the exact same bits can come out sounding different
+        // once anything taps them this way - independent of visual style,
+        // exactly what was reported.
+        //
+        // Fixed by never wiring the real element into Web Audio for the
+        // visualizer at all. Instead, a second, silent, hidden <audio>
+        // element (radioShadowEl) independently loads the SAME live
+        // stream and is the one that actually gets tapped - it never
+        // reaches the speakers (muted at the element level AND through a
+        // zero-gain node below), so the visualizer can read real
+        // frequency data with zero effect on what the primary element
+        // sends to the speakers. It's a second live connection to the
+        // same broadcast (roughly 2x the stream's own bandwidth while a
+        // visualizer is on), not a perfectly sample-synced copy - fine for
+        // a reactive background effect, not fine for anything that needed
+        // exact sync.
         const RADIO_VIZ_STYLES = ['off', 'bars', 'wave', 'dots', 'plasma', 'kaleido', 'tunnel', 'orbit', 'strobe', 'rain', 'ripple', 'milkdrop'];
-        let radioAudioCtx = null;
+        let radioShadowEl = null;
+        function getRadioShadowEl() {
+            if (!radioShadowEl) {
+                radioShadowEl = document.createElement('audio');
+                radioShadowEl.crossOrigin = 'anonymous';
+                radioShadowEl.preload = 'auto';
+                radioShadowEl.muted = true;
+                reconnectRadioSrc(radioShadowEl);
+                // Only ever "on" exactly when the real element is - this
+                // exists purely to feed the analyser, not to play
+                // anything in its own right.
+                const primary = getRadioAudioEl();
+                primary.addEventListener('play', () => { radioShadowEl.play().catch(() => {}); });
+                primary.addEventListener('pause', () => { if (!radioShadowEl.paused) radioShadowEl.pause(); });
+            }
+            return radioShadowEl;
+        }
+        let radioShadowAudioCtx = null;
         let radioAnalyser = null;
-        let radioGainNode = null;
         function ensureRadioAnalyser() {
             if (radioAnalyser) return radioAnalyser;
             try {
-                const audio = getRadioAudioEl();
-                radioAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                const source = radioAudioCtx.createMediaElementSource(audio);
-                radioAnalyser = radioAudioCtx.createAnalyser();
+                const shadow = getRadioShadowEl();
+                radioShadowAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const source = radioShadowAudioCtx.createMediaElementSource(shadow);
+                radioAnalyser = radioShadowAudioCtx.createAnalyser();
                 radioAnalyser.fftSize = 128;
-                // iOS Safari's HTMLMediaElement.volume setter is a
-                // documented no-op - only the phone's physical volume
-                // buttons actually change output there, audio.volume =
-                // x silently does nothing. A GainNode isn't subject to
-                // that same restriction, so it's the standard workaround
-                // - see setRadioVolume() below, which sets both (the
-                // plain .volume property still works fine everywhere
-                // else, so there's no reason to drop it).
-                radioGainNode = radioAudioCtx.createGain();
-                radioGainNode.gain.value = audio.volume;
-                // Once the graph exists, gain becomes the ONLY thing
-                // controlling perceived volume - leaving .volume at
-                // whatever it already was would double-attenuate (e.g.
-                // 0.8 volume * 0.8 gain = 0.64 actual loudness), which
-                // is exactly why turning the visualizer on was making
-                // playback audibly quieter. setRadioVolume() below keeps
-                // it pinned at 1 from here on.
-                audio.volume = 1;
-                // Gain sits after the analyser (not before) so the
-                // visualizer keeps reacting to the real signal regardless
-                // of the volume slider's position, rather than the whole
-                // visualization shrinking every time someone turns it
-                // down.
+                // Never meant to be audible - muted at the element level
+                // above AND routed through a zero-gain node here rather
+                // than left unconnected, since some browsers deprioritize
+                // (or outright suspend) processing for a node with no
+                // downstream path to destination at all.
+                const silentGain = radioShadowAudioCtx.createGain();
+                silentGain.gain.value = 0;
                 source.connect(radioAnalyser);
-                radioAnalyser.connect(radioGainNode);
-                radioGainNode.connect(radioAudioCtx.destination);
+                radioAnalyser.connect(silentGain);
+                silentGain.connect(radioShadowAudioCtx.destination);
                 // A fresh AudioContext starts suspended until explicitly
-                // resumed - createMediaElementSource reroutes the audio
-                // element's OWN output through this graph, so a context
-                // stuck suspended silences the radio entirely (the
-                // element itself still reports .paused=false/advancing
-                // currentTime, it's just discarding audio into a
-                // suspended graph). Missing this call was the actual
-                // root cause of the pop-out's "stream never plays, no
-                // error" bug - not a network/CORS block on the stream.
-                if (radioAudioCtx.state === 'suspended') radioAudioCtx.resume();
-            } catch (e) { radioAnalyser = null; radioGainNode = null; }
+                // resumed - same gotcha as before, just on the shadow
+                // element/context now instead of the real one.
+                if (radioShadowAudioCtx.state === 'suspended') radioShadowAudioCtx.resume();
+                if (!getRadioAudioEl().paused) shadow.play().catch(() => {});
+            } catch (e) { radioAnalyser = null; }
             return radioAnalyser;
         }
 
@@ -3640,20 +3658,21 @@
                 return null;
             }
             const analyser = ensureRadioAnalyser();
-            if (!analyser || !radioAudioCtx) {
-                console.error('[Wartorn] Milkdrop unavailable: radio audio graph not ready (analyser=' + !!analyser + ', audioCtx=' + !!radioAudioCtx + ')');
+            if (!analyser || !radioShadowAudioCtx) {
+                console.error('[Wartorn] Milkdrop unavailable: radio audio graph not ready (analyser=' + !!analyser + ', audioCtx=' + !!radioShadowAudioCtx + ')');
                 return null;
             }
             try {
-                milkdropViz = lib.createVisualizer(radioAudioCtx, canvas, {
+                milkdropViz = lib.createVisualizer(radioShadowAudioCtx, canvas, {
                     width: canvas.width || 300,
                     height: canvas.height || 300
                 });
-                // Same tap point as the 2D visualizers (the analyser, not
-                // the gain node after it) - reacts to the real signal
-                // regardless of the volume slider's position, matching
-                // ensureRadioAnalyser's own "gain sits after the
-                // analyser" reasoning above.
+                // Same tap point as the 2D visualizers (the shadow
+                // element's analyser) - it's an entirely separate,
+                // independently-decoded copy of the stream from the real
+                // playback element, so it's never affected by the volume
+                // slider at all, let alone needing a gain node placed
+                // after it to avoid that.
                 milkdropViz.connectAudio(analyser);
                 milkdropVizCanvas = canvas;
                 // Presets don't depend on the canvas - only fetched once
@@ -3741,32 +3760,55 @@
             if (canvas && canvas.style.display !== 'none') canvas.style.display = 'none';
         }
 
-        // v01 is 0-1. Always sets the native property (works everywhere
-        // except iOS, where it's silently ignored) and lazily wires up
-        // the GainNode workaround too (see ensureRadioAnalyser above) -
-        // the volume slider's own 'input' event is itself a real user
-        // gesture, same as the viz button, so it's just as safe a place
-        // to first touch the audio graph.
+        // iOS Safari's HTMLMediaElement.volume setter is a documented
+        // no-op - only the phone's physical volume buttons actually
+        // change output there, audio.volume = x silently does nothing. A
+        // GainNode isn't subject to that same restriction, so it's the
+        // standard workaround - but that means wiring the REAL/audible
+        // element into Web Audio via createMediaElementSource, which is
+        // exactly the rerouting the visualizer's own shadow element
+        // above exists to avoid. Scoped to iOS specifically (the one
+        // platform actually confirmed to need it) rather than applied
+        // everywhere "to be safe" - everywhere else, plain .volume works
+        // and this never has to touch the primary element's graph at all.
+        function wtIsIOS() { return /iP(hone|ad|od)/.test(navigator.userAgent); }
+        let radioVolumeAudioCtx = null;
+        let radioVolumeGain = null;
+        function ensureRadioVolumeGain() {
+            if (radioVolumeGain) return radioVolumeGain;
+            try {
+                const audio = getRadioAudioEl();
+                radioVolumeAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const source = radioVolumeAudioCtx.createMediaElementSource(audio);
+                radioVolumeGain = radioVolumeAudioCtx.createGain();
+                radioVolumeGain.gain.value = audio.volume;
+                audio.volume = 1;
+                source.connect(radioVolumeGain);
+                radioVolumeGain.connect(radioVolumeAudioCtx.destination);
+                if (radioVolumeAudioCtx.state === 'suspended') radioVolumeAudioCtx.resume();
+            } catch (e) { radioVolumeGain = null; }
+            return radioVolumeGain;
+        }
+        // v01 is 0-1.
         function setRadioVolume(v01) {
             const audio = getRadioAudioEl();
-            // Only touches .volume directly while there's no graph yet -
-            // once one exists, gain is the sole source of truth (see
-            // ensureRadioAnalyser) and .volume stays pinned at 1, so the
-            // two never multiply together into a quieter-than-requested
-            // result.
-            if (!radioAnalyser) audio.volume = v01;
-            ensureRadioAnalyser();
-            if (radioGainNode) {
-                radioGainNode.gain.value = v01;
+            if (!wtIsIOS()) { audio.volume = v01; return; }
+            ensureRadioVolumeGain();
+            if (radioVolumeGain) {
+                radioVolumeGain.gain.value = v01;
                 audio.volume = 1;
+            } else {
+                audio.volume = v01; // graph failed to init - best effort
             }
         }
         function getRadioVizStyleIndex() {
-            // Milkdrop is the default for anyone who's never touched this
-            // setting (was 'off') - looked up by name rather than a
-            // hardcoded index so it keeps working if RADIO_VIZ_STYLES
-            // ever gets reordered.
-            return safeGmGet('wt_radio_viz_style', RADIO_VIZ_STYLES.indexOf('milkdrop'));
+            // Off by default for anyone who's never touched this setting -
+            // was defaulted to Milkdrop, which meant a first-time user got
+            // a visualizer (and, before the shadow-element fix above, a
+            // rerouted audio path) they never actually asked for. Looked
+            // up by name rather than a hardcoded index so it keeps working
+            // if RADIO_VIZ_STYLES ever gets reordered.
+            return safeGmGet('wt_radio_viz_style', RADIO_VIZ_STYLES.indexOf('off'));
         }
         let radioVizRunning = false;
         function startRadioViz(canvas) {
@@ -4135,12 +4177,13 @@
                 audio.pause();
                 audio.muted = true;
                 // Reads the persisted slider setting, not audio.volume
-                // directly - once the visualizer's graph is active (now
-                // the default, since Milkdrop is default-on), gain sits
-                // after the analyser and audio.volume gets pinned at 1
-                // for the rest of that element's life (see setRadioVolume
-                // above), so reading it here would always hand the
+                // directly - on iOS specifically, setRadioVolume's GainNode
+                // workaround pins audio.volume at 1 for the rest of that
+                // element's life once it's ever been touched (see
+                // setRadioVolume above), so reading it here would hand the
                 // pop-out 100% regardless of where the slider actually is.
+                // Harmless to always read it this way even on platforms
+                // where audio.volume would've been accurate too.
                 const vol = safeGmGet('wt_radio_volume', 80);
                 // No window-feature string (width/height/etc.) - that's
                 // what tells the browser to open a separate popup window
@@ -4246,12 +4289,12 @@
                 switchBtn.addEventListener('click', () => openRadioPopout(renderRadioPanel));
                 return;
             }
-            // Reads the persisted slider setting, not audio.volume directly
-            // - once the visualizer's graph is active (now the default,
-            // since Milkdrop is default-on), audio.volume gets pinned at 1
-            // for the rest of that element's life (see setRadioVolume
-            // below), so this would otherwise always show 100% regardless
-            // of where the slider actually is.
+            // Reads the persisted slider setting, not audio.volume
+            // directly - on iOS, setRadioVolume's GainNode workaround
+            // pins audio.volume at 1 for the rest of that element's life
+            // once it's ever been touched (see setRadioVolume below), so
+            // this would otherwise show 100% there regardless of where
+            // the slider actually is. Harmless to always read it this way.
             const volume = safeGmGet('wt_radio_volume', 80);
             const vizStyleIdx = getRadioVizStyleIndex();
             body.innerHTML = `<div style="position:relative; padding:10px 0;">
@@ -4340,17 +4383,17 @@
             sizeVizCanvas();
             // Starting the draw loop is deferred until either the button
             // is actually clicked, OR (here) a non-off style was already
-            // saved from a previous session - createMediaElementSource
-            // (inside ensureRadioAnalyser) permanently reroutes the
-            // radio's own audio output the moment it's called, which is
-            // exactly what put playback at the mercy of a freshly-created
-            // AudioContext's own suspended-by-default state (see the
-            // .resume() call added above). Nobody who's never touched
-            // this button at all (persisted style still 'off') should
-            // have their audio graph touched - but the whole point of
-            // remembering the choice is that someone who DID turn it on
-            // before shouldn't have to click through the cycle again on
-            // every fresh page load just to get back to what they had.
+            // saved from a previous session. ensureRadioAnalyser no longer
+            // touches the real/audible element at all (see its own
+            // comment above - it wires up a separate silent shadow
+            // element instead), but it still shouldn't run at all for
+            // someone who's never touched this button - no reason to open
+            // a second live connection to the stream, spin up an
+            // AudioContext, etc. for a visualizer nobody asked for. The
+            // whole point of remembering the choice is that someone who
+            // DID turn it on before shouldn't have to click through the
+            // cycle again on every fresh page load just to get back to
+            // what they had.
             if (getRadioVizStyleIndex() > 0) startRadioViz(vizCanvas);
             vizBtn.addEventListener('click', () => {
                 const next = (getRadioVizStyleIndex() + 1) % RADIO_VIZ_STYLES.length;
