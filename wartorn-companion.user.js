@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.67
-// @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, and Vendettas right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
+// @version      3.68
+// @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
 // @match        https://wartorn.spiffer10.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.67';
+    const COMPANION_VERSION_FALLBACK = '3.68';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2442,11 +2442,123 @@
             });
         }
 
+        // --- MODULE: FACTION CHAT (companion panel) ---
+        // Polls rather than pushing live (the dashboard's own SSE stream
+        // isn't an option here - plain EventSource can't attach the
+        // x-wartorn-key header the way GM_xmlhttpRequest does for every
+        // other request in this file, and it's a genuine cross-origin
+        // request from torn.com besides). A ~20s poll is fine for a
+        // casual faction chat; it just isn't real-time the way the
+        // dashboard's own chat bubble is.
+        const CHAT_POLL_MS = 20000;
+        let wtChatLastSeenId = safeGmGet('wt_chat_last_seen_id', 0);
+        let wtChatRenderedMaxId = 0; // resets to 0 each time the panel is freshly (re)opened
+        function wtChatEscapeHtml(s) {
+            return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        }
+        function wtChatMsgRowHtml(m) {
+            const textHtml = m.message ? `<div style="color:#ddd; font-size:0.85em; white-space:pre-wrap; word-break:break-word;">${wtChatEscapeHtml(m.message)}</div>` : '';
+            // imageUrl only ever comes from the server's own history
+            // (already validated server-side when it was posted - see
+            // isAllowedChatImageUrl in server.js), not something this
+            // side has to re-validate, just escape for safe attribute use.
+            const imgHtml = m.imageUrl ? `<a href="${wtChatEscapeHtml(m.imageUrl)}" target="_blank" rel="noopener"><img src="${wtChatEscapeHtml(m.imageUrl)}" loading="lazy" style="max-width:160px; max-height:160px; border-radius:6px; margin-top:4px; display:block;"></a>` : '';
+            return `<div style="display:flex; gap:6px;">
+                <img src="${m.avatarUrl}" style="width:22px; height:22px; border-radius:50%; object-fit:cover; flex-shrink:0;" onerror="this.style.display='none';">
+                <div style="min-width:0; flex:1;">
+                    <span style="color:#00e5ff; font-weight:bold; font-size:0.8em;">${wtChatEscapeHtml(m.name)}</span>
+                    ${textHtml}${imgHtml}
+                </div>
+            </div>`;
+        }
+        // The actual button-coloring call - see buttonRestColor below for
+        // where dataset.unread gets read back out.
+        function wtChatSetButtonUnread(unread) {
+            const btn = document.querySelector('.wt-side-btn[data-key="chat"]');
+            if (!btn) return;
+            btn.dataset.unread = unread ? '1' : '0';
+            refreshButtonHighlights();
+        }
+        // Handles both the panel's first render (full list + input,
+        // fetched fresh) and every later poll while it stays open
+        // (appends only genuinely new messages, never touching the
+        // input - so a draft in progress survives a background refresh).
+        async function renderChatPanel() {
+            const body = document.getElementById('wt-panel-body-chat');
+            if (!body) return;
+            const freshOpen = !document.getElementById('wt-chat-list');
+            try {
+                const data = await fetchFromWartorn('chat-history');
+                const messages = (data && Array.isArray(data.messages)) ? data.messages : [];
+                if (!openWindows.has('chat') || !document.getElementById('wt-panel-body-chat')) return;
+                if (freshOpen) {
+                    wtChatRenderedMaxId = messages.length ? messages[messages.length - 1].id : 0;
+                    body.innerHTML = `
+                        <div id="wt-chat-list" style="display:flex; flex-direction:column; gap:8px;">
+                            ${messages.length ? messages.map(wtChatMsgRowHtml).join('') : '<div style="color:#888;">No messages yet - say hello.</div>'}
+                        </div>
+                        <div style="position:sticky; bottom:-10px; margin:8px -12px -10px -12px; padding:8px 12px; background:#15171c; border-top:1px solid #333; display:flex; gap:6px;">
+                            <input id="wt-chat-input" type="text" placeholder="Message..." maxlength="1000" style="flex:1; min-width:0; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 8px; border-radius:4px; font-size:0.85em;">
+                            <span id="wt-chat-send-btn" style="background:#4CAF50; color:#fff; padding:0 12px; border-radius:4px; font-size:0.9em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center;">Send</span>
+                        </div>
+                    `;
+                    body.scrollTop = body.scrollHeight;
+                    document.getElementById('wt-chat-send-btn').addEventListener('click', wtChatSend);
+                    document.getElementById('wt-chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') wtChatSend(); });
+                } else {
+                    const newOnes = messages.filter(m => m.id > wtChatRenderedMaxId);
+                    if (newOnes.length) {
+                        const list = document.getElementById('wt-chat-list');
+                        if (list) {
+                            if (list.firstElementChild && list.firstElementChild.innerText === 'No messages yet - say hello.') list.innerHTML = '';
+                            list.insertAdjacentHTML('beforeend', newOnes.map(wtChatMsgRowHtml).join(''));
+                            body.scrollTop = body.scrollHeight;
+                        }
+                        wtChatRenderedMaxId = messages[messages.length - 1].id;
+                    }
+                }
+                // Viewing the panel marks everything currently loaded as
+                // seen - pollChat's own check (further down) only ever
+                // flags messages newer than this once the panel's closed
+                // again.
+                if (messages.length) {
+                    wtChatLastSeenId = messages[messages.length - 1].id;
+                    safeGmSet('wt_chat_last_seen_id', wtChatLastSeenId);
+                }
+                wtChatSetButtonUnread(false);
+            } catch (e) {
+                if (freshOpen) body.innerHTML = `<div style="color:#f44336;">Failed to load chat.</div>`;
+            }
+        }
+        function wtChatSend() {
+            const input = document.getElementById('wt-chat-input');
+            if (!input) return;
+            const message = input.value.trim();
+            if (!message) return;
+            input.value = '';
+            postToWartorn('chat-send', { message, imageUrl: '' }).then(() => renderChatPanel()).catch(() => {});
+        }
+        // The actual unread-detection loop - runs regardless of whether
+        // the panel is open, unlike renderChatPanel above (which only
+        // ever runs while its window exists). Started unconditionally
+        // once the side buttons exist, not gated to one faction the way
+        // Radio is.
+        async function pollChat() {
+            if (openWindows.has('chat')) { renderChatPanel(); return; }
+            try {
+                const data = await fetchFromWartorn('chat-history');
+                const messages = (data && Array.isArray(data.messages)) ? data.messages : [];
+                if (!messages.length) return;
+                wtChatSetButtonUnread(messages[messages.length - 1].id > wtChatLastSeenId);
+            } catch (e) {}
+        }
+
         const PANEL_DEFS = {
             war: { icon: '⚔️', title: 'War Targets', render: renderWarTargetsPanel, ticking: true },
             targets: { icon: '⛓️', title: 'Chain Targets', render: renderTargetsPanel, ticking: true },
             milestone: { icon: '🔥', title: 'Chain Hits', render: renderMilestonePanel, ticking: true },
             vendetta: { icon: '🔪', title: 'Vendettas', render: renderVendettaPanel, ticking: false },
+            chat: { icon: '💬', title: 'Faction Chat', render: renderChatPanel, ticking: false },
             // Not ticking: the setup form (label/h/m/s inputs) would get
             // wiped out and reset every second by that window's own tick
             // timer (startWindowTick) while someone's still typing into it. The live
@@ -2879,10 +2991,21 @@
             return el;
         }
 
+        // Shared by refreshButtonHighlights and the per-button hover
+        // handlers below, so "unread" (currently only chat sets
+        // dataset.unread) stays correct through hover in/out instead of
+        // being a one-off green flash that the very next mouseleave wipes
+        // back to plain grey.
+        function buttonRestColor(key, btn) {
+            if (openWindows.has(key)) return 'rgba(10,11,14,0.95)';
+            if (btn.dataset.unread === '1') return 'rgba(76,175,80,0.25)';
+            return 'rgba(21,23,28,0.9)';
+        }
         function refreshButtonHighlights() {
             document.querySelectorAll('.wt-side-btn').forEach(b => {
                 const isOpen = openWindows.has(b.dataset.key);
-                b.style.background = isOpen ? 'rgba(10,11,14,0.95)' : 'rgba(21,23,28,0.9)';
+                b.style.background = buttonRestColor(b.dataset.key, b);
+                b.style.borderColor = (!isOpen && b.dataset.unread === '1') ? '#4CAF50' : '#3a3f4b';
                 b.style.opacity = isOpen ? '1' : '0.85';
             });
         }
@@ -3189,12 +3312,14 @@
                 const btn = document.createElement('div');
                 btn.className = 'wt-side-btn';
                 btn.dataset.key = key;
+                btn.dataset.unread = '0';
                 btn.title = def.title;
                 btn.innerText = def.icon;
                 // Same opacity scheme as the ghost logo (0.85 base, 1 on
                 // hover) for visual consistency across the whole left-edge
                 // UI - background color separately signals which panel (if
-                // any) is currently open.
+                // any) is currently open, or (chat only, so far) whether
+                // there's something unread - see buttonRestColor above.
                 btn.style.cssText = 'width:34px; height:34px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.1em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
                 btn.addEventListener('mouseenter', () => {
                     btn.style.opacity = '1';
@@ -3204,7 +3329,7 @@
                 btn.addEventListener('mouseleave', () => {
                     btn.style.opacity = openWindows.has(key) ? '1' : '0.85';
                     btn.style.transform = 'scale(1)';
-                    if (!openWindows.has(key)) btn.style.background = 'rgba(21,23,28,0.9)';
+                    btn.style.background = buttonRestColor(key, btn);
                 });
                 btn.addEventListener('click', () => togglePanelWindow(key));
                 wrap.appendChild(btn);
@@ -3216,6 +3341,14 @@
             keysToReopen.forEach(key => {
                 if (key !== 'radio' && PANEL_DEFS[key]) openPanelWindow(key);
             });
+
+            // Chat's unread check runs unconditionally (not gated to one
+            // faction the way Radio is below) and regardless of whether
+            // the panel itself is open - that's the whole point, it's
+            // what colors the button green for a message nobody's seen
+            // yet. One immediate check on load, then every CHAT_POLL_MS.
+            pollChat();
+            setInterval(pollChat, CHAT_POLL_MS);
 
             // --- Radio: Tesseract (tesseract.on-air.fm) ---
             // Slides open the same way every other panel does (registered
