@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.62
+// @version      3.63
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, and Vendettas right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.62';
+    const COMPANION_VERSION_FALLBACK = '3.63';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -530,6 +530,27 @@
     // the top of the file for why this can't just read GM_info directly.
     const COMPANION_VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || COMPANION_VERSION_FALLBACK;
 
+    // Every authenticated request below (x-wartorn-key) checks its
+    // response for this - a 401 means the backend no longer recognizes
+    // the linked key at all, not a transient error. That happens when the
+    // SAME Torn account gets logged into the dashboard with a DIFFERENT
+    // key (verifyAndUpsertTornUser upserts by player_id, so the new key
+    // replaces the old one's hash), or the key's simply been regenerated -
+    // either way, this stored key is permanently stale, not temporarily
+    // unreachable, so silently retrying it forever (the previous
+    // behavior) just meant every feature quietly stopped working with no
+    // way to notice why. Reuses the exact same reset the "Unlink Wartorn"
+    // menu command already does - clears the stored key and reloads,
+    // which drops this script back to its unlinked first-run state (the
+    // 🔑 Link Wartorn button) so relinking is just entering the key again.
+    let wtHandlingUnauthorized = false;
+    function wtHandleUnauthorized() {
+        if (wtHandlingUnauthorized) return;
+        wtHandlingUnauthorized = true;
+        safeGmSet('wt_api_key', '');
+        location.reload();
+    }
+
     // The dashboard-side auto-link (see DASHBOARD HANDSHAKE above) writes
     // the key via safeGmSet() on wartorn.spiffer10.com, and this side reads
     // it via safeGmGet() on torn.com - that only actually crosses origins
@@ -820,7 +841,8 @@
             method: "POST",
             url: `${WARTORN_HOST}/api/companion/${endpoint}`,
             headers: { "Content-Type": "application/json", "x-wartorn-key": userApiKey, "x-wartorn-companion-version": COMPANION_VERSION },
-            data: JSON.stringify(payload)
+            data: JSON.stringify(payload),
+            onload: (res) => { if (res.status === 401) wtHandleUnauthorized(); }
         });
     }
  
@@ -1119,6 +1141,7 @@
                 headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
                 timeout: 8000,
                 onload: (res) => {
+                    if (res.status === 401) { wtHandleUnauthorized(); cb([]); return; }
                     let data = null;
                     try { data = JSON.parse(res.responseText); } catch (e) {}
                     cb((data && data.items) || []);
@@ -1137,7 +1160,8 @@
                     url: `${WARTORN_HOST}/api/companion/hidden-items`,
                     headers: { 'x-wartorn-key': userApiKey, 'Content-Type': 'application/json', 'x-wartorn-companion-version': COMPANION_VERSION },
                     data: JSON.stringify({ items: next }),
-                    timeout: 8000
+                    timeout: 8000,
+                    onload: (res) => { if (res.status === 401) wtHandleUnauthorized(); }
                 });
             });
         });
@@ -1261,6 +1285,7 @@
                     headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
                     timeout: 10000,
                     onload: (res) => {
+                        if (res.status === 401) { wtHandleUnauthorized(); reject(new Error('unauthorized')); return; }
                         try { resolve(JSON.parse(res.responseText)); }
                         catch (e) { reject(e); }
                     },
@@ -1283,6 +1308,7 @@
                     data: JSON.stringify(payload),
                     timeout: 10000,
                     onload: (res) => {
+                        if (res.status === 401) { wtHandleUnauthorized(); reject(new Error('unauthorized')); return; }
                         let data = {};
                         try { data = JSON.parse(res.responseText); } catch (e) {}
                         resolve({ status: res.status, data });
@@ -1303,6 +1329,7 @@
                     headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
                     timeout: 10000,
                     onload: (res) => {
+                        if (res.status === 401) { wtHandleUnauthorized(); reject(new Error('unauthorized')); return; }
                         let data = {};
                         try { data = JSON.parse(res.responseText); } catch (e) {}
                         resolve({ status: res.status, data });
@@ -2686,6 +2713,7 @@
                 timeout: 8000,
                 onload: (res) => {
                     flightDetectRequestInFlight = false;
+                    if (res.status === 401) { wtHandleUnauthorized(); return; }
                     let data = null;
                     try { data = JSON.parse(res.responseText); } catch (e) {}
                     if (!data || !data.item || !data.code) return;
@@ -2721,6 +2749,7 @@
                 timeout: 8000,
                 onload: (res) => {
                     flightDetectRequestInFlight = false;
+                    if (res.status === 401) { wtHandleUnauthorized(); return; }
                     let data = null;
                     try { data = JSON.parse(res.responseText); } catch (e) {}
                     if (!data || !data.code) return;
@@ -2773,6 +2802,7 @@
                 headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
                 timeout: 8000,
                 onload: (res) => {
+                    if (res.status === 401) { wtHandleUnauthorized(); return; }
                     let data = null;
                     try { data = JSON.parse(res.responseText); } catch (e) {}
                     flightAutoCandidates = (data && data.items) || [];
