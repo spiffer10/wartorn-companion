@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.66
+// @version      3.67
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, and Vendettas right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.66';
+    const COMPANION_VERSION_FALLBACK = '3.67';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4501,7 +4501,15 @@
 
                     // songtitle comes as "Artist - Track" - swapped here
                     // since the ask was title first, artist second.
-                    const raw = stats && stats.songtitle;
+                    // "Radio Tesseract - Live" specifically is the
+                    // station's own generic placeholder (no real
+                    // per-track metadata right now - a talk segment, a
+                    // gap between tracks), not an actual song - treated
+                    // as no title at all rather than parsed into a
+                    // nonsense "Live" track by "Radio Tesseract" sent
+                    // straight to the art lookup.
+                    let raw = stats && stats.songtitle;
+                    if (raw && /^radio tesseract\s*-\s*live$/i.test(raw.trim())) raw = '';
                     const dashIdx = raw ? raw.indexOf(' - ') : -1;
                     const artist = dashIdx > 0 ? raw.slice(0, dashIdx) : '';
                     const track = dashIdx > 0 ? raw.slice(dashIdx + 3) : (raw || '');
