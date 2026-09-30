@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.68
+// @version      3.69
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.68';
+    const COMPANION_VERSION_FALLBACK = '3.69';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2456,15 +2456,28 @@
         function wtChatEscapeHtml(s) {
             return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         }
+        // Both avatarUrl and a /chat-uploads/... imageUrl come back from
+        // the server as ORIGIN-RELATIVE paths (e.g. /api/avatar/123) -
+        // correct as-is on the dashboard, which IS wartorn.spiffer10.com,
+        // but this panel renders on torn.com, where a relative path
+        // resolves against the wrong origin entirely (silently 404s,
+        // which is exactly why avatars weren't showing). A Giphy URL is
+        // already absolute (https://...giphy.com/...) and must NOT get
+        // WARTORN_HOST prepended too, or it'd be mangled into nonsense.
+        function wtChatAbsUrl(u) {
+            if (!u) return u;
+            return u.startsWith('/') ? (WARTORN_HOST + u) : u;
+        }
         function wtChatMsgRowHtml(m) {
             const textHtml = m.message ? `<div style="color:#ddd; font-size:0.85em; white-space:pre-wrap; word-break:break-word;">${wtChatEscapeHtml(m.message)}</div>` : '';
             // imageUrl only ever comes from the server's own history
             // (already validated server-side when it was posted - see
             // isAllowedChatImageUrl in server.js), not something this
             // side has to re-validate, just escape for safe attribute use.
-            const imgHtml = m.imageUrl ? `<a href="${wtChatEscapeHtml(m.imageUrl)}" target="_blank" rel="noopener"><img src="${wtChatEscapeHtml(m.imageUrl)}" loading="lazy" style="max-width:160px; max-height:160px; border-radius:6px; margin-top:4px; display:block;"></a>` : '';
+            const imgUrl = wtChatAbsUrl(m.imageUrl);
+            const imgHtml = imgUrl ? `<a href="${wtChatEscapeHtml(imgUrl)}" target="_blank" rel="noopener"><img src="${wtChatEscapeHtml(imgUrl)}" loading="lazy" style="max-width:160px; max-height:160px; border-radius:6px; margin-top:4px; display:block;"></a>` : '';
             return `<div style="display:flex; gap:6px;">
-                <img src="${m.avatarUrl}" style="width:22px; height:22px; border-radius:50%; object-fit:cover; flex-shrink:0;" onerror="this.style.display='none';">
+                <img src="${wtChatAbsUrl(m.avatarUrl)}" style="width:22px; height:22px; border-radius:50%; object-fit:cover; flex-shrink:0;" onerror="this.style.display='none';">
                 <div style="min-width:0; flex:1;">
                     <span style="color:#00e5ff; font-weight:bold; font-size:0.8em;">${wtChatEscapeHtml(m.name)}</span>
                     ${textHtml}${imgHtml}
@@ -2497,14 +2510,20 @@
                         <div id="wt-chat-list" style="display:flex; flex-direction:column; gap:8px;">
                             ${messages.length ? messages.map(wtChatMsgRowHtml).join('') : '<div style="color:#888;">No messages yet - say hello.</div>'}
                         </div>
-                        <div style="position:sticky; bottom:-10px; margin:8px -12px -10px -12px; padding:8px 12px; background:#15171c; border-top:1px solid #333; display:flex; gap:6px;">
+                        <div style="position:sticky; bottom:-10px; margin:8px -12px -10px -12px; padding:8px 12px; background:#15171c; border-top:1px solid #333; display:flex; gap:6px; align-items:center;">
+                            <span id="wt-chat-emoji-btn" title="Emoji" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.9em; flex-shrink:0;">😀</span>
+                            <span id="wt-chat-gif-btn" title="GIF" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.6em; font-weight:bold; flex-shrink:0;">GIF</span>
                             <input id="wt-chat-input" type="text" placeholder="Message..." maxlength="1000" style="flex:1; min-width:0; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 8px; border-radius:4px; font-size:0.85em;">
-                            <span id="wt-chat-send-btn" style="background:#4CAF50; color:#fff; padding:0 12px; border-radius:4px; font-size:0.9em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center;">Send</span>
+                            <span id="wt-chat-send-btn" style="background:#4CAF50; color:#fff; padding:0 12px; height:26px; border-radius:4px; font-size:0.9em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;">Send</span>
+                            <div id="wt-chat-emoji-picker" style="display:none; flex-wrap:wrap; gap:2px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; max-height:180px; overflow-y:auto; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
+                            <div id="wt-chat-gif-picker" style="display:none; flex-direction:column; gap:6px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
                         </div>
                     `;
                     body.scrollTop = body.scrollHeight;
                     document.getElementById('wt-chat-send-btn').addEventListener('click', wtChatSend);
                     document.getElementById('wt-chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') wtChatSend(); });
+                    document.getElementById('wt-chat-emoji-btn').addEventListener('click', wtChatToggleEmojiPicker);
+                    document.getElementById('wt-chat-gif-btn').addEventListener('click', wtChatToggleGifPicker);
                 } else {
                     const newOnes = messages.filter(m => m.id > wtChatRenderedMaxId);
                     if (newOnes.length) {
@@ -2538,6 +2557,102 @@
             input.value = '';
             postToWartorn('chat-send', { message, imageUrl: '' }).then(() => renderChatPanel()).catch(() => {});
         }
+        // Curated fixed grid, no external service - same list the
+        // dashboard's own emoji picker uses.
+        const WT_CHAT_EMOJIS = ['😀','😁','😂','🤣','😅','🙂','😉','😊','😇','🥰','😍','😘','😜','🤪','🤔','🙄','😴','🤯','🥳','😎','🤩','😭','😢','😡','🤬','🤢','🤮','😱','😨','😰','🤗','🤫','🤭','😏','🤝','👍','👎','👏','🙌','🙏','💪','✌️','🤘','👋','👊','✊','🔥','💯','⭐','✅','❌','❗','💥','💀','👻','🤖','👀','💰','💵','🍺','☕','🍕','🎉','🎂','🏆','⚔️','🚀','✈️','⏰','❤️','🧡','💛','💚','💙','💜'];
+        function wtChatToggleEmojiPicker(e) {
+            if (e) e.stopPropagation();
+            const picker = document.getElementById('wt-chat-emoji-picker');
+            const gifPicker = document.getElementById('wt-chat-gif-picker');
+            if (!picker) return;
+            if (gifPicker) gifPicker.style.display = 'none';
+            const opening = picker.style.display !== 'flex';
+            if (opening && !picker.dataset.built) {
+                picker.innerHTML = WT_CHAT_EMOJIS.map(em =>
+                    `<span data-em="${em}" style="cursor:pointer; font-size:1.1em; padding:3px; border-radius:3px; line-height:1;" onmouseover="this.style.background='#2a2d34'" onmouseout="this.style.background='none'">${em}</span>`
+                ).join('');
+                picker.dataset.built = '1';
+                picker.querySelectorAll('span[data-em]').forEach(s => s.addEventListener('click', () => wtChatInsertEmoji(s.dataset.em)));
+            }
+            picker.style.display = opening ? 'flex' : 'none';
+        }
+        function wtChatInsertEmoji(em) {
+            const input = document.getElementById('wt-chat-input');
+            if (!input) return;
+            const start = input.selectionStart != null ? input.selectionStart : input.value.length;
+            const end = input.selectionEnd != null ? input.selectionEnd : input.value.length;
+            input.value = input.value.slice(0, start) + em + input.value.slice(end);
+            const pos = start + em.length;
+            input.focus();
+            input.setSelectionRange(pos, pos);
+        }
+        // GIF search via /api/companion/chat-gif-search (the same Giphy
+        // proxy the dashboard's picker uses, just reached through
+        // fetchFromWartorn's authenticated channel instead of a page
+        // fetch()). Opens on trending, debounced search as you type,
+        // click a result to send it immediately.
+        let wtChatGifSearchTimer = null;
+        function wtChatToggleGifPicker(e) {
+            if (e) e.stopPropagation();
+            const picker = document.getElementById('wt-chat-gif-picker');
+            const emojiPicker = document.getElementById('wt-chat-emoji-picker');
+            if (!picker) return;
+            if (emojiPicker) emojiPicker.style.display = 'none';
+            const opening = picker.style.display !== 'flex';
+            if (opening && !picker.dataset.built) {
+                picker.dataset.built = '1';
+                picker.innerHTML = `
+                    <input id="wt-chat-gif-search" type="text" placeholder="Search GIFs..." style="background:#0b0c10; border:1px solid #444; color:#fff; padding:5px 7px; border-radius:4px; font-size:0.8em;">
+                    <div id="wt-chat-gif-results" style="display:grid; grid-template-columns:1fr 1fr; gap:4px; max-height:160px; overflow-y:auto;"><div style="color:#888; font-size:0.78em; grid-column:1/-1;">Loading...</div></div>
+                `;
+                document.getElementById('wt-chat-gif-search').addEventListener('input', (ev) => {
+                    clearTimeout(wtChatGifSearchTimer);
+                    const q = ev.target.value;
+                    wtChatGifSearchTimer = setTimeout(() => wtChatLoadGifResults(q), 350);
+                });
+                wtChatLoadGifResults('');
+            }
+            picker.style.display = opening ? 'flex' : 'none';
+        }
+        function wtChatLoadGifResults(q) {
+            const resultsEl = document.getElementById('wt-chat-gif-results');
+            if (!resultsEl) return;
+            resultsEl.innerHTML = '<div style="color:#888; font-size:0.78em; grid-column:1/-1;">Loading...</div>';
+            fetchFromWartorn('chat-gif-search?q=' + encodeURIComponent(q)).then(data => {
+                const results = (data && Array.isArray(data.results)) ? data.results : [];
+                if (!results.length) {
+                    resultsEl.innerHTML = (data && data.error)
+                        ? `<div style="color:#f44336; font-size:0.75em; grid-column:1/-1;">${wtChatEscapeHtml(data.error)}</div>`
+                        : '<div style="color:#888; font-size:0.78em; grid-column:1/-1;">No results.</div>';
+                    return;
+                }
+                resultsEl.innerHTML = '';
+                results.forEach(r => {
+                    const img = document.createElement('img');
+                    img.src = r.previewUrl;
+                    img.loading = 'lazy';
+                    img.style.cssText = 'width:100%; height:60px; object-fit:cover; border-radius:4px; cursor:pointer; background:#0b0c10;';
+                    img.addEventListener('click', () => wtChatSendGif(r.url));
+                    resultsEl.appendChild(img);
+                });
+            }).catch(() => { resultsEl.innerHTML = '<div style="color:#f44336; font-size:0.75em; grid-column:1/-1;">Failed to load.</div>'; });
+        }
+        function wtChatSendGif(url) {
+            const picker = document.getElementById('wt-chat-gif-picker');
+            if (picker) picker.style.display = 'none';
+            postToWartorn('chat-send', { message: '', imageUrl: url }).then(() => renderChatPanel()).catch(() => {});
+        }
+        // Closes either picker on an outside click - registered once,
+        // unconditionally, rather than inside renderChatPanel's freshOpen
+        // branch, which runs again every time the panel is closed and
+        // reopened and would otherwise pile up a duplicate listener per
+        // open/close cycle.
+        document.addEventListener('click', (e) => {
+            const emojiPicker = document.getElementById('wt-chat-emoji-picker');
+            if (emojiPicker && emojiPicker.style.display === 'flex' && !emojiPicker.contains(e.target) && e.target.id !== 'wt-chat-emoji-btn') emojiPicker.style.display = 'none';
+            const gifPicker = document.getElementById('wt-chat-gif-picker');
+            if (gifPicker && gifPicker.style.display === 'flex' && !gifPicker.contains(e.target) && e.target.id !== 'wt-chat-gif-btn') gifPicker.style.display = 'none';
+        });
         // The actual unread-detection loop - runs regardless of whether
         // the panel is open, unlike renderChatPanel above (which only
         // ever runs while its window exists). Started unconditionally
