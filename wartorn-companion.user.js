@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.71
+// @version      3.72
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.71';
+    const COMPANION_VERSION_FALLBACK = '3.72';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3045,6 +3045,12 @@
         // every travel-status poll, which runs every 5s once idle - see
         // scheduleTravelCheck) - abroadPickFetchedFor tracks that.
         let abroadPickFetchedFor = null;
+        // Separate flag for "already offered the cross-country idle
+        // auto-pick for this home stay" - set in checkTravelStatus once
+        // landing back in Torn is detected (destination empty, or
+        // literally "Torn"), reset the moment travel starts again so the
+        // next arrival home gets its own fresh offer.
+        let homeAutoPickOffered = false;
         function maybeShowAbroadPick(destination) {
             if (!destination || destination === abroadPickFetchedFor) return;
             abroadPickFetchedFor = destination;
@@ -5183,20 +5189,36 @@
             if (!travel || typeof travel.time_left !== 'number' || travel.time_left <= 0) {
                 travelLandAtMs = null;
                 travelDestination = null;
-                // Not mid-flight, but travel.destination is still populated
-                // while genuinely Abroad (only empty/absent once actually
-                // home) - see maybeShowAbroadPick above for why this is
-                // worth checking at all, not just resetting to idle.
-                const abroadDest = travel && travel.destination ? travel.destination : null;
-                if (abroadDest) {
-                    maybeShowAbroadPick(abroadDest);
+                // Not mid-flight. travel.destination is still populated
+                // while genuinely Abroad in a foreign country (see
+                // maybeShowAbroadPick above) - but it ALSO reads "Torn"
+                // once you've landed back home from a return trip, which
+                // isn't a real YATA stock country at all (resolveYataCode
+                // finds nothing for it server-side, so that landing-pick
+                // call would just come back empty). Landing back home is
+                // exactly when the idle cross-country auto-pick (normally
+                // only reachable by clicking the idle plane icon) is most
+                // useful - "what should I fly out to NEXT" - so this
+                // fires that instead, once per arrival.
+                const rawDest = travel && travel.destination ? travel.destination.trim() : '';
+                const isHome = !rawDest || rawDest.toLowerCase() === 'torn';
+                if (isHome) {
+                    abroadPickFetchedFor = null;
+                    if (!homeAutoPickOffered) {
+                        homeAutoPickOffered = true;
+                        // Don't clobber a dashboard push, an in-progress
+                        // flight-detected pick from a landing just a
+                        // moment ago, or something the user already
+                        // manually cycled to.
+                        if (!safeGmGet('wt_active_flight_target', null)) cycleFlightCandidate();
+                    }
                 } else {
-                    abroadPickFetchedFor = null; // genuinely home - next arrival gets a fresh check
-                    updateFlightWidgetForTravel();
+                    maybeShowAbroadPick(rawDest);
                 }
                 return;
             }
             abroadPickFetchedFor = null; // airborne again (new trip) - the NEXT landing gets its own fresh check
+            homeAutoPickOffered = false; // left home - the NEXT arrival gets its own fresh offer
             if (travelLandAtMs === null && travel.time_left < MIN_FRESH_TRAVEL_SECS) return;
             travelDestination = travel.destination || null;
             const candidateLandAtMs = Date.now() + travel.time_left * 1000;
