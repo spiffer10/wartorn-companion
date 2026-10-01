@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.70
+// @version      3.71
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.70';
+    const COMPANION_VERSION_FALLBACK = '3.71';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3029,6 +3029,58 @@
         }
         setInterval(refreshFlightDetectStock, 15000);
 
+        // Real-flight detection above only ever covers the MID-FLIGHT
+        // countdown - the moment time_left hits 0 (landed), checkTravelStatus
+        // cleared travelLandAtMs/travelDestination outright and the widget
+        // went back to idle, with nothing checking what's actually
+        // catchable once you're genuinely standing in that country. That's
+        // the far more common way someone actually looks at this widget
+        // (reported live 2026-09-30 - landing in Canada showed nothing) -
+        // checking AFTER arriving, not mid-air. Reuses landing-pick with
+        // landAtMs=now (not a predicted future landing) and feeds the
+        // result through the exact same flight-detected state/rendering
+        // as a real in-flight catch, so item cycling, the periodic stock
+        // refresh above, and dismiss-on-click all just work here too.
+        // Fetched once per distinct country visited while abroad (not on
+        // every travel-status poll, which runs every 5s once idle - see
+        // scheduleTravelCheck) - abroadPickFetchedFor tracks that.
+        let abroadPickFetchedFor = null;
+        function maybeShowAbroadPick(destination) {
+            if (!destination || destination === abroadPickFetchedFor) return;
+            abroadPickFetchedFor = destination;
+            const current = safeGmGet('wt_active_flight_target', null);
+            // A dashboard push or an already-active flight-detected pick
+            // (e.g. this is a landing that was ALSO caught mid-flight a
+            // moment ago) takes precedence - don't clobber either.
+            if (current && (current.source === 'dashboard' || current.source === 'flight-detected')) return;
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `${WARTORN_HOST}/api/public/landing-pick?country=${encodeURIComponent(destination)}&landAtMs=${Date.now()}`,
+                headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
+                timeout: 8000,
+                onload: (res) => {
+                    if (res.status === 401) { wtHandleUnauthorized(); return; }
+                    let data = null;
+                    try { data = JSON.parse(res.responseText); } catch (e) {}
+                    if (!data || !data.item || !data.code) return;
+                    flightDetectCode = data.code;
+                    flightDetectCandidates = data.items && data.items.length ? data.items : [data.item];
+                    flightDetectLastStockRefresh = Date.now();
+                    // landMs is purely to satisfy the flight-detected
+                    // branch's own non-null check elsewhere - never
+                    // actually rendered as a countdown (renderFlightWidget's
+                    // isInFlight branch always shows stock/expected-qty
+                    // text instead, see its own comment), so "now" instead
+                    // of a real future landing time is harmless here.
+                    travelLandAtMs = Date.now();
+                    travelDestination = destination;
+                    applyFlightDetectCandidate(0);
+                },
+                onerror: () => {},
+                ontimeout: () => {}
+            });
+        }
+
         // Cached briefly rather than re-fetched on every idle click - the
         // ranking itself only changes as often as restocks do, not every
         // second.
@@ -5131,9 +5183,20 @@
             if (!travel || typeof travel.time_left !== 'number' || travel.time_left <= 0) {
                 travelLandAtMs = null;
                 travelDestination = null;
-                updateFlightWidgetForTravel();
+                // Not mid-flight, but travel.destination is still populated
+                // while genuinely Abroad (only empty/absent once actually
+                // home) - see maybeShowAbroadPick above for why this is
+                // worth checking at all, not just resetting to idle.
+                const abroadDest = travel && travel.destination ? travel.destination : null;
+                if (abroadDest) {
+                    maybeShowAbroadPick(abroadDest);
+                } else {
+                    abroadPickFetchedFor = null; // genuinely home - next arrival gets a fresh check
+                    updateFlightWidgetForTravel();
+                }
                 return;
             }
+            abroadPickFetchedFor = null; // airborne again (new trip) - the NEXT landing gets its own fresh check
             if (travelLandAtMs === null && travel.time_left < MIN_FRESH_TRAVEL_SECS) return;
             travelDestination = travel.destination || null;
             const candidateLandAtMs = Date.now() + travel.time_left * 1000;
