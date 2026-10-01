@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.73
+// @version      3.74
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.73';
+    const COMPANION_VERSION_FALLBACK = '3.74';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2937,6 +2937,10 @@
         }
         function updateFlightWidgetForTravel() {
             const current = safeGmGet('wt_active_flight_target', null);
+            // TEMP DEBUG (2026-09-30) - see checkTravelStatus. Remove once
+            // the "nothing shows while flying to Canada" report is
+            // root-caused.
+            console.log('[WT-FLIGHT-DEBUG] updateFlightWidgetForTravel', { travelLandAtMs, travelDestination, current, dismissedFlightDetectLandAtMs, flightDetectFetchedForLandAtMs });
             if (travelLandAtMs === null || !travelDestination) {
                 // Trip's over (or never started) - clear it, but only if
                 // THIS mechanism is what set it. A dashboard push or a
@@ -2970,6 +2974,7 @@
                 timeout: 8000,
                 onload: (res) => {
                     flightDetectRequestInFlight = false;
+                    console.log('[WT-FLIGHT-DEBUG] landing-pick onload (detect)', { status: res.status, body: res.responseText });
                     if (res.status === 401) { wtHandleUnauthorized(); return; }
                     let data = null;
                     try { data = JSON.parse(res.responseText); } catch (e) {}
@@ -2979,8 +2984,8 @@
                     flightDetectLastStockRefresh = Date.now();
                     applyFlightDetectCandidate(0);
                 },
-                onerror: () => { flightDetectRequestInFlight = false; },
-                ontimeout: () => { flightDetectRequestInFlight = false; }
+                onerror: (e) => { flightDetectRequestInFlight = false; console.log('[WT-FLIGHT-DEBUG] landing-pick onerror (detect)', e); },
+                ontimeout: () => { flightDetectRequestInFlight = false; console.log('[WT-FLIGHT-DEBUG] landing-pick ontimeout (detect)'); }
             });
         }
         // Re-polls landing-pick periodically for as long as a
@@ -5202,6 +5207,10 @@
             if (!userApiKey) { travelLandAtMs = null; travelDestination = null; updateFlightWidgetForTravel(); return; }
             const travel = await fetchTornTravel();
             const stillTraveling = !!(travel && typeof travel.time_left === 'number' && travel.time_left > 0);
+            // TEMP DEBUG (2026-09-30) - tracking down a "nothing shows
+            // while flying to Canada" report with no console exceptions.
+            // Remove once that's root-caused.
+            console.log('[WT-FLIGHT-DEBUG] checkTravelStatus', { travel, stillTraveling });
             // travel.destination is populated both mid-flight and while
             // genuinely Abroad in a foreign country - but it ALSO reads
             // "Torn" for a return trip (mid-flight back) and once you've
