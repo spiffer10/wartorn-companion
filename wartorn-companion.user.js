@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.69
+// @version      3.70
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.69';
+    const COMPANION_VERSION_FALLBACK = '3.70';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2496,6 +2496,20 @@
         // fetched fresh) and every later poll while it stays open
         // (appends only genuinely new messages, never touching the
         // input - so a draft in progress survives a background refresh).
+        // The server hands back its whole rolling buffer (up to 200
+        // messages) on every call, same as the dashboard's chat does -
+        // fine there (one render, then incremental SSE pushes from then
+        // on), but rebuilding up to 200 rows' worth of HTML and images
+        // into innerHTML in one shot every time this panel is freshly
+        // (re)opened was heavy enough to show up as a genuine Chrome
+        // "Violation" warning on the triggering click, and felt sluggish/
+        // "not live" rather than snappy. Only the most recent
+        // CHAT_PANEL_INITIAL_LIMIT are actually drawn on open - a casual
+        // side-panel chat has no real use for scrolling back through a
+        // 200-message backlog anyway. wtChatRenderedMaxId still tracks
+        // the TRUE latest id off the full (unsliced) list, so later polls
+        // correctly append only what's genuinely new from there.
+        const CHAT_PANEL_INITIAL_LIMIT = 40;
         async function renderChatPanel() {
             const body = document.getElementById('wt-panel-body-chat');
             if (!body) return;
@@ -2506,9 +2520,10 @@
                 if (!openWindows.has('chat') || !document.getElementById('wt-panel-body-chat')) return;
                 if (freshOpen) {
                     wtChatRenderedMaxId = messages.length ? messages[messages.length - 1].id : 0;
+                    const shown = messages.slice(-CHAT_PANEL_INITIAL_LIMIT);
                     body.innerHTML = `
                         <div id="wt-chat-list" style="display:flex; flex-direction:column; gap:8px;">
-                            ${messages.length ? messages.map(wtChatMsgRowHtml).join('') : '<div style="color:#888;">No messages yet - say hello.</div>'}
+                            ${shown.length ? shown.map(wtChatMsgRowHtml).join('') : '<div style="color:#888;">No messages yet - say hello.</div>'}
                         </div>
                         <div style="position:sticky; bottom:-10px; margin:8px -12px -10px -12px; padding:8px 12px; background:#15171c; border-top:1px solid #333; display:flex; gap:6px; align-items:center;">
                             <span id="wt-chat-emoji-btn" title="Emoji" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.9em; flex-shrink:0;">😀</span>
@@ -3156,6 +3171,12 @@
             openWindows.delete(key);
             persistOpenWindowKeys();
             refreshButtonHighlights();
+            // Belt-and-suspenders: renderChatPanel already detects a fresh
+            // open by checking whether #wt-chat-list still exists (gone
+            // the instant w.el.remove() above runs), so this isn't load-
+            // bearing - but resetting explicitly here means there's no
+            // way a stale id could ever survive into a future reopen.
+            if (key === 'chat') wtChatRenderedMaxId = 0;
         }
         // Used by the edge-cluster collapse toggle below, which used to
         // close the one single panel - now needs to close every open
