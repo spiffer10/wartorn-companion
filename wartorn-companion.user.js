@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.72
+// @version      3.73
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.72';
+    const COMPANION_VERSION_FALLBACK = '3.73';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -5177,6 +5177,21 @@
         // actual trip, and is ignored rather than accepted.
         const MIN_FRESH_TRAVEL_SECS = 45;
 
+        // Shared by both the "mid-flight, heading home" and "already
+        // landed home" branches below - fires the idle cross-country
+        // auto-pick (normally only reachable by clicking the idle plane
+        // icon) at most once per return-trip-or-homestay, so there's a
+        // "what should I fly out to NEXT" suggestion ready as early as
+        // possible (ideally the moment you take off on the way back, not
+        // only once you've actually landed and lost time sitting idle).
+        function offerHomeAutoPickOnce() {
+            if (homeAutoPickOffered) return;
+            homeAutoPickOffered = true;
+            // Don't clobber a dashboard push, an in-progress flight-
+            // detected pick, or something the user already manually
+            // cycled to.
+            if (!safeGmGet('wt_active_flight_target', null)) cycleFlightCandidate();
+        }
         async function checkTravelStatus() {
             // Only userApiKey gates this now - flightSoundEnabled used to
             // gate the whole poll, but the flight widget's real-flight
@@ -5186,41 +5201,50 @@
             // actually plays.
             if (!userApiKey) { travelLandAtMs = null; travelDestination = null; updateFlightWidgetForTravel(); return; }
             const travel = await fetchTornTravel();
-            if (!travel || typeof travel.time_left !== 'number' || travel.time_left <= 0) {
+            const stillTraveling = !!(travel && typeof travel.time_left === 'number' && travel.time_left > 0);
+            // travel.destination is populated both mid-flight and while
+            // genuinely Abroad in a foreign country - but it ALSO reads
+            // "Torn" for a return trip (mid-flight back) and once you've
+            // actually landed home, neither of which is a real YATA stock
+            // country (resolveYataCode finds nothing for "Torn" server-
+            // side, so a landing-pick call for it would just come back
+            // empty - confirmed live, that's why flying back showed
+            // nothing at all before this). "Heading/being home" is
+            // handled identically below regardless of which of those two
+            // states it is, via offerHomeAutoPickOnce above.
+            const rawDest = travel && travel.destination ? travel.destination.trim() : '';
+            const isHomeDest = !rawDest || rawDest.toLowerCase() === 'torn';
+
+            if (!stillTraveling) {
                 travelLandAtMs = null;
                 travelDestination = null;
-                // Not mid-flight. travel.destination is still populated
-                // while genuinely Abroad in a foreign country (see
-                // maybeShowAbroadPick above) - but it ALSO reads "Torn"
-                // once you've landed back home from a return trip, which
-                // isn't a real YATA stock country at all (resolveYataCode
-                // finds nothing for it server-side, so that landing-pick
-                // call would just come back empty). Landing back home is
-                // exactly when the idle cross-country auto-pick (normally
-                // only reachable by clicking the idle plane icon) is most
-                // useful - "what should I fly out to NEXT" - so this
-                // fires that instead, once per arrival.
-                const rawDest = travel && travel.destination ? travel.destination.trim() : '';
-                const isHome = !rawDest || rawDest.toLowerCase() === 'torn';
-                if (isHome) {
-                    abroadPickFetchedFor = null;
-                    if (!homeAutoPickOffered) {
-                        homeAutoPickOffered = true;
-                        // Don't clobber a dashboard push, an in-progress
-                        // flight-detected pick from a landing just a
-                        // moment ago, or something the user already
-                        // manually cycled to.
-                        if (!safeGmGet('wt_active_flight_target', null)) cycleFlightCandidate();
-                    }
+                if (isHomeDest) {
+                    abroadPickFetchedFor = null; // next trip away gets a fresh abroad-check
+                    offerHomeAutoPickOnce();
                 } else {
                     maybeShowAbroadPick(rawDest);
                 }
                 return;
             }
-            abroadPickFetchedFor = null; // airborne again (new trip) - the NEXT landing gets its own fresh check
-            homeAutoPickOffered = false; // left home - the NEXT arrival gets its own fresh offer
+
+            if (isHomeDest) {
+                // Flying BACK - nothing to catch by landing in Torn, but
+                // this is exactly when planning the next flight out is
+                // most useful, so offer it now instead of waiting until
+                // actually landed. No in-flight countdown makes sense for
+                // "landing at home" either, so this skips the normal
+                // travelLandAtMs tracking entirely rather than running it
+                // against a destination landing-pick can never resolve.
+                travelLandAtMs = null;
+                travelDestination = null;
+                abroadPickFetchedFor = null;
+                offerHomeAutoPickOnce();
+                return;
+            }
+            abroadPickFetchedFor = null; // airborne toward a foreign country - that landing gets its own fresh check
+            homeAutoPickOffered = false; // heading away from home - the eventual return gets its own fresh offer
             if (travelLandAtMs === null && travel.time_left < MIN_FRESH_TRAVEL_SECS) return;
-            travelDestination = travel.destination || null;
+            travelDestination = rawDest || null;
             const candidateLandAtMs = Date.now() + travel.time_left * 1000;
             if (travelLandAtMs === null || candidateLandAtMs > travelLandAtMs + TRAVEL_NEW_TRIP_JUMP_SECS * 1000) {
                 travelLandAtMs = candidateLandAtMs;
