@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.75
+// @version      3.76
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.75';
+    const COMPANION_VERSION_FALLBACK = '3.76';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3029,35 +3029,18 @@
         }
         setInterval(refreshFlightDetectStock, 15000);
 
-        // Real-flight detection above only ever covers the MID-FLIGHT
-        // countdown - the moment time_left hits 0 (landed), checkTravelStatus
-        // cleared travelLandAtMs/travelDestination outright and the widget
-        // went back to idle, with nothing checking what's actually
-        // catchable once you're genuinely standing in that country. That's
-        // the far more common way someone actually looks at this widget
-        // (reported live 2026-09-30 - landing in Canada showed nothing) -
-        // checking AFTER arriving, not mid-air. Reuses landing-pick with
-        // landAtMs=now (not a predicted future landing) and feeds the
-        // result through the exact same flight-detected state/rendering
-        // as a real in-flight catch, so item cycling, the periodic stock
-        // refresh above, and dismiss-on-click all just work here too.
-        // Fetched once per distinct country visited while abroad (not on
-        // every travel-status poll, which runs every 5s once idle - see
-        // scheduleTravelCheck) - abroadPickFetchedFor tracks that.
-        let abroadPickFetchedFor = null;
-        // Separate flag for "already offered the cross-country idle
-        // auto-pick for this home stay" - set in checkTravelStatus once
-        // landing back in Torn is detected (destination empty, or
-        // literally "Torn"), reset the moment travel starts again so the
-        // next arrival home gets its own fresh offer.
-        let homeAutoPickOffered = false;
-        function maybeShowAbroadPick(destination) {
-            if (!destination || destination === abroadPickFetchedFor) return;
-            abroadPickFetchedFor = destination;
+        // Set by checkTravelStatus whenever you're genuinely standing in a
+        // foreign country (not traveling, destination isn't home) - lets
+        // onFlightWidgetClick know there's an abroad-style lookup to run
+        // on demand. Nothing here fetches or shows anything by itself;
+        // the button only ever activates on a real click now, even while
+        // flying or freshly landed (see fetchAbroadPickNow below).
+        let currentAbroadDestination = null;
+        function fetchAbroadPickNow(destination) {
+            if (!destination) return;
             const current = safeGmGet('wt_active_flight_target', null);
             // A dashboard push or an already-active flight-detected pick
-            // (e.g. this is a landing that was ALSO caught mid-flight a
-            // moment ago) takes precedence - don't clobber either.
+            // takes precedence - don't clobber either.
             if (current && (current.source === 'dashboard' || current.source === 'flight-detected')) return;
             GM_xmlhttpRequest({
                 method: 'GET',
@@ -3172,6 +3155,14 @@
                     flightDetectFetchedForLandAtMs = null;
                     updateFlightWidgetForTravel();
                 }
+                return;
+            }
+            // Not mid-flight, but genuinely standing abroad in a foreign
+            // country right now - look up what's catchable there instead
+            // of falling through to the cross-country idle pick below,
+            // which is for planning a flight while sitting in Torn.
+            if (currentAbroadDestination) {
+                fetchAbroadPickNow(currentAbroadDestination);
                 return;
             }
             cycleFlightCandidate();
@@ -5177,21 +5168,6 @@
         // actual trip, and is ignored rather than accepted.
         const MIN_FRESH_TRAVEL_SECS = 45;
 
-        // Shared by both the "mid-flight, heading home" and "already
-        // landed home" branches below - fires the idle cross-country
-        // auto-pick (normally only reachable by clicking the idle plane
-        // icon) at most once per return-trip-or-homestay, so there's a
-        // "what should I fly out to NEXT" suggestion ready as early as
-        // possible (ideally the moment you take off on the way back, not
-        // only once you've actually landed and lost time sitting idle).
-        function offerHomeAutoPickOnce() {
-            if (homeAutoPickOffered) return;
-            homeAutoPickOffered = true;
-            // Don't clobber a dashboard push, an in-progress flight-
-            // detected pick, or something the user already manually
-            // cycled to.
-            if (!safeGmGet('wt_active_flight_target', null)) cycleFlightCandidate();
-        }
         async function checkTravelStatus() {
             // Only userApiKey gates this now - flightSoundEnabled used to
             // gate the whole poll, but the flight widget's real-flight
@@ -5208,41 +5184,38 @@
             // actually landed home, neither of which is a real YATA stock
             // country (resolveYataCode finds nothing for "Torn" server-
             // side, so a landing-pick call for it would just come back
-            // empty - confirmed live, that's why flying back showed
-            // nothing at all before this). "Heading/being home" is
-            // handled identically below regardless of which of those two
-            // states it is, via offerHomeAutoPickOnce above.
+            // empty).
             const rawDest = travel && travel.destination ? travel.destination.trim() : '';
             const isHomeDest = !rawDest || rawDest.toLowerCase() === 'torn';
 
+            // The button never auto-populates any more, in flight or not -
+            // every branch below only tracks STATE (what onFlightWidgetClick
+            // should look up if and when it's actually clicked). Nothing
+            // here calls updateFlightWidgetForTravel/fetchAbroadPickNow -
+            // doing that on every poll would immediately clear out
+            // whatever the user just clicked to see (travelLandAtMs is
+            // null in every branch below, so updateFlightWidgetForTravel's
+            // own clear-path would fire right away). A stale flight-
+            // detected pick from before a state change like this is left
+            // for the user to dismiss (the x button) or cycle past
+            // themselves, same as it already was mid-flight.
             if (!stillTraveling) {
                 travelLandAtMs = null;
                 travelDestination = null;
-                if (isHomeDest) {
-                    abroadPickFetchedFor = null; // next trip away gets a fresh abroad-check
-                    offerHomeAutoPickOnce();
-                } else {
-                    maybeShowAbroadPick(rawDest);
-                }
+                currentAbroadDestination = isHomeDest ? null : rawDest;
                 return;
             }
 
             if (isHomeDest) {
-                // Flying BACK - nothing to catch by landing in Torn, but
-                // this is exactly when planning the next flight out is
-                // most useful, so offer it now instead of waiting until
-                // actually landed. No in-flight countdown makes sense for
-                // "landing at home" either, so this skips the normal
-                // travelLandAtMs tracking entirely rather than running it
-                // against a destination landing-pick can never resolve.
+                // Flying BACK - nothing to catch by landing in Torn, and
+                // no in-flight countdown makes sense for it either, so
+                // this skips the normal travelLandAtMs tracking entirely.
                 travelLandAtMs = null;
                 travelDestination = null;
-                abroadPickFetchedFor = null;
-                offerHomeAutoPickOnce();
+                currentAbroadDestination = null;
                 return;
             }
-            abroadPickFetchedFor = null; // airborne toward a foreign country - that landing gets its own fresh check
-            homeAutoPickOffered = false; // heading away from home - the eventual return gets its own fresh offer
+            currentAbroadDestination = null; // still airborne, not abroad yet
             if (travelLandAtMs === null && travel.time_left < MIN_FRESH_TRAVEL_SECS) return;
             travelDestination = rawDest || null;
             const candidateLandAtMs = Date.now() + travel.time_left * 1000;
@@ -5252,7 +5225,11 @@
             } else if (candidateLandAtMs < travelLandAtMs) {
                 travelLandAtMs = candidateLandAtMs;
             }
-            updateFlightWidgetForTravel();
+            // No updateFlightWidgetForTravel() call here - that's the
+            // button's auto-fetch-and-show path. Mid-flight state (for the
+            // countdown/landing chime above) is still tracked either way;
+            // onFlightWidgetClick reads travelLandAtMs/travelDestination
+            // directly to run this same lookup on demand instead.
         }
         // Once travelLandAtMs is locked in, the countdown itself ticks down
         // locally every second in tickLocalAlertClocks() below at zero API
