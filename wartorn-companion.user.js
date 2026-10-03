@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.80
+// @version      3.81
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.80';
+    const COMPANION_VERSION_FALLBACK = '3.81';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1608,7 +1608,15 @@
             if (call && call.callerId !== companionTargetCalls.myPlayerId) {
                 if (!confirm(`${call.callerName} already called this target - attack anyway?`)) return;
             }
-            window.open(`https://www.torn.com/page.php?sid=attack&user2ID=${id}`, 'attack_window', 'width=450,height=750,left=150,top=100,popup=yes,scrollbars=yes');
+            // TornPDA's webview has no popup windows, and browsers can block them too -
+            // either way the attack page opens in this same tab instead.
+            const attackUrl = `https://www.torn.com/page.php?sid=attack&user2ID=${id}`;
+            if (isTornPDA()) {
+                window.location.href = attackUrl;
+            } else {
+                const popup = window.open(attackUrl, 'attack_window', 'width=450,height=750,left=150,top=100,popup=yes,scrollbars=yes');
+                if (!popup) window.location.href = attackUrl;
+            }
             // Fire-and-forget - tells the backend someone's about to attack,
             // so it briefly (WAR_BURST_WINDOW_MS server-side) allows the
             // shared war-data cache to go down to 500ms fresh instead of the
