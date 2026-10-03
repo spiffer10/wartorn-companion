@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.81
+// @version      3.82
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.81';
+    const COMPANION_VERSION_FALLBACK = '3.82';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -236,7 +236,16 @@
         `;
         (document.head || document.documentElement).appendChild(style);
     }
- 
+    // TornPDA's attack page is the whole screen - the companion's own UI (edge
+    // buttons, flight widget, panels) just gets in the way there. Hidden by
+    // stylesheet rather than skipped, so it's back as soon as you navigate away.
+    if (/sid=attack/.test(window.location.href) && isTornPDA()) {
+        const hideCompanion = document.createElement('style');
+        hideCompanion.id = 'wt-hide-companion-attack';
+        hideCompanion.textContent = '[id^="wt-"] { display: none !important; }';
+        (document.head || document.documentElement).appendChild(hideCompanion);
+    }
+
     // --- DRAGGABLE POSITION ---
     // Every piece of the left-edge UI (logo, button stack, collapse toggle,
     // link-notice, manual-link button) was independently positioned via a
