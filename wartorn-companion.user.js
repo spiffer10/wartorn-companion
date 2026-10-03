@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.79
+// @version      3.80
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.79';
+    const COMPANION_VERSION_FALLBACK = '3.80';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1785,6 +1785,7 @@
                     if (aFav !== bFav) return bFav - aFav;
                     return (b.level || 0) - (a.level || 0);
                 });
+                if (wtPressActive) { setTimeout(() => { if (openWindows.has('targets')) renderTargetsPanel(); }, 120); return; }
                 body.innerHTML = sortedTargets.map(t => {
                     const tag = abbreviateStatus(t.state, t.until, t.desc);
                     const okay = t.state === 'Okay';
@@ -2754,9 +2755,19 @@
         // widget's country label matches what the dashboard already shows.
         const FLIGHT_COUNTRY_NAMES = { mex: 'Mexico', cay: 'Cayman', can: 'Canada', haw: 'Hawaii', uni: 'United Kingdom', arg: 'Argentina', swi: 'Switzerland', jap: 'Japan', chi: 'China', uae: 'UAE', sou: 'South Africa' };
 
-        const FLIGHT_WIDGET_BASE_CSS = 'display:flex; flex-direction:column; justify-content:center; gap:5px; background:rgba(21,23,28,0.92); border:1px solid #3a3f4b; border-radius:8px; cursor:pointer; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.88; box-sizing:border-box; user-select:none; position:relative;';
+        const FLIGHT_WIDGET_BASE_CSS = 'display:flex; flex-direction:column; justify-content:center; gap:5px; background:rgba(21,23,28,0.92); border:1px solid #3a3f4b; border-radius:8px; cursor:pointer; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.88; box-sizing:border-box; user-select:none; position:relative; pointer-events:auto;';
 
         function getFlightWidgetEl() { return document.getElementById('wt-flight-widget'); }
+
+        // On TornPDA a tap can end after the element it started on was rebuilt by a
+        // periodic render, which silently drops the click. Renders that replace
+        // clickable markup wait out an in-progress press.
+        let wtPressActive = false;
+        let wtPressReleaseTimer = null;
+        const wtPressStart = () => { wtPressActive = true; clearTimeout(wtPressReleaseTimer); };
+        const wtPressEnd = () => { clearTimeout(wtPressReleaseTimer); wtPressReleaseTimer = setTimeout(() => { wtPressActive = false; }, 250); };
+        ['pointerdown', 'touchstart'].forEach(ev => document.addEventListener(ev, wtPressStart, { capture: true, passive: true }));
+        ['pointerup', 'pointercancel', 'touchend', 'touchcancel'].forEach(ev => document.addEventListener(ev, wtPressEnd, { capture: true, passive: true }));
 
         // Cascades through h/m/s properly instead of collapsing straight to
         // a lossy "Xh" once minutes cross 100 - an hour out shows "1:00:00"
@@ -2782,6 +2793,7 @@
             return h > 0 ? `${h}h ${m}m` : `${m}m`;
         }
         function renderFlightWidget() {
+            if (wtPressActive) { setTimeout(renderFlightWidget, 120); return; }
             const el = getFlightWidgetEl();
             if (!el) return;
             const target = safeGmGet('wt_active_flight_target', null);
@@ -2852,7 +2864,7 @@
             // Clicking anywhere else on an in-flight target now cycles
             // items instead of dismissing (see onFlightWidgetClick) - this
             // is the only way left to close the widget mid-flight.
-            const closeBtnHtml = (isInFlight || isAbroadView) ? `<span id="wt-flight-close-btn" title="Hide" style="position:absolute; top:3px; right:5px; font-size:0.85em; line-height:1; color:#777; cursor:pointer;">&times;</span>` : '';
+            const closeBtnHtml = `<span id="wt-flight-close-btn" title="Hide" style="position:absolute; top:0; right:0; width:28px; height:28px; display:flex; align-items:center; justify-content:center; font-size:1.2em; line-height:1; color:#999; cursor:pointer; z-index:1;">&times;</span>`;
             el.style.cssText = FLIGHT_WIDGET_BASE_CSS + `align-items:stretch; width:180px; padding:8px 10px; font-size:${fontSizeSetting}px;`;
             el.innerHTML = `
                 ${closeBtnHtml}
@@ -3523,7 +3535,7 @@
             // Positioned below via applyCompanionAnchor() - directly below
             // the logo, which is 130px tall (see injectGhostLogo() above).
             const WRAP_TRANSITION = 'opacity 0.3s ease, transform 0.3s ease';
-            wrap.style.cssText = `position:fixed; z-index:9999999; display:flex; flex-direction:column; gap:6px; pointer-events:auto; transform-origin:top center; transition:${WRAP_TRANSITION};`;
+            wrap.style.cssText = `position:fixed; z-index:9999999; display:flex; flex-direction:column; gap:6px; pointer-events:none; transform-origin:top center; transition:${WRAP_TRANSITION};`;
             Object.keys(PANEL_DEFS).forEach(key => {
                 // Not a togglable panel - a live status widget - so it's
                 // inserted here rather than added to PANEL_DEFS, right
@@ -3534,6 +3546,7 @@
                 const btn = document.createElement('div');
                 btn.className = 'wt-side-btn';
                 btn.dataset.key = key;
+                btn.style.pointerEvents = 'auto';
                 btn.dataset.unread = '0';
                 btn.title = def.title;
                 btn.innerText = def.icon;
@@ -3589,6 +3602,7 @@
                 radioBtn.id = 'wt-radio-side-btn';
                 radioBtn.className = 'wt-side-btn';
                 radioBtn.dataset.key = 'radio';
+                radioBtn.style.pointerEvents = 'auto';
                 radioBtn.title = 'Tesseract Radio';
                 radioBtn.innerText = '🎵';
                 radioBtn.style.cssText = 'width:34px; height:34px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.1em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
