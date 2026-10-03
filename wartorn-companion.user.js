@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.76
+// @version      3.77
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.76';
+    const COMPANION_VERSION_FALLBACK = '3.77';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1277,13 +1277,13 @@
     // dashboard's own audio alerts so they work while browsing torn.com
     // directly.
     if (window.name !== 'attack_window') {
-        function fetchFromWartorn(endpoint) {
+        function fetchFromWartorn(endpoint, timeoutMs = 10000) {
             return new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
                     method: 'GET',
                     url: `${WARTORN_HOST}/api/companion/${endpoint}`,
                     headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
-                    timeout: 10000,
+                    timeout: timeoutMs,
                     onload: (res) => {
                         if (res.status === 401) { wtHandleUnauthorized(); reject(new Error('unauthorized')); return; }
                         try { resolve(JSON.parse(res.responseText)); }
@@ -1376,10 +1376,10 @@
             const diff = untilEpochSecs - Math.floor(nowServerMs() / 1000);
             return diff > 0 ? diff : null;
         }
-        async function getPanelData(cacheKey, endpoint) {
+        async function getPanelData(cacheKey, endpoint, timeoutMs) {
             const cached = panelCache[cacheKey];
             if (cached && (Date.now() - cached.ts) < PANEL_CACHE_TTL) return cached.data;
-            const data = await fetchFromWartorn(endpoint);
+            const data = await fetchFromWartorn(endpoint, timeoutMs);
             if (cacheKey === 'war' && data && data.user_cooldowns && data.user_cooldowns.server_time) {
                 serverClockOffsetMs = (data.user_cooldowns.server_time * 1000) - Date.now();
             }
@@ -1758,13 +1758,16 @@
                 // return a stale result cached under the old value.
                 const ff = parseFloat(chainFfSetting) || 3.0;
                 const endpoint = ff === 3.0 ? 'targets?limit=30&preset=respect' : `targets?limit=30&minff=${ff}&maxff=${ff}&inactive=1`;
-                const data = await getPanelData('targets_' + ff, endpoint);
+                // FFScouter-backed and can run slow - the default 10s timeout turned
+                // ordinary slow loads into a "network error" for this panel.
+                const data = await getPanelData('targets_' + ff, endpoint, 30000);
                 // Reaching here means the round trip itself succeeded (even
                 // if the payload turns out to be an error/empty state below) -
                 // see the catch block, which uses this to tell "never loaded
                 // yet" from "just this one poll dropped" (common on a flaky
                 // mobile connection, e.g. TornPDA backgrounding the webview).
                 body.dataset.wtLoaded = '1';
+                body.dataset.wtRetried = '';
                 await refreshCompanionFavorites();
                 if (!openWindows.has('targets') || !document.getElementById('wt-panel-body-targets')) return;
                 if (data.error || !data.targets || !data.targets.length) {
@@ -1805,7 +1808,15 @@
                 // else on screen to preserve.
                 if (body.dataset.wtLoaded === '1') { console.warn('[Wartorn] Chain Targets refresh failed:', e); return; }
                 if (openWindows.has('targets') && document.getElementById('wt-panel-body-targets')) {
-                    document.getElementById('wt-panel-body-targets').innerHTML = `<div style="color:#f44336;">Failed to load (${(e && e.message) || 'unknown error'}) - if this persists, check your Wartorn key is still valid.</div>`;
+                    const el = document.getElementById('wt-panel-body-targets');
+                    const slow = e && (e.message === 'timeout' || e.message === 'network error');
+                    if (slow && !body.dataset.wtRetried) {
+                        body.dataset.wtRetried = '1';
+                        el.innerHTML = '<div style="color:#888;">Still loading - the server is slow right now. Retrying...</div>';
+                        setTimeout(() => { if (openWindows.has('targets')) renderTargetsPanel(); }, 3000);
+                    } else {
+                        el.innerHTML = `<div style="color:#f44336;">Failed to load (${(e && e.message) || 'unknown error'}) - if this persists, check your Wartorn key is still valid.</div>`;
+                    }
                 }
             }
         }
@@ -2763,6 +2774,13 @@
             return { text, color };
         }
 
+        function formatRestockIn(ms) {
+            if (ms <= 0) return 'now';
+            const totalMins = Math.ceil(ms / 60000);
+            const h = Math.floor(totalMins / 60);
+            const m = totalMins % 60;
+            return h > 0 ? `${h}h ${m}m` : `${m}m`;
+        }
         function renderFlightWidget() {
             const el = getFlightWidgetEl();
             if (!el) return;
@@ -2799,6 +2817,7 @@
             // push, auto-pick) is still pre-flight, counting down to
             // launchMs same as before.
             const isInFlight = target.source === 'flight-detected';
+            const isAbroadView = target.source === 'abroad';
             const remainingMs = (isInFlight ? target.landMs : target.launchMs) - Date.now();
             // In-flight targets show live stock left instead of a countdown -
             // Torn's own in-flight timer already covers time-to-landing, and
@@ -2814,9 +2833,14 @@
             // non-urgent color) rather than a green/red stock-level color,
             // to match the rest of the widget's look.
             const showExpected = isInFlight && target.expectedQty != null && Math.floor(Date.now() / 4000) % 2 === 1;
-            const { text: countdownText, color: countdownColor } = isInFlight
-                ? { text: showExpected ? `Land: ~${target.expectedQty}` : `Stock: ${target.stockQty ?? '?'}`, color: '#00e5ff' }
-                : formatFlightCountdown(remainingMs);
+            const abroadRestockMs = target.restockAt ? target.restockAt - Date.now() : null;
+            const { text: countdownText, color: countdownColor } = isAbroadView
+                ? (target.available
+                    ? { text: `Stock: ${target.stockQty ?? '?'}`, color: '#00e5ff' }
+                    : { text: abroadRestockMs != null ? `Restock: ${formatRestockIn(abroadRestockMs)}` : 'Sold out', color: '#FF9800' })
+                : isInFlight
+                    ? { text: showExpected ? `Land: ~${target.expectedQty}` : `Stock: ${target.stockQty ?? '?'}`, color: '#00e5ff' }
+                    : formatFlightCountdown(remainingMs);
             const profitHtml = (target.profit != null)
                 ? `<div style="font-size:0.72em; color:#4CAF50; font-weight:bold;">+$${Math.round(target.profit).toLocaleString()} est.</div>`
                 : '';
@@ -2828,7 +2852,7 @@
             // Clicking anywhere else on an in-flight target now cycles
             // items instead of dismissing (see onFlightWidgetClick) - this
             // is the only way left to close the widget mid-flight.
-            const closeBtnHtml = isInFlight ? `<span id="wt-flight-close-btn" title="Hide" style="position:absolute; top:3px; right:5px; font-size:0.85em; line-height:1; color:#777; cursor:pointer;">&times;</span>` : '';
+            const closeBtnHtml = (isInFlight || isAbroadView) ? `<span id="wt-flight-close-btn" title="Hide" style="position:absolute; top:3px; right:5px; font-size:0.85em; line-height:1; color:#777; cursor:pointer;">&times;</span>` : '';
             el.style.cssText = FLIGHT_WIDGET_BASE_CSS + `align-items:stretch; width:180px; padding:8px 10px; font-size:${fontSizeSetting}px;`;
             el.innerHTML = `
                 ${closeBtnHtml}
@@ -2844,12 +2868,14 @@
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
                     <div style="display:flex; align-items:baseline; gap:4px; overflow:hidden;">
                         <span style="font-size:1.15em; font-weight:bold; color:${countdownColor}; font-family:monospace; white-space:nowrap;">${countdownText}</span>
-                        ${isInFlight ? '' : `<span style="font-size:0.65em; color:${countdownColor}; white-space:nowrap;">&gt; Takeoff</span>`}
+                        ${(isInFlight || isAbroadView) ? '' : `<span style="font-size:0.65em; color:${countdownColor}; white-space:nowrap;">&gt; Takeoff</span>`}
                     </div>
                     ${cycleBtnHtml}
                 </div>
             `;
-            el.title = isInFlight
+            el.title = isAbroadView
+                ? (target.itemName || 'Flight target') + (target.available ? ' - in stock: ' + (target.stockQty ?? '?') : ' - restocks in ' + (abroadRestockMs != null ? formatRestockIn(abroadRestockMs) : 'unknown')) + '. Click to try another item.'
+                : isInFlight
                 ? (target.itemName || 'Flight target') + ' - stock: ' + (target.stockQty ?? '?') + (target.expectedQty != null ? `, ~${target.expectedQty} expected on landing` : '') + '. Click to try another item.'
                 : (target.itemName || 'Flight target') + ' - launch ' + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '. Click to hide.';
             // Recreated every render (innerHTML replaces it each tick), so
@@ -2869,7 +2895,7 @@
             if (cycleBtn) {
                 cycleBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    cycleFlightCandidate();
+                    cycleCurrentFlightView();
                 });
             }
             const closeBtn = document.getElementById('wt-flight-close-btn');
@@ -2910,18 +2936,20 @@
         // backend faster than its underlying stock data actually changes
         // would just re-show the same numbers.
         const FLIGHT_DETECT_STOCK_REFRESH_MS = 60000;
-        function applyFlightDetectCandidate(idx) {
+        function applyFlightDetectCandidate(idx, source = 'flight-detected') {
             const c = flightDetectCandidates[idx];
             if (!c) return;
             flightDetectCandidateIndex = idx;
             safeGmSet('wt_active_flight_target', {
-                source: 'flight-detected',
+                source,
                 code: flightDetectCode,
                 itemId: c.itemId,
                 itemName: c.itemName,
                 profit: c.roi || null,
                 stockQty: c.quantity,
                 expectedQty: (c.expectedQty != null) ? c.expectedQty : null,
+                available: c.available ?? null,
+                restockAt: c.restockAt ?? null,
                 landMs: travelLandAtMs,
                 ts: Date.now()
             });
@@ -2993,15 +3021,20 @@
         // only ever a click away.
         function refreshFlightDetectStock() {
             const current = safeGmGet('wt_active_flight_target', null);
-            if (!current || current.source !== 'flight-detected') return;
-            if (travelLandAtMs === null || !travelDestination) return;
+            if (!current) return;
+            const isAbroadView = current.source === 'abroad';
+            if (!isAbroadView && current.source !== 'flight-detected') return;
+            if (isAbroadView ? !currentAbroadDestination : (travelLandAtMs === null || !travelDestination)) return;
             if (Date.now() - flightDetectLastStockRefresh < FLIGHT_DETECT_STOCK_REFRESH_MS) return;
             if (flightDetectRequestInFlight) return;
             flightDetectRequestInFlight = true;
             flightDetectLastStockRefresh = Date.now();
+            const refreshUrl = isAbroadView
+                ? `${WARTORN_HOST}/api/public/abroad-stock?country=${encodeURIComponent(currentAbroadDestination)}`
+                : `${WARTORN_HOST}/api/public/landing-pick?country=${encodeURIComponent(travelDestination)}&landAtMs=${travelLandAtMs}`;
             GM_xmlhttpRequest({
                 method: 'GET',
-                url: `${WARTORN_HOST}/api/public/landing-pick?country=${encodeURIComponent(travelDestination)}&landAtMs=${travelLandAtMs}`,
+                url: refreshUrl,
                 headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
                 timeout: 8000,
                 onload: (res) => {
@@ -3021,7 +3054,7 @@
                     }
                     const stillShowing = safeGmGet('wt_active_flight_target', null);
                     const keepIdx = stillShowing ? flightDetectCandidates.findIndex(c => c.itemId === stillShowing.itemId) : -1;
-                    applyFlightDetectCandidate(keepIdx >= 0 ? keepIdx : 0);
+                    applyFlightDetectCandidate(keepIdx >= 0 ? keepIdx : 0, isAbroadView ? 'abroad' : 'flight-detected');
                 },
                 onerror: () => { flightDetectRequestInFlight = false; },
                 ontimeout: () => { flightDetectRequestInFlight = false; }
@@ -3034,39 +3067,36 @@
         // onFlightWidgetClick know there's an abroad-style lookup to run
         // on demand. Nothing here fetches or shows anything by itself;
         // the button only ever activates on a real click now, even while
-        // flying or freshly landed (see fetchAbroadPickNow below).
+        // flying or freshly landed (see fetchAbroadStockNow below).
         let currentAbroadDestination = null;
-        function fetchAbroadPickNow(destination) {
-            if (!destination) return;
-            const current = safeGmGet('wt_active_flight_target', null);
-            // A dashboard push or an already-active flight-detected pick
-            // takes precedence - don't clobber either.
-            if (current && (current.source === 'dashboard' || current.source === 'flight-detected')) return;
+        let abroadFetchRequestInFlight = false;
+        function fetchAbroadStockNow(destination) {
+            if (!destination || abroadFetchRequestInFlight) return;
+            abroadFetchRequestInFlight = true;
             GM_xmlhttpRequest({
                 method: 'GET',
-                url: `${WARTORN_HOST}/api/public/landing-pick?country=${encodeURIComponent(destination)}&landAtMs=${Date.now()}`,
+                url: `${WARTORN_HOST}/api/public/abroad-stock?country=${encodeURIComponent(destination)}`,
                 headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
                 timeout: 8000,
                 onload: (res) => {
+                    abroadFetchRequestInFlight = false;
                     if (res.status === 401) { wtHandleUnauthorized(); return; }
                     let data = null;
                     try { data = JSON.parse(res.responseText); } catch (e) {}
-                    if (!data || !data.item || !data.code) return;
+                    if (!data || !data.code) return;
+                    if (!data.items || !data.items.length) {
+                        safeGmSet('wt_active_flight_target', null);
+                        renderFlightWidget();
+                        return;
+                    }
                     flightDetectCode = data.code;
-                    flightDetectCandidates = data.items && data.items.length ? data.items : [data.item];
+                    flightDetectCandidates = data.items;
+                    flightDetectCandidateIndex = 0;
                     flightDetectLastStockRefresh = Date.now();
-                    // landMs is purely to satisfy the flight-detected
-                    // branch's own non-null check elsewhere - never
-                    // actually rendered as a countdown (renderFlightWidget's
-                    // isInFlight branch always shows stock/expected-qty
-                    // text instead, see its own comment), so "now" instead
-                    // of a real future landing time is harmless here.
-                    travelLandAtMs = Date.now();
-                    travelDestination = destination;
-                    applyFlightDetectCandidate(0);
+                    applyFlightDetectCandidate(0, 'abroad');
                 },
-                onerror: () => {},
-                ontimeout: () => {}
+                onerror: () => { abroadFetchRequestInFlight = false; },
+                ontimeout: () => { abroadFetchRequestInFlight = false; }
             });
         }
 
@@ -3111,58 +3141,49 @@
                 ontimeout: () => {}
             });
         }
+        // What the flight button shows depends only on where you are right now:
+        // recommendations while in Torn or flying home, predicted landing stock
+        // while flying out, and live stock with restock timers once abroad.
+        function flightStateMode() {
+            if (travelLandAtMs !== null && travelDestination) return 'predicted';
+            if (currentAbroadDestination) return 'abroad';
+            return 'recommend';
+        }
+        const FLIGHT_MODE_BY_SOURCE = { 'flight-detected': 'predicted', 'abroad': 'abroad', 'auto': 'recommend' };
+        function openFlightMode(mode) {
+            if (mode === 'predicted') {
+                dismissedFlightDetectLandAtMs = null;
+                flightDetectFetchedForLandAtMs = null;
+                updateFlightWidgetForTravel();
+            } else if (mode === 'abroad') {
+                fetchAbroadStockNow(currentAbroadDestination);
+            } else {
+                cycleFlightCandidate();
+            }
+        }
+        // Clicking the view that's already showing cycles its items; clicking
+        // while a different view is showing switches to the one for where you
+        // are now. A dashboard push is the one exception - a click just dismisses it.
         function onFlightWidgetClick() {
             const current = safeGmGet('wt_active_flight_target', null);
-            if (current && current.source === 'flight-detected') {
-                // Mid-flight, a click cycles to the next catchable item for
-                // THIS destination instead of dismissing - there's nowhere
-                // else the trip could go, so "try a different item" is the
-                // only thing a click here could usefully mean. The x button
-                // (see closeBtnHtml in renderFlightWidget) is the only way
-                // to close this now - a click that can't cycle (nothing
-                // else catchable for this trip) does nothing rather than
-                // falling back to acting like that button instead.
-                if (flightDetectCandidates.length > 1) {
-                    applyFlightDetectCandidate((flightDetectCandidateIndex + 1) % flightDetectCandidates.length);
-                }
-                return;
-            }
-            // Something's currently showing (dashboard push or an
-            // idle-state auto-pick) - a click just dismisses it. The cycle
-            // position itself is untouched here, so the NEXT time this
-            // reveals something fresh (idle -> active), it picks up from
-            // wherever it left off rather than restarting from the top
-            // every time.
-            if (current) {
+            if (current && current.source === 'dashboard') {
                 safeGmSet('wt_active_flight_target', null);
                 renderFlightWidget();
                 return;
             }
-            // Idle (nothing showing). If you're actually mid-flight right
-            // now (travelLandAtMs/travelDestination set), reopening should
-            // bring back THIS trip's flight-detected pick, not the
-            // cross-country auto-pick "+" mode below - that mode is for
-            // planning a flight while sitting in Torn, and makes no sense
-            // once you're already committed to a destination.
-            if (travelLandAtMs !== null && travelDestination) {
-                dismissedFlightDetectLandAtMs = null;
-                if (flightDetectCandidates.length) {
-                    applyFlightDetectCandidate(flightDetectCandidateIndex);
-                } else {
-                    // No cached pick for this trip (e.g. nothing was ever
-                    // catchable) - force a fresh fetch instead of just
-                    // sitting idle.
-                    flightDetectFetchedForLandAtMs = null;
-                    updateFlightWidgetForTravel();
-                }
+            const desired = flightStateMode();
+            if (current && FLIGHT_MODE_BY_SOURCE[current.source] === desired) {
+                cycleCurrentFlightView();
                 return;
             }
-            // Not mid-flight, but genuinely standing abroad in a foreign
-            // country right now - look up what's catchable there instead
-            // of falling through to the cross-country idle pick below,
-            // which is for planning a flight while sitting in Torn.
-            if (currentAbroadDestination) {
-                fetchAbroadPickNow(currentAbroadDestination);
+            openFlightMode(desired);
+        }
+        function cycleCurrentFlightView() {
+            const current = safeGmGet('wt_active_flight_target', null);
+            if (current && (current.source === 'flight-detected' || current.source === 'abroad')) {
+                if (flightDetectCandidates.length > 1) {
+                    applyFlightDetectCandidate((flightDetectCandidateIndex + 1) % flightDetectCandidates.length, current.source);
+                }
                 return;
             }
             cycleFlightCandidate();
@@ -5187,11 +5208,20 @@
             // empty).
             const rawDest = travel && travel.destination ? travel.destination.trim() : '';
             const isHomeDest = !rawDest || rawDest.toLowerCase() === 'torn';
+            // An abroad view's stock and restock timers only mean anything while
+            // you're actually standing in that country - drop it once you're not.
+            if (!(!stillTraveling && !isHomeDest)) {
+                const shownView = safeGmGet('wt_active_flight_target', null);
+                if (shownView && shownView.source === 'abroad') {
+                    safeGmSet('wt_active_flight_target', null);
+                    renderFlightWidget();
+                }
+            }
 
             // The button never auto-populates any more, in flight or not -
             // every branch below only tracks STATE (what onFlightWidgetClick
             // should look up if and when it's actually clicked). Nothing
-            // here calls updateFlightWidgetForTravel/fetchAbroadPickNow -
+            // here calls updateFlightWidgetForTravel/fetchAbroadStockNow -
             // doing that on every poll would immediately clear out
             // whatever the user just clicked to see (travelLandAtMs is
             // null in every branch below, so updateFlightWidgetForTravel's
