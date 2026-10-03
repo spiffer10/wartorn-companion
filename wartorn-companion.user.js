@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.77
+// @version      3.78
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.77';
+    const COMPANION_VERSION_FALLBACK = '3.78';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3001,6 +3001,7 @@
                     if (res.status === 401) { wtHandleUnauthorized(); return; }
                     let data = null;
                     try { data = JSON.parse(res.responseText); } catch (e) {}
+                    console.log('[WT-FLIGHT-DEBUG] landing-pick', res.status, res.responseText && res.responseText.slice(0, 200));
                     if (!data || !data.item || !data.code) return;
                     flightDetectCode = data.code;
                     flightDetectCandidates = data.items && data.items.length ? data.items : [data.item];
@@ -3172,6 +3173,7 @@
                 return;
             }
             const desired = flightStateMode();
+            console.log('[WT-FLIGHT-DEBUG] click', { current, desired, travelLandAtMs, travelDestination, currentAbroadDestination, candidates: flightDetectCandidates.length, autoCached: !!flightAutoCandidates });
             if (current && FLIGHT_MODE_BY_SOURCE[current.source] === desired) {
                 cycleCurrentFlightView();
                 return;
@@ -5207,6 +5209,7 @@
             // side, so a landing-pick call for it would just come back
             // empty).
             const rawDest = travel && travel.destination ? travel.destination.trim() : '';
+            console.log('[WT-FLIGHT-DEBUG] poll', { stillTraveling: !!(travel && travel.time_left > 0), time_left: travel && travel.time_left, destination: travel && travel.destination });
             const isHomeDest = !rawDest || rawDest.toLowerCase() === 'torn';
             // An abroad view's stock and restock timers only mean anything while
             // you're actually standing in that country - drop it once you're not.
