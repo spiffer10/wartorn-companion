@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.89
+// @version      3.90
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.89';
+    const COMPANION_VERSION_FALLBACK = '3.90';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1799,7 +1799,6 @@
             const ffText = t.fair_fight ? Number(t.fair_fight).toFixed(2) : '-';
             const est = t.bs_estimate ? Number(t.bs_estimate).toLocaleString() : '?';
             const avatar = t.avatar_url ? '<img src="' + wtChatAbsUrl(t.avatar_url) + '" style="width:42px; height:58px; object-fit:cover; border-radius:3px; flex-shrink:0;" onerror="this.style.display=\'none\';">' : '';
-            const star = isFavorited(t.player_id) ? '⭐' : '☆';
             let lastHit = '';
             if (t.last_attack) {
                 const resText = t.last_attack_result === 'Attacked' ? 'Left' : (t.last_attack_result || '');
@@ -1828,7 +1827,6 @@
                 + '<div style="font-size:0.8em; margin-top:2px;">' + targetStatusHtml(t) + '</div>'
                 + '</div></div>'
                 + '<div style="display:flex; align-items:stretch; gap:4px;">'
-                + '<span style="display:inline-flex; align-items:center; padding:0 6px; font-size:1.05em; color:#ccc;" title="Favorite">' + star + '</span>'
                 + attack
                 + '</div></div>';
         }
