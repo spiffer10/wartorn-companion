@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.86
+// @version      3.87
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.86';
+    const COMPANION_VERSION_FALLBACK = '3.87';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1938,12 +1938,17 @@
                     return (b.level || 0) - (a.level || 0);
                 });
                 if (wtPressActive) { setTimeout(() => { if (openWindows.has('targets')) renderTargetsPanel(); }, 120); return; }
+                // Same respect estimate as the dashboard: scaled by the live chain modifier
+                // and by the target's level (fit to observed hits).
+                const warPanel = await getPanelData('war', 'war-status').catch(() => null);
+                const chainMod = (warPanel && warPanel.chain && warPanel.chain.modifier) || 1.0;
                 body.innerHTML = sortedTargets.map(t => {
+                    const estRespect = ((0.7 + 1.36 * (t.fair_fight || 1.0)) * chainMod * (0.6226 + 0.00321 * (t.level || 25))).toFixed(2);
                     const okay = t.state === 'Okay';
                     const name = isFavorited(t.player_id) ? `⭐ ${t.name}` : t.name;
                     return rowHtml(
                         name,
-                        `<span style="color:#888;">Lv ${t.level || 0}</span> · <span style="color:#00e5ff;">FF ${t.fair_fight ? t.fair_fight.toFixed(2) : '-'}</span> · ${targetStatusHtml(t)}`,
+                        `<div><span style="color:#888;">Lv ${t.level || 0}</span> · <span style="color:#00e5ff;">FF ${t.fair_fight ? t.fair_fight.toFixed(2) : '-'}</span> · <span style="color:#4CAF50;">~${estRespect} rep</span></div><div>${targetStatusHtml(t)}</div>`,
                         okay ? attackButtonHtml(t.player_id) : '',
                         t.online_status,
                         t.player_id
