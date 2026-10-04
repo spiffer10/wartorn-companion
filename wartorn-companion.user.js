@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.100
+// @version      3.101
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.100';
+    const COMPANION_VERSION_FALLBACK = '3.101';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1906,6 +1906,7 @@ function targetRowHtml(t, estRespect) {
                 + check('wt-tgs-factionless', 'Factionless only')
                 + check('wt-tgs-hidefaction', 'Hide faction members')
                 + check('wt-tgs-hideabroad', 'Hide abroad')
+                + check('wt-tgs-chainbar', 'Floating chain timer bar')
                 + '<div style="text-align:right; margin-top:6px;"><button id="wt-tgs-save" style="background:#9C27B0; color:#fff; border:none; padding:4px 10px; border-radius:4px; cursor:pointer;">Save &amp; refresh</button></div>';
             parent.insertBefore(form, body);
             parent.insertBefore(bar, form);
@@ -1915,6 +1916,11 @@ function targetRowHtml(t, estRespect) {
                 if (opening) loadTargetsSettingsForm(form);
             });
             form.querySelector('#wt-tgs-save').addEventListener('click', () => saveTargetsSettings(form));
+            form.querySelector('#wt-tgs-chainbar').addEventListener('change', (e) => {
+                chainBarEnabled = e.target.checked;
+                safeGmSet('wt_show_chain_bar', chainBarEnabled);
+                renderChainBar();
+            });
             bar.querySelector('#wt-ff-minus').addEventListener('click', () => adjustTargetFf(-0.1));
             bar.querySelector('#wt-ff-plus').addEventListener('click', () => adjustTargetFf(0.1));
         }
@@ -1931,6 +1937,7 @@ function targetRowHtml(t, estRespect) {
             q('wt-tgs-factionless').checked = !!cts.factionless;
             q('wt-tgs-hidefaction').checked = !!companionChainSettings.hideFaction;
             q('wt-tgs-hideabroad').checked = !!companionChainSettings.hideAbroad;
+            q('wt-tgs-chainbar').checked = !!chainBarEnabled;
         }
         async function saveTargetsSettings(form) {
             const q = id => form.querySelector('#' + id);
@@ -2455,10 +2462,6 @@ function targetRowHtml(t, estRespect) {
                             🚨 Chain Hits siren (whoop whoop)
                             <span id="wt-set-chainhitssiren-test" style="cursor:pointer; color:#00e5ff; font-size:0.85em; margin-left:auto; text-decoration:underline;">Test</span>
                         </label>
-                        <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
-                            <input type="checkbox" id="wt-set-chainbar" ${chainBarEnabled ? 'checked' : ''} style="cursor:pointer;">
-                            ⛓️ Floating chain timer bar
-                        </label>
                     </div>
 
                     <div style="display:flex; flex-direction:column; gap:6px; border-top:1px solid #333; padding-top:10px;">
@@ -2492,11 +2495,6 @@ function targetRowHtml(t, estRespect) {
             bindSlider('wt-set-font', 'wt_font_size', (v) => fontSizeSetting = v, 'px', false);
             bindSlider('wt-set-opacity', 'wt_panel_opacity', (v) => opacitySetting = v, '%', true);
 
-            document.getElementById('wt-set-chainbar').addEventListener('change', (e) => {
-                chainBarEnabled = e.target.checked;
-                safeGmSet('wt_show_chain_bar', chainBarEnabled);
-                renderChainBar();
-            });
             document.getElementById('wt-set-showfaction').addEventListener('change', (e) => {
                 showFactionStatusPanel = e.target.checked;
                 safeGmSet('wt_show_faction_status', showFactionStatusPanel);
@@ -5596,26 +5594,56 @@ function targetRowHtml(t, estRespect) {
         let lastAlertSnapshot = null; // { amAbroad, chainTimeoutAtFetch, chainCount, chainOnCooldown, chainCooldownAtFetch, fetchedAtMs }
         // Small floating bar with the chain count and its timer (or cooldown). Click-through,
         // so it never blocks Torn underneath. Toggled in the chain options.
+        let chainBarPos = safeGmGet('wt_chain_bar_pos', null);
+        let chainBarDrag = null;
+        function createChainBar() {
+            const bar = document.createElement('div');
+            bar.id = 'wt-chain-bar';
+            bar.style.cssText = 'position:fixed; top:6px; left:50%; transform:translateX(-50%); z-index:9999998; pointer-events:auto; touch-action:none; cursor:move; user-select:none; background:rgba(21,23,28,0.92); border:1px solid #3a3f4b; border-radius:8px; padding:6px 14px; font-family:monospace; font-size:18px; font-weight:bold; color:#fff; white-space:nowrap; box-shadow:0 2px 8px rgba(0,0,0,0.5);';
+            const main = document.createElement('span');
+            main.id = 'wt-chain-bar-main';
+            bar.appendChild(main);
+            if (chainBarPos) { bar.style.left = chainBarPos.x + 'px'; bar.style.top = chainBarPos.y + 'px'; bar.style.transform = 'none'; }
+            bar.addEventListener('pointerdown', (e) => {
+                chainBarDrag = { dx: e.clientX - bar.offsetLeft, dy: e.clientY - bar.offsetTop };
+                bar.setPointerCapture(e.pointerId);
+            });
+            bar.addEventListener('pointermove', (e) => {
+                if (!chainBarDrag) return;
+                const x = Math.min(Math.max(0, e.clientX - chainBarDrag.dx), window.innerWidth - bar.offsetWidth);
+                const y = Math.min(Math.max(0, e.clientY - chainBarDrag.dy), window.innerHeight - bar.offsetHeight);
+                bar.style.left = x + 'px'; bar.style.top = y + 'px'; bar.style.transform = 'none';
+            });
+            const endDrag = () => {
+                if (!chainBarDrag) return;
+                chainBarDrag = null;
+                chainBarPos = { x: bar.offsetLeft, y: bar.offsetTop };
+                safeGmSet('wt_chain_bar_pos', chainBarPos);
+            };
+            bar.addEventListener('pointerup', endDrag);
+            bar.addEventListener('pointercancel', endDrag);
+            document.body.appendChild(bar);
+            return bar;
+        }
         function renderChainBar() {
             let bar = document.getElementById('wt-chain-bar');
             if (!chainBarEnabled) { if (bar) bar.remove(); return; }
-            if (!bar) {
-                bar = document.createElement('div');
-                bar.id = 'wt-chain-bar';
-                bar.style.cssText = 'position:fixed; top:6px; left:50%; transform:translateX(-50%); z-index:9999998; pointer-events:none; background:rgba(21,23,28,0.92); border:1px solid #3a3f4b; border-radius:6px; padding:3px 10px; font-family:monospace; font-size:12px; color:#fff; white-space:nowrap; box-shadow:0 2px 8px rgba(0,0,0,0.5);';
-                document.body.appendChild(bar);
-            }
+            if (!bar) bar = createChainBar();
+            const main = document.getElementById('wt-chain-bar-main');
             const s = lastAlertSnapshot;
-            if (!s) { bar.textContent = '⛓️ --'; return; }
+            if (!s) { main.textContent = '⛓️ --'; main.style.color = '#fff'; return; }
             const fmt = secs => Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
             const elapsed = (Date.now() - s.fetchedAtMs) / 1000;
             if (s.chainOnCooldown) {
-                bar.innerHTML = '⛓️ ' + s.chainCount + ' · <span style="color:#FF9800;">cooldown ' + fmt(Math.max(0, Math.round(s.chainCooldownAtFetch - elapsed))) + '</span>';
+                main.textContent = '⛓️ ' + s.chainCount + ' · cooldown ' + fmt(Math.max(0, Math.round(s.chainCooldownAtFetch - elapsed)));
+                main.style.color = '#FF9800';
             } else if (s.chainTimeoutAtFetch > 0) {
                 const left = Math.max(0, Math.round(s.chainTimeoutAtFetch - elapsed));
-                bar.innerHTML = '⛓️ ' + s.chainCount + ' · <span style="color:' + (left <= 60 ? '#f44336' : '#4CAF50') + ';">' + fmt(left) + '</span>';
+                main.textContent = '⛓️ ' + s.chainCount + ' · ' + fmt(left);
+                main.style.color = left <= 60 ? '#f44336' : '#4CAF50';
             } else {
-                bar.textContent = '⛓️ ' + (s.chainCount || 'no chain');
+                main.textContent = '⛓️ ' + (s.chainCount || 'no chain');
+                main.style.color = '#fff';
             }
         }
         setInterval(renderChainBar, 1000);
