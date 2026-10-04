@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.101
+// @version      3.102
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.101';
+    const COMPANION_VERSION_FALLBACK = '3.102';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -5602,6 +5602,13 @@ function targetRowHtml(t, estRespect) {
             bar.style.cssText = 'position:fixed; top:6px; left:50%; transform:translateX(-50%); z-index:9999998; pointer-events:auto; touch-action:none; cursor:move; user-select:none; background:rgba(21,23,28,0.92); border:1px solid #3a3f4b; border-radius:8px; padding:6px 14px; font-family:monospace; font-size:18px; font-weight:bold; color:#fff; white-space:nowrap; box-shadow:0 2px 8px rgba(0,0,0,0.5);';
             const main = document.createElement('span');
             main.id = 'wt-chain-bar-main';
+            main.style.cssText = 'display:inline-block;';
+            if (!document.getElementById('wt-chain-wiggle-style')) {
+                const st = document.createElement('style');
+                st.id = 'wt-chain-wiggle-style';
+                st.textContent = '@keyframes wt-chain-wiggle { 0%,100% { transform: translateX(0) rotate(0); } 25% { transform: translateX(-2px) rotate(-3deg); } 75% { transform: translateX(2px) rotate(3deg); } } .wt-chain-wiggle { animation: wt-chain-wiggle 0.35s ease-in-out infinite; }';
+                document.head.appendChild(st);
+            }
             bar.appendChild(main);
             if (chainBarPos) { bar.style.left = chainBarPos.x + 'px'; bar.style.top = chainBarPos.y + 'px'; bar.style.transform = 'none'; }
             bar.addEventListener('pointerdown', (e) => {
@@ -5633,14 +5640,17 @@ function targetRowHtml(t, estRespect) {
             const s = lastAlertSnapshot;
             if (!s) { main.textContent = '⛓️ --'; main.style.color = '#fff'; return; }
             const fmt = secs => Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
-            const elapsed = (Date.now() - s.fetchedAtMs) / 1000;
-            if (s.chainOnCooldown) {
-                main.textContent = '⛓️ ' + s.chainCount + ' · cooldown ' + fmt(Math.max(0, Math.round(s.chainCooldownAtFetch - elapsed)));
+            const now = nowServerMs();
+            main.classList.remove('wt-chain-wiggle');
+            if (s.chainCooldownEndMs > now) {
+                main.textContent = '⛓️ ' + s.chainCount + ' · cooldown ' + fmt(Math.ceil((s.chainCooldownEndMs - now) / 1000));
                 main.style.color = '#FF9800';
-            } else if (s.chainTimeoutAtFetch > 0) {
-                const left = Math.max(0, Math.round(s.chainTimeoutAtFetch - elapsed));
+            } else if (s.chainExpiryMs > now) {
+                const left = Math.ceil((s.chainExpiryMs - now) / 1000);
                 main.textContent = '⛓️ ' + s.chainCount + ' · ' + fmt(left);
-                main.style.color = left <= 60 ? '#f44336' : '#4CAF50';
+                if (left <= 60) { main.style.color = '#f44336'; main.classList.add('wt-chain-wiggle'); }
+                else if (left <= 90) main.style.color = '#FFEB3B';
+                else main.style.color = '#4CAF50';
             } else {
                 main.textContent = '⛓️ ' + (s.chainCount || 'no chain');
                 main.style.color = '#fff';
@@ -5761,7 +5771,8 @@ function targetRowHtml(t, estRespect) {
                     chainTimeoutAtFetch: data.chain ? (data.chain.timeout || 0) : 0,
                     chainCount: data.chain ? (data.chain.current || 0) : 0,
                     chainOnCooldown: data.chain ? (data.chain.cooldown || 0) > 0 : false,
-                    chainCooldownAtFetch: data.chain ? (data.chain.cooldown || 0) : 0,
+                    chainExpiryMs: data.chain && data.chain.timeout > 0 ? ((data.chain.server_time ? data.chain.server_time * 1000 : nowServerMs()) + data.chain.timeout * 1000) : 0,
+                    chainCooldownEndMs: data.chain && data.chain.cooldown > 0 ? ((data.chain.server_time ? data.chain.server_time * 1000 : nowServerMs()) + data.chain.cooldown * 1000) : 0,
                     fetchedAtMs: Date.now()
                 };
 
