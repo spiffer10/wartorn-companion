@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.92
+// @version      3.93
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.92';
+    const COMPANION_VERSION_FALLBACK = '3.93';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4369,13 +4369,17 @@
                 radioVolumeAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
                 const source = radioVolumeAudioCtx.createMediaElementSource(audio);
                 radioVolumeGain = radioVolumeAudioCtx.createGain();
-                radioVolumeGain.gain.value = audio.volume;
+                radioVolumeGain.gain.value = safeGmGet('wt_radio_volume', 80) / 100;
                 audio.volume = 1;
                 source.connect(radioVolumeGain);
                 radioVolumeGain.connect(radioVolumeAudioCtx.destination);
                 if (radioVolumeAudioCtx.state === 'suspended') radioVolumeAudioCtx.resume();
             } catch (e) { radioVolumeGain = null; }
             return radioVolumeGain;
+        }
+        function primeRadioVolumeGraph() {
+            ensureRadioVolumeGain();
+            if (radioVolumeAudioCtx && radioVolumeAudioCtx.state === 'suspended') radioVolumeAudioCtx.resume().catch(() => {});
         }
         // v01 is 0-1.
         function setRadioVolume(v01) {
@@ -4930,6 +4934,9 @@
                         // stream should always resume at the current live
                         // position, not mid-playback from whenever it was
                         // paused.
+                        // iOS only lets an AudioContext start from a real tap - slider 'input'
+                        // events don't count - so the volume graph is built and resumed here.
+                        if (wtIsIOS()) primeRadioVolumeGraph();
                         reconnectRadioSrc(audio);
                         audio.load();
                         audio.muted = false;
@@ -4941,6 +4948,7 @@
                 }
             });
             const volumeSlider = document.getElementById('wt-radio-volume');
+            if (wtIsIOS()) ['pointerdown', 'touchstart'].forEach(ev => volumeSlider.addEventListener(ev, primeRadioVolumeGraph, { passive: true }));
             volumeSlider.addEventListener('input', (e) => {
                 const v = parseInt(e.target.value, 10);
                 setRadioVolume(v / 100);
