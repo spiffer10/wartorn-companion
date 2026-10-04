@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.91
+// @version      3.92
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.91';
+    const COMPANION_VERSION_FALLBACK = '3.92';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1513,10 +1513,13 @@
         // favorites at all. Rides getPanelData's own 20s cache like every
         // other panel data source, so this doesn't add its own extra polling.
         let companionFavorites = [];
+        let companionFavoritesFetchedAt = 0;
         async function refreshCompanionFavorites() {
+            if (Date.now() - companionFavoritesFetchedAt < 10000) return;
             try {
-                const data = await getPanelData('favorites', 'favorites');
+                const data = await fetchFromWartorn('favorites');
                 companionFavorites = (data && Array.isArray(data.favorites)) ? data.favorites.map(Number) : [];
+                companionFavoritesFetchedAt = Date.now();
             } catch (e) {}
         }
         function isFavorited(id) {
@@ -1926,7 +1929,7 @@
             const res = await postToWartorn('favorites', { playerId: pid, favorite }).catch(() => null);
             if (!res || res.status >= 300 || !Array.isArray(res.data.favorites)) return;
             companionFavorites = res.data.favorites.map(Number);
-            delete panelCache['favorites'];
+            companionFavoritesFetchedAt = 0;
             renderTargetsPanel();
         });
         // On-demand hospital check for a target we hit - one Torn status read, never on load.
@@ -1954,7 +1957,7 @@
                 // includes the FF value so changing it in Settings doesn't
                 // return a stale result cached under the old value.
                 // Re-read every so often so a change made on the dashboard shows up here without a reload.
-                if (!companionChainSettings.loaded || Date.now() - companionChainSettings.fetchedAt > 20000) await refreshCompanionChainSettings();
+                if (!companionChainSettings.loaded || Date.now() - companionChainSettings.fetchedAt > 10000) await refreshCompanionChainSettings();
                 const cts = companionChainSettings.chainTargetSettings || {};
                 const ff = parseFloat(chainFfSetting) || 3.0;
                 const endpoint = cts.custom ? 'targets?' + companionChainQuery(cts) : (ff === 3.0 ? 'targets?limit=30&preset=respect' : `targets?limit=30&minff=${ff}&maxff=${ff}&inactive=1`);
