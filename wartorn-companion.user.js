@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.103
+// @version      3.104
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.103';
+    const COMPANION_VERSION_FALLBACK = '3.104';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1564,6 +1564,7 @@
         let flightSoundEnabled = safeGmGet('wt_flight_sound', false);
         let chainSoundEnabled = safeGmGet('wt_chain_sound', false);
         let chainHitsSirenEnabled = safeGmGet('wt_chain_hits_siren', false);
+        let chainWarnSecs = safeGmGet('wt_chain_warn_secs', 120);
         // Static chrome (border/shadow/font/colors/scrollbar) - identical
         // for every window, set once at creation and never touched again.
         // Geometry (top/left/width/height/z-index) is computed separately
@@ -2457,6 +2458,9 @@ function targetRowHtml(t, estRespect) {
                             <input type="checkbox" id="wt-set-chainsound" ${chainSoundEnabled ? 'checked' : ''} style="cursor:pointer;">
                             ⛓️ Chain warning sound
                         </label>
+                        <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em;">
+                            Warn at <input type="number" id="wt-set-chainwarn" min="30" max="300" step="10" value="${chainWarnSecs}" style="width:70px; background:#0b0c10; border:1px solid #444; color:#fff; padding:3px 6px; border-radius:3px;"> seconds left
+                        </label>
                         <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
                             <input type="checkbox" id="wt-set-chainhitssiren" ${chainHitsSirenEnabled ? 'checked' : ''} style="cursor:pointer;">
                             🚨 Chain Hits siren (whoop whoop)
@@ -2528,6 +2532,11 @@ function targetRowHtml(t, estRespect) {
                 chainSoundEnabled = e.target.checked;
                 safeGmSet('wt_chain_sound', chainSoundEnabled);
                 if (chainSoundEnabled) unlockAudioContext();
+            });
+            document.getElementById('wt-set-chainwarn').addEventListener('change', (e) => {
+                chainWarnSecs = Math.min(300, Math.max(30, parseInt(e.target.value, 10) || 120));
+                e.target.value = chainWarnSecs;
+                safeGmSet('wt_chain_warn_secs', chainWarnSecs);
             });
             document.getElementById('wt-set-chainhitssiren').addEventListener('change', (e) => {
                 chainHitsSirenEnabled = e.target.checked;
@@ -5688,6 +5697,14 @@ function targetRowHtml(t, estRespect) {
             }
         }
         setInterval(renderChainBar, 1000);
+        function currentChainSecsLeft() {
+            const side = readSidebarChain();
+            if (side) return side.secs;
+            const s = lastAlertSnapshot;
+            if (!s || !(s.chainExpiryMs > 0)) return null;
+            const left = Math.ceil((s.chainExpiryMs - nowServerMs()) / 1000);
+            return left > 0 ? left : null;
+        }
 
         // Reads Torn's own self-status straight off the page
         // (window.topBannerInitData - a real JS object Torn embeds inline on
@@ -5897,17 +5914,13 @@ function targetRowHtml(t, estRespect) {
             }
 
             const s = lastAlertSnapshot;
-            if (s && chainSoundEnabled && s.chainTimeoutAtFetch > 0 && !s.chainOnCooldown && s.chainCount >= 10) {
-                // chain.timeout is a plain "seconds remaining as of when we
-                // fetched it" duration, not an absolute timestamp, so this
-                // one DOES need elapsed-time correction.
-                const elapsedSecs = (Date.now() - s.fetchedAtMs) / 1000;
-                const chainSecsNow = s.chainTimeoutAtFetch - elapsedSecs;
-                if (chainSecsNow > 0 && chainSecsNow <= 120) {
+            if (chainSoundEnabled && s && s.chainCount >= 10 && !s.chainOnCooldown) {
+                const left = currentChainSecsLeft();
+                if (left !== null && left > 0 && left <= chainWarnSecs) {
                     const now = Date.now();
                     if (now - lastChainBeepTime >= 4000) {
                         lastChainBeepTime = now;
-                        playChainBeep(chainSecsNow <= 90);
+                        playChainBeep(left <= chainWarnSecs * 0.75);
                     }
                 }
             }
