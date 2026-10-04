@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.83
+// @version      3.84
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.83';
+    const COMPANION_VERSION_FALLBACK = '3.84';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1766,12 +1766,12 @@
 
         // Chain Targets filter settings - shared with the dashboard (same account
         // settings), so a change on either side shows up on the other.
-        let companionChainSettings = { loaded: false, chainTargetSettings: {}, hideFaction: false, hideAbroad: false };
+        let companionChainSettings = { loaded: false, fetchedAt: 0, chainTargetSettings: {}, hideFaction: false, hideAbroad: false };
         const companionHospChecks = {};
         async function refreshCompanionChainSettings() {
             try {
                 const d = await fetchFromWartorn('chain-settings');
-                companionChainSettings = { loaded: true, chainTargetSettings: d.chainTargetSettings || {}, hideFaction: !!d.hideFaction, hideAbroad: !!d.hideAbroad };
+                companionChainSettings = { loaded: true, fetchedAt: Date.now(), chainTargetSettings: d.chainTargetSettings || {}, hideFaction: !!d.hideFaction, hideAbroad: !!d.hideAbroad };
             } catch (e) {}
         }
         // Same parameters the dashboard's buildChainTargetQuery sends.
@@ -1871,7 +1871,7 @@
             const res = await postToWartorn('chain-settings', { chainTargetSettings: cts, hideFaction, hideAbroad }).catch(() => null);
             btn.disabled = false;
             if (!res || res.status >= 300) return;
-            companionChainSettings = { loaded: true, chainTargetSettings: cts, hideFaction, hideAbroad };
+            companionChainSettings = { loaded: true, fetchedAt: Date.now(), chainTargetSettings: cts, hideFaction, hideAbroad };
             Object.keys(panelCache).filter(k => k.startsWith('targets_')).forEach(k => delete panelCache[k]);
             form.style.display = 'none';
             renderTargetsPanel();
@@ -1900,7 +1900,8 @@
                 // anything else is a real min/max FF query. Cache key
                 // includes the FF value so changing it in Settings doesn't
                 // return a stale result cached under the old value.
-                if (!companionChainSettings.loaded) await refreshCompanionChainSettings();
+                // Re-read every so often so a change made on the dashboard shows up here without a reload.
+                if (!companionChainSettings.loaded || Date.now() - companionChainSettings.fetchedAt > 20000) await refreshCompanionChainSettings();
                 const cts = companionChainSettings.chainTargetSettings || {};
                 const ff = parseFloat(chainFfSetting) || 3.0;
                 const endpoint = cts.custom ? 'targets?' + companionChainQuery(cts) : (ff === 3.0 ? 'targets?limit=30&preset=respect' : `targets?limit=30&minff=${ff}&maxff=${ff}&inactive=1`);
