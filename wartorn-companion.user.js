@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.90
+// @version      3.91
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.90';
+    const COMPANION_VERSION_FALLBACK = '3.91';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1812,6 +1812,7 @@
             const attack = canAttack
                 ? '<span class="wt-attack-btn" data-attack-id="' + t.player_id + '" style="display:inline-flex; align-items:center; background:linear-gradient(to bottom, #4CAF50, #2E7D32); color:#fff; border:1px solid #1B5E20; border-radius:2px; padding:4px 8px; font-size:0.8em; font-weight:bold; text-transform:uppercase; cursor:pointer; white-space:nowrap;">⚔️ Attack</span>'
                 : '';
+            const star = isFavorited(t.player_id) ? '⭐' : '☆';
             return '<div style="display:flex; justify-content:space-between; align-items:stretch; gap:10px; padding:6px 0; border-bottom:1px solid #1f2229;">'
                 + '<div style="display:flex; align-items:center; gap:8px; flex:1; min-width:0;">'
                 + (t.online_status !== undefined ? onlineDotHtml(t.online_status) : '')
@@ -1827,6 +1828,7 @@
                 + '<div style="font-size:0.8em; margin-top:2px;">' + targetStatusHtml(t) + '</div>'
                 + '</div></div>'
                 + '<div style="display:flex; align-items:stretch; gap:4px;">'
+                + '<span class="wt-fav-btn" data-pid="' + t.player_id + '" title="Favorite" style="display:inline-flex; align-items:center; padding:0 6px; font-size:1.05em; cursor:pointer;">' + star + '</span>'
                 + attack
                 + '</div></div>';
         }
@@ -1915,6 +1917,18 @@
             form.style.display = 'none';
             renderTargetsPanel();
         }
+        // Favorite toggle - same stored list as the dashboard's star.
+        document.addEventListener('click', async (e) => {
+            const el = e.target.closest && e.target.closest('.wt-fav-btn');
+            if (!el) return;
+            const pid = Number(el.dataset.pid);
+            const favorite = !isFavorited(pid);
+            const res = await postToWartorn('favorites', { playerId: pid, favorite }).catch(() => null);
+            if (!res || res.status >= 300 || !Array.isArray(res.data.favorites)) return;
+            companionFavorites = res.data.favorites.map(Number);
+            delete panelCache['favorites'];
+            renderTargetsPanel();
+        });
         // On-demand hospital check for a target we hit - one Torn status read, never on load.
         document.addEventListener('click', async (e) => {
             const el = e.target.closest && e.target.closest('.wt-hosp-check');
