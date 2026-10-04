@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.99
+// @version      3.100
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.99';
+    const COMPANION_VERSION_FALLBACK = '3.100';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1558,6 +1558,7 @@
         let fontSizeSetting = safeGmGet('wt_font_size', 14);
         let opacitySetting = safeGmGet('wt_panel_opacity', 0.9);
         let chainFfSetting = safeGmGet('wt_chain_ff', 3.0);
+        let chainBarEnabled = safeGmGet('wt_show_chain_bar', false);
         // Sound alerts default OFF - opt-in, since audio surprising someone
         // mid-browsing is worse than them having to turn it on once.
         let flightSoundEnabled = safeGmGet('wt_flight_sound', false);
@@ -1874,6 +1875,13 @@ function targetRowHtml(t, estRespect) {
         + '<div style="text-align:center; font-size:0.7em; white-space:nowrap; min-height:1em;">' + caption + '</div></div>'
         + '</div></div>';
 }
+        // Target FF lives on the Chain Targets toolbar as a quick adjuster.
+        function adjustTargetFf(delta) {
+            const next = Math.min(10, Math.max(1, Math.round(((parseFloat(chainFfSetting) || 3.0) + delta) * 10) / 10));
+            chainFfSetting = next;
+            safeGmSet('wt_chain_ff', next);
+            renderTargetsPanel();
+        }
         // Filter button and settings form live above the body, outside what each
         // render replaces, so opening them isn't undone by the next refresh.
         function ensureTargetsSettingsUI(body) {
@@ -1882,7 +1890,7 @@ function targetRowHtml(t, estRespect) {
             const bar = document.createElement('div');
             bar.id = 'wt-targets-toolbar';
             bar.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:4px 8px; border-bottom:1px solid #333;';
-            bar.innerHTML = '<span id="wt-targets-ff" style="color:#888; font-size:0.8em;"></span><span id="wt-targets-gear" title="Target filters" style="cursor:pointer; color:#ccc; font-size:0.85em;">⚙️ Filters</span>';
+            bar.innerHTML = '<span style="display:flex; align-items:center; gap:4px;"><button id="wt-ff-minus" style="background:#252525; border:1px solid #555; color:#ccc; border-radius:3px; padding:0 6px; cursor:pointer;">−</button><span id="wt-targets-ff" style="color:#ccc; font-size:0.8em; min-width:84px; text-align:center;"></span><button id="wt-ff-plus" style="background:#252525; border:1px solid #555; color:#ccc; border-radius:3px; padding:0 6px; cursor:pointer;">+</button></span><span id="wt-targets-gear" title="Target filters" style="cursor:pointer; color:#ccc; font-size:0.85em;">⚙️ Filters</span>';
             const form = document.createElement('div');
             form.id = 'wt-targets-settings';
             form.style.cssText = 'display:none; padding:8px; border-bottom:1px solid #333; font-size:0.8em; color:#ccc;';
@@ -1907,6 +1915,8 @@ function targetRowHtml(t, estRespect) {
                 if (opening) loadTargetsSettingsForm(form);
             });
             form.querySelector('#wt-tgs-save').addEventListener('click', () => saveTargetsSettings(form));
+            bar.querySelector('#wt-ff-minus').addEventListener('click', () => adjustTargetFf(-0.1));
+            bar.querySelector('#wt-ff-plus').addEventListener('click', () => adjustTargetFf(0.1));
         }
         function loadTargetsSettingsForm(form) {
             const cts = companionChainSettings.chainTargetSettings || {};
@@ -2010,7 +2020,7 @@ function targetRowHtml(t, estRespect) {
                 // dashboard puts first further down this much smaller panel.
                 ensureTargetsSettingsUI(body);
                 const ffLabel = document.getElementById('wt-targets-ff');
-                if (ffLabel) ffLabel.textContent = cts.custom ? 'Custom filters' : 'Target FF ' + (parseFloat(chainFfSetting) || 3.0).toFixed(2);
+                if (ffLabel) ffLabel.textContent = (cts.custom ? 'Custom · ' : '') + (parseFloat(chainFfSetting) || 3.0).toFixed(2);
                 const visibleTargets = data.targets.filter(t => !(companionChainSettings.hideFaction && t.has_faction) && !(companionChainSettings.hideAbroad && (t.state === 'Traveling' || t.state === 'Abroad')));
                 if (!visibleTargets.length) { body.innerHTML = '<div style="color:#888;">No targets match your filters.</div>'; return; }
                 const sortedTargets = [...visibleTargets].sort((a, b) => {
@@ -2406,10 +2416,6 @@ function targetRowHtml(t, estRespect) {
                     ${slider('wt-set-font', 'Font Size', fontSizeSetting, 10, 18, 1, 'px')}
                     ${slider('wt-set-opacity', 'Opacity', Math.round(opacitySetting * 100), 50, 100, 5, '%')}
 
-                    <label style="display:flex; flex-direction:column; gap:3px; color:#aaa; font-size:0.75em;">
-                        Chain Target FF (exact value, e.g. 3.0)
-                        <input type="number" id="wt-set-chainff" min="1" max="10" step="0.1" value="${chainFfSetting}" style="background:#0b0c10; border:1px solid #444; color:#fff; padding:5px 8px; border-radius:3px;">
-                    </label>
 
                     <div style="display:flex; flex-direction:column; gap:8px; border-top:1px solid #333; padding-top:10px;">
                         <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
@@ -2449,6 +2455,10 @@ function targetRowHtml(t, estRespect) {
                             🚨 Chain Hits siren (whoop whoop)
                             <span id="wt-set-chainhitssiren-test" style="cursor:pointer; color:#00e5ff; font-size:0.85em; margin-left:auto; text-decoration:underline;">Test</span>
                         </label>
+                        <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
+                            <input type="checkbox" id="wt-set-chainbar" ${chainBarEnabled ? 'checked' : ''} style="cursor:pointer;">
+                            ⛓️ Floating chain timer bar
+                        </label>
                     </div>
 
                     <div style="display:flex; flex-direction:column; gap:6px; border-top:1px solid #333; padding-top:10px;">
@@ -2482,9 +2492,10 @@ function targetRowHtml(t, estRespect) {
             bindSlider('wt-set-font', 'wt_font_size', (v) => fontSizeSetting = v, 'px', false);
             bindSlider('wt-set-opacity', 'wt_panel_opacity', (v) => opacitySetting = v, '%', true);
 
-            document.getElementById('wt-set-chainff').addEventListener('change', (e) => {
-                chainFfSetting = parseFloat(e.target.value) || 3.0;
-                safeGmSet('wt_chain_ff', chainFfSetting);
+            document.getElementById('wt-set-chainbar').addEventListener('change', (e) => {
+                chainBarEnabled = e.target.checked;
+                safeGmSet('wt_show_chain_bar', chainBarEnabled);
+                renderChainBar();
             });
             document.getElementById('wt-set-showfaction').addEventListener('change', (e) => {
                 showFactionStatusPanel = e.target.checked;
@@ -5582,7 +5593,32 @@ function targetRowHtml(t, estRespect) {
         // recomputes against the last fetched snapshot every 1s using pure
         // elapsed-time math, so it catches the exact second a threshold is
         // crossed without needing a fresh network round-trip for it.
-        let lastAlertSnapshot = null; // { amAbroad, chainTimeoutAtFetch, chainCount, chainOnCooldown, fetchedAtMs }
+        let lastAlertSnapshot = null; // { amAbroad, chainTimeoutAtFetch, chainCount, chainOnCooldown, chainCooldownAtFetch, fetchedAtMs }
+        // Small floating bar with the chain count and its timer (or cooldown). Click-through,
+        // so it never blocks Torn underneath. Toggled in the chain options.
+        function renderChainBar() {
+            let bar = document.getElementById('wt-chain-bar');
+            if (!chainBarEnabled) { if (bar) bar.remove(); return; }
+            if (!bar) {
+                bar = document.createElement('div');
+                bar.id = 'wt-chain-bar';
+                bar.style.cssText = 'position:fixed; top:6px; left:50%; transform:translateX(-50%); z-index:9999998; pointer-events:none; background:rgba(21,23,28,0.92); border:1px solid #3a3f4b; border-radius:6px; padding:3px 10px; font-family:monospace; font-size:12px; color:#fff; white-space:nowrap; box-shadow:0 2px 8px rgba(0,0,0,0.5);';
+                document.body.appendChild(bar);
+            }
+            const s = lastAlertSnapshot;
+            if (!s) { bar.textContent = '⛓️ --'; return; }
+            const fmt = secs => Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+            const elapsed = (Date.now() - s.fetchedAtMs) / 1000;
+            if (s.chainOnCooldown) {
+                bar.innerHTML = '⛓️ ' + s.chainCount + ' · <span style="color:#FF9800;">cooldown ' + fmt(Math.max(0, Math.round(s.chainCooldownAtFetch - elapsed))) + '</span>';
+            } else if (s.chainTimeoutAtFetch > 0) {
+                const left = Math.max(0, Math.round(s.chainTimeoutAtFetch - elapsed));
+                bar.innerHTML = '⛓️ ' + s.chainCount + ' · <span style="color:' + (left <= 60 ? '#f44336' : '#4CAF50') + ';">' + fmt(left) + '</span>';
+            } else {
+                bar.textContent = '⛓️ ' + (s.chainCount || 'no chain');
+            }
+        }
+        setInterval(renderChainBar, 1000);
 
         // Reads Torn's own self-status straight off the page
         // (window.topBannerInitData - a real JS object Torn embeds inline on
@@ -5697,6 +5733,7 @@ function targetRowHtml(t, estRespect) {
                     chainTimeoutAtFetch: data.chain ? (data.chain.timeout || 0) : 0,
                     chainCount: data.chain ? (data.chain.current || 0) : 0,
                     chainOnCooldown: data.chain ? (data.chain.cooldown || 0) > 0 : false,
+                    chainCooldownAtFetch: data.chain ? (data.chain.cooldown || 0) : 0,
                     fetchedAtMs: Date.now()
                 };
 
