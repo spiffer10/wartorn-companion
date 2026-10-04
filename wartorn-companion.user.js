@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.106
+// @version      3.107
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.106';
+    const COMPANION_VERSION_FALLBACK = '3.107';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1110,6 +1110,7 @@
                 </div>
                 <canvas id="wt-item-modal-chart" width="560" height="260" style="width:100%; height:260px; background:#0b0c10; border-radius:6px; display:block; cursor:crosshair;"></canvas>
                 <div style="color:#555; font-size:0.7em; margin-top:6px;">Last 48h - stock quantity over time</div>
+                <div id="wt-item-modal-restock" style="color:#00e5ff; font-size:0.85em; margin-top:8px;">Checking restock estimate...</div>
                 <div style="display:flex; flex-direction:column; gap:10px; margin-top:16px; border-top:1px solid #333; padding-top:14px;">
                     <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
                         <input type="checkbox" id="wt-item-modal-ignore" style="cursor:pointer;">
@@ -1123,6 +1124,16 @@
         document.getElementById('wt-item-modal-close').addEventListener('click', close);
         overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
+        // Same wording as the dashboard's item modal (wfRestockLine in flight-planner.js).
+        function restockLineText(restockAt) {
+            if (!restockAt) return 'No restock estimate yet';
+            const ms = restockAt - Date.now();
+            if (ms <= 0) return 'Est. restock: any moment';
+            const when = new Date(restockAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+            return 'Est. next restock: ' + when + ' (in ' + Math.floor(ms / 3600000) + 'h ' + Math.floor((ms % 3600000) / 60000) + 'm)';
+        }
+        const setRestockText = (t) => { const el = document.getElementById('wt-item-modal-restock'); if (el) el.textContent = t; };
+
         GM_xmlhttpRequest({
             method: 'GET',
             url: `${WARTORN_HOST}/api/public/stock-history?country=${encodeURIComponent(countryName)}&item=${itemId}&hours=48`,
@@ -1132,9 +1143,10 @@
                 try { data = JSON.parse(res.responseText); } catch (e) {}
                 const canvas = document.getElementById('wt-item-modal-chart');
                 if (canvas) renderHistoryChart(canvas, data && data.samples);
+                setRestockText(data ? restockLineText(data.restockAt) : 'Restock estimate unavailable');
             },
-            onerror: () => { const c = document.getElementById('wt-item-modal-chart'); if (c) renderHistoryChart(c, null); },
-            ontimeout: () => { const c = document.getElementById('wt-item-modal-chart'); if (c) renderHistoryChart(c, null); }
+            onerror: () => { const c = document.getElementById('wt-item-modal-chart'); if (c) renderHistoryChart(c, null); setRestockText('Restock estimate unavailable'); },
+            ontimeout: () => { const c = document.getElementById('wt-item-modal-chart'); if (c) renderHistoryChart(c, null); setRestockText('Restock estimate unavailable'); }
         });
 
         // "Ignore" checkbox reflects/toggles the SAME hidden-items list the
