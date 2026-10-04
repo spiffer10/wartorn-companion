@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.102
+// @version      3.103
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.102';
+    const COMPANION_VERSION_FALLBACK = '3.103';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -5632,11 +5632,42 @@ function targetRowHtml(t, estRespect) {
             document.body.appendChild(bar);
             return bar;
         }
+        // Torn's own chain timer in the sidebar (class names carry a build suffix, so match
+        // on the stable part). Null when it isn't on the page.
+        function readSidebarChain() {
+            try {
+                const t = document.querySelector('[class*="chain-bar"] [class*="bar-timeleft"]');
+                if (!t) return null;
+                const parts = t.textContent.trim().split(':').map(n => parseInt(n, 10));
+                if (parts.length < 2 || parts.length > 3 || parts.some(isNaN)) return null;
+                const secs = parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : parts[0] * 60 + parts[1];
+                const v = document.querySelector('[class*="chain-bar"] [class*="bar-value"]');
+                const count = v ? parseInt(v.textContent, 10) : NaN;
+                return { secs, count: isNaN(count) ? null : count };
+            } catch (e) { return null; }
+        }
+        // Reports the in-game timer to the backend (throttled), so the server's own chain
+        // timer agrees with what Torn shows.
+        let lastChainReportAt = 0;
+        function reportSidebarChain(side) {
+            if (Date.now() - lastChainReportAt < 10000) return;
+            lastChainReportAt = Date.now();
+            sendToWartorn('chain-timer', { secondsLeft: side.secs, chainCount: side.count || 0 });
+        }
+        setInterval(() => { const side = readSidebarChain(); if (side) reportSidebarChain(side); }, 1000);
         function renderChainBar() {
             let bar = document.getElementById('wt-chain-bar');
             if (!chainBarEnabled) { if (bar) bar.remove(); return; }
             if (!bar) bar = createChainBar();
             const main = document.getElementById('wt-chain-bar-main');
+            const side = readSidebarChain();
+            if (side) {
+                const count = side.count != null ? side.count : (lastAlertSnapshot ? lastAlertSnapshot.chainCount : '');
+                main.classList.toggle('wt-chain-wiggle', side.secs <= 60);
+                main.textContent = '⛓️ ' + count + ' · ' + Math.floor(side.secs / 60) + ':' + String(side.secs % 60).padStart(2, '0');
+                main.style.color = side.secs <= 60 ? '#f44336' : (side.secs <= 90 ? '#FFEB3B' : '#4CAF50');
+                return;
+            }
             const s = lastAlertSnapshot;
             if (!s) { main.textContent = '⛓️ --'; main.style.color = '#fff'; return; }
             const fmt = secs => Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
