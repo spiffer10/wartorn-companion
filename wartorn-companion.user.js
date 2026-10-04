@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.98
+// @version      3.99
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.98';
+    const COMPANION_VERSION_FALLBACK = '3.99';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1772,6 +1772,7 @@
         // settings), so a change on either side shows up on the other.
         let companionChainSettings = { loaded: false, fetchedAt: 0, chainTargetSettings: {}, hideFaction: false, hideAbroad: false };
         const companionHospChecks = {};
+        let targetsSnapshotSeq = 0;
         async function refreshCompanionChainSettings() {
             try {
                 const d = await fetchFromWartorn('chain-settings');
@@ -1806,7 +1807,22 @@ function targetStatusInfo(t) {
     if (!st || st === 'Okay' || (st === 'Hospital' && left <= 0)) return { kind: 'okay', left: 0 };
     const labels = { Hospital: 'HOSP', Jail: 'JAIL', Federal: 'FED', Traveling: 'TRAVEL', Abroad: 'ABROAD' };
     const icons = { Hospital: '🏥', Jail: '🔒', Federal: '🏛️', Traveling: '✈️', Abroad: '✈️' };
-    return { kind: 'blocked', left, icon: icons[st] || '⛔', label: labels[st] || String(st).toUpperCase().slice(0, 6), color: st === 'Hospital' ? '#c62828' : '#616161' };
+    return { kind: 'blocked', left, until, icon: icons[st] || '⛔', label: labels[st] || String(st).toUpperCase().slice(0, 6), color: st === 'Hospital' ? '#c62828' : '#616161' };
+}
+// Once a second: update the countdown text in place. Rows are rebuilt only when
+// something real changes, so the list doesn't jump while a timer runs.
+function tickTargetTimers() {
+    let expired = false;
+    document.querySelectorAll('.wt-hosp-live').forEach(el => {
+        const left = secsUntil(parseInt(el.dataset.until, 10));
+        if (!left) expired = true;
+        else el.textContent = hospRemainingLabel(left);
+    });
+    if (expired) {
+        const body = document.getElementById('wt-panel-body-targets');
+        if (body) body.dataset.wtKey = '';
+        renderTargetsPanel();
+    }
 }
 function hospCheckCaption(t) {
     const hitAgo = t.last_attack ? (Date.now() / 1000 - t.last_attack) : null;
@@ -1835,7 +1851,7 @@ function targetRowHtml(t, estRespect) {
         button = '<span class="wt-attack-btn" data-attack-id="' + t.player_id + '" style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.15; background:linear-gradient(to bottom, #4CAF50, #2E7D32); color:#fff; border:1px solid #1B5E20; border-radius:2px; padding:4px 2px; font-weight:bold; text-transform:uppercase; cursor:pointer; white-space:nowrap;"><span style="font-size:1.2em;">⚔️</span><span style="font-size:0.7em;">Attack</span></span>';
         caption = hospCheckCaption(t);
     } else {
-        const timer = status.left > 0 ? '<span style="font-family:monospace; font-size:0.75em; font-weight:bold;">' + hospRemainingLabel(status.left) + '</span>' : '';
+        const timer = status.left > 0 ? '<span class="wt-hosp-live" data-until="' + status.until + '" style="font-family:monospace; font-size:0.75em; font-weight:bold;">' + hospRemainingLabel(status.left) + '</span>' : '';
         button = '<span style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.15; background:' + status.color + '; color:#fff; border:1px solid ' + status.color + '; border-radius:2px; padding:4px 2px; font-weight:bold; text-transform:uppercase; white-space:nowrap;"><span style="font-size:1.2em;">' + status.icon + '</span><span style="font-size:0.7em;">' + status.label + '</span>' + timer + '</span>';
         caption = '';
     }
@@ -2008,6 +2024,11 @@ function targetRowHtml(t, estRespect) {
                 // and by the target's level (fit to observed hits).
                 const warPanel = await getPanelData('war', 'war-status').catch(() => null);
                 const chainMod = (warPanel && warPanel.chain && warPanel.chain.modifier) || 1.0;
+                const renderKey = [data._wtId || (data._wtId = ++targetsSnapshotSeq), companionFavorites.join(','),
+                    Object.keys(companionHospChecks).map(k => k + ':' + companionHospChecks[k].state + ':' + companionHospChecks[k].until).join(','),
+                    companionChainSettings.hideFaction, companionChainSettings.hideAbroad, cts.custom, ff, chainMod].join('|');
+                if (body.dataset.wtKey === renderKey && body.children.length) { tickTargetTimers(); return; }
+                body.dataset.wtKey = renderKey;
                 const keepScroll = body.scrollTop;
                 body.innerHTML = sortedTargets.map(t => {
                     const estRespect = ((0.7 + 1.36 * (t.fair_fight || 1.0)) * chainMod * (0.6226 + 0.00321 * (t.level || 25))).toFixed(2);
