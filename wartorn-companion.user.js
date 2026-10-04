@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.82
+// @version      3.83
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.82';
+    const COMPANION_VERSION_FALLBACK = '3.83';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1764,6 +1764,133 @@
             }, 5000);
         }
 
+        // Chain Targets filter settings - shared with the dashboard (same account
+        // settings), so a change on either side shows up on the other.
+        let companionChainSettings = { loaded: false, chainTargetSettings: {}, hideFaction: false, hideAbroad: false };
+        const companionHospChecks = {};
+        async function refreshCompanionChainSettings() {
+            try {
+                const d = await fetchFromWartorn('chain-settings');
+                companionChainSettings = { loaded: true, chainTargetSettings: d.chainTargetSettings || {}, hideFaction: !!d.hideFaction, hideAbroad: !!d.hideAbroad };
+            } catch (e) {}
+        }
+        // Same parameters the dashboard's buildChainTargetQuery sends.
+        function companionChainQuery(s) {
+            const p = new URLSearchParams();
+            const add = (k, v) => { if (v !== null && v !== undefined && !Number.isNaN(v)) p.set(k, v); };
+            add('limit', s.limit ?? 30);
+            add('minlevel', s.minlevel); add('maxlevel', s.maxlevel);
+            add('minff', s.minff); add('maxff', s.maxff);
+            p.set('inactiveonly', s.inactiveonly === false ? 0 : 1);
+            p.set('factionless', s.factionless ? 1 : 0);
+            return p.toString();
+        }
+        // "In hospital for X:XX" - same wording and format as the dashboard.
+        function hospRemainingLabel(secs) {
+            const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), sec = secs % 60;
+            const ss = String(sec).padStart(2, '0');
+            return h > 0 ? h + ':' + String(m).padStart(2, '0') + ':' + ss : m + ':' + ss;
+        }
+        function targetStatusHtml(t) {
+            const override = companionHospChecks[String(t.player_id)];
+            const st = override ? override.state : t.state;
+            const until = override ? override.until : t.until;
+            const left = until ? secsUntil(until) : 0;
+            if (st === 'Hospital' && left > 0) return '<span style="color:#FF9800;">In hospital for ' + hospRemainingLabel(left) + '</span>';
+            const tag = abbreviateStatus(st, until, t.desc);
+            let html = '<span style="color:' + tag.color + ';">' + tag.label + '</span>';
+            const hitAgo = t.last_attack ? (Date.now() / 1000 - t.last_attack) : null;
+            if (!override && t.last_attack_result === 'Hospitalized' && hitAgo !== null && hitAgo < 86400) {
+                html += ' <span class="wt-hosp-check" data-pid="' + t.player_id + '" style="color:#00e5ff; text-decoration:underline; cursor:pointer;">check hosp</span>';
+            }
+            return html;
+        }
+        // Filter button and settings form live above the body, outside what each
+        // render replaces, so opening them isn't undone by the next refresh.
+        function ensureTargetsSettingsUI(body) {
+            if (document.getElementById('wt-targets-toolbar')) return;
+            const parent = body.parentElement;
+            const bar = document.createElement('div');
+            bar.id = 'wt-targets-toolbar';
+            bar.style.cssText = 'display:flex; justify-content:flex-end; padding:4px 8px; border-bottom:1px solid #333;';
+            bar.innerHTML = '<span id="wt-targets-gear" title="Target filters" style="cursor:pointer; color:#ccc; font-size:0.85em;">⚙️ Filters</span>';
+            const form = document.createElement('div');
+            form.id = 'wt-targets-settings';
+            form.style.cssText = 'display:none; padding:8px; border-bottom:1px solid #333; font-size:0.8em; color:#ccc;';
+            const field = (id, label, type, extra) => '<label style="display:flex; justify-content:space-between; gap:6px; margin-bottom:4px;">' + label + ' <input id="' + id + '" type="' + type + '" ' + (extra || '') + ' style="width:70px; background:#111; color:#fff; border:1px solid #555; border-radius:4px; padding:2px;"></label>';
+            const check = (id, label) => '<label style="display:flex; align-items:center; gap:6px; margin-bottom:4px;"><input id="' + id + '" type="checkbox"> ' + label + '</label>';
+            form.innerHTML = check('wt-tgs-custom', '<b>Use custom filters</b>')
+                + field('wt-tgs-minlevel', 'Min level', 'number', 'min="1" max="100"')
+                + field('wt-tgs-maxlevel', 'Max level', 'number', 'min="1" max="100"')
+                + field('wt-tgs-minff', 'Min FF', 'number', 'step="0.1" min="1"')
+                + field('wt-tgs-maxff', 'Max FF', 'number', 'step="0.1" min="1"')
+                + field('wt-tgs-limit', 'Limit', 'number', 'min="1" max="50"')
+                + check('wt-tgs-inactive', 'Inactive only')
+                + check('wt-tgs-factionless', 'Factionless only')
+                + check('wt-tgs-hidefaction', 'Hide faction members')
+                + check('wt-tgs-hideabroad', 'Hide abroad')
+                + '<div style="text-align:right; margin-top:6px;"><button id="wt-tgs-save" style="background:#9C27B0; color:#fff; border:none; padding:4px 10px; border-radius:4px; cursor:pointer;">Save &amp; refresh</button></div>';
+            parent.insertBefore(form, body);
+            parent.insertBefore(bar, form);
+            bar.querySelector('#wt-targets-gear').addEventListener('click', () => {
+                const opening = form.style.display === 'none';
+                form.style.display = opening ? 'block' : 'none';
+                if (opening) loadTargetsSettingsForm(form);
+            });
+            form.querySelector('#wt-tgs-save').addEventListener('click', () => saveTargetsSettings(form));
+        }
+        function loadTargetsSettingsForm(form) {
+            const cts = companionChainSettings.chainTargetSettings || {};
+            const q = id => form.querySelector('#' + id);
+            q('wt-tgs-custom').checked = !!cts.custom;
+            q('wt-tgs-minlevel').value = cts.minlevel ?? '';
+            q('wt-tgs-maxlevel').value = cts.maxlevel ?? '';
+            q('wt-tgs-minff').value = cts.minff ?? '';
+            q('wt-tgs-maxff').value = cts.maxff ?? '';
+            q('wt-tgs-limit').value = cts.limit ?? 30;
+            q('wt-tgs-inactive').checked = cts.inactiveonly !== false;
+            q('wt-tgs-factionless').checked = !!cts.factionless;
+            q('wt-tgs-hidefaction').checked = !!companionChainSettings.hideFaction;
+            q('wt-tgs-hideabroad').checked = !!companionChainSettings.hideAbroad;
+        }
+        async function saveTargetsSettings(form) {
+            const q = id => form.querySelector('#' + id);
+            const num = id => { const v = q(id).value; return v === '' ? null : Number(v); };
+            const cts = {
+                custom: q('wt-tgs-custom').checked,
+                minlevel: num('wt-tgs-minlevel'), maxlevel: num('wt-tgs-maxlevel'),
+                minff: num('wt-tgs-minff'), maxff: num('wt-tgs-maxff'),
+                limit: num('wt-tgs-limit'),
+                inactiveonly: q('wt-tgs-inactive').checked,
+                factionless: q('wt-tgs-factionless').checked
+            };
+            const hideFaction = q('wt-tgs-hidefaction').checked;
+            const hideAbroad = q('wt-tgs-hideabroad').checked;
+            const btn = q('wt-tgs-save');
+            btn.disabled = true;
+            const res = await postToWartorn('chain-settings', { chainTargetSettings: cts, hideFaction, hideAbroad }).catch(() => null);
+            btn.disabled = false;
+            if (!res || res.status >= 300) return;
+            companionChainSettings = { loaded: true, chainTargetSettings: cts, hideFaction, hideAbroad };
+            Object.keys(panelCache).filter(k => k.startsWith('targets_')).forEach(k => delete panelCache[k]);
+            form.style.display = 'none';
+            renderTargetsPanel();
+        }
+        // On-demand hospital check for a target we hit - one Torn status read, never on load.
+        document.addEventListener('click', async (e) => {
+            const el = e.target.closest && e.target.closest('.wt-hosp-check');
+            if (!el) return;
+            el.textContent = 'checking...';
+            try {
+                const st = await fetchFromWartorn('chain-target-status/' + el.dataset.pid);
+                companionHospChecks[String(el.dataset.pid)] = { state: st.state, until: st.until };
+            } catch (err) {
+                el.textContent = 'check failed';
+                return;
+            }
+            renderTargetsPanel();
+        });
+
         async function renderTargetsPanel() {
             const body = document.getElementById('wt-panel-body-targets');
             if (!body) return;
@@ -1773,11 +1900,14 @@
                 // anything else is a real min/max FF query. Cache key
                 // includes the FF value so changing it in Settings doesn't
                 // return a stale result cached under the old value.
+                if (!companionChainSettings.loaded) await refreshCompanionChainSettings();
+                const cts = companionChainSettings.chainTargetSettings || {};
                 const ff = parseFloat(chainFfSetting) || 3.0;
-                const endpoint = ff === 3.0 ? 'targets?limit=30&preset=respect' : `targets?limit=30&minff=${ff}&maxff=${ff}&inactive=1`;
+                const endpoint = cts.custom ? 'targets?' + companionChainQuery(cts) : (ff === 3.0 ? 'targets?limit=30&preset=respect' : `targets?limit=30&minff=${ff}&maxff=${ff}&inactive=1`);
+                const cacheKey = cts.custom ? 'targets_custom_' + endpoint : 'targets_' + ff;
                 // FFScouter-backed and can run slow - the default 10s timeout turned
                 // ordinary slow loads into a "network error" for this panel.
-                const data = await getPanelData('targets_' + ff, endpoint, 30000);
+                const data = await getPanelData(cacheKey, endpoint, 30000);
                 // Reaching here means the round trip itself succeeded (even
                 // if the payload turns out to be an error/empty state below) -
                 // see the catch block, which uses this to tell "never loaded
@@ -1796,7 +1926,10 @@
                 // now matched here too instead of showing FFScouter's raw
                 // match order, which often buried whichever targets the
                 // dashboard puts first further down this much smaller panel.
-                const sortedTargets = [...data.targets].sort((a, b) => {
+                ensureTargetsSettingsUI(body);
+                const visibleTargets = data.targets.filter(t => !(companionChainSettings.hideFaction && t.has_faction) && !(companionChainSettings.hideAbroad && (t.state === 'Traveling' || t.state === 'Abroad')));
+                if (!visibleTargets.length) { body.innerHTML = '<div style="color:#888;">No targets match your filters.</div>'; return; }
+                const sortedTargets = [...visibleTargets].sort((a, b) => {
                     const aFav = isFavorited(a.player_id) ? 1 : 0;
                     const bFav = isFavorited(b.player_id) ? 1 : 0;
                     if (aFav !== bFav) return bFav - aFav;
@@ -1804,12 +1937,11 @@
                 });
                 if (wtPressActive) { setTimeout(() => { if (openWindows.has('targets')) renderTargetsPanel(); }, 120); return; }
                 body.innerHTML = sortedTargets.map(t => {
-                    const tag = abbreviateStatus(t.state, t.until, t.desc);
                     const okay = t.state === 'Okay';
                     const name = isFavorited(t.player_id) ? `⭐ ${t.name}` : t.name;
                     return rowHtml(
                         name,
-                        `<span style="color:#888;">Lv ${t.level || 0}</span> · <span style="color:#00e5ff;">FF ${t.fair_fight ? t.fair_fight.toFixed(2) : '-'}</span> · <span style="color:${tag.color};">${tag.label}</span>`,
+                        `<span style="color:#888;">Lv ${t.level || 0}</span> · <span style="color:#00e5ff;">FF ${t.fair_fight ? t.fair_fight.toFixed(2) : '-'}</span> · ${targetStatusHtml(t)}`,
                         okay ? attackButtonHtml(t.player_id) : '',
                         t.online_status,
                         t.player_id
