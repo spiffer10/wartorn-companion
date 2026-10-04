@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.96
+// @version      3.97
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.96';
+    const COMPANION_VERSION_FALLBACK = '3.97';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1805,7 +1805,8 @@ function targetStatusInfo(t) {
     const left = until ? (secsUntil(until) || 0) : 0;
     if (!st || st === 'Okay' || (st === 'Hospital' && left <= 0)) return { kind: 'okay', left: 0 };
     const labels = { Hospital: 'HOSP', Jail: 'JAIL', Federal: 'FED', Traveling: 'TRAVEL', Abroad: 'ABROAD' };
-    return { kind: 'blocked', left, label: labels[st] || String(st).toUpperCase().slice(0, 6), color: st === 'Hospital' ? '#c62828' : '#616161' };
+    const icons = { Hospital: '🏥', Jail: '🔒', Federal: '🏛️', Traveling: '✈️', Abroad: '✈️' };
+    return { kind: 'blocked', left, icon: icons[st] || '⛔', label: labels[st] || String(st).toUpperCase().slice(0, 6), color: st === 'Hospital' ? '#c62828' : '#616161' };
 }
 function hospCheckCaption(t) {
     const hitAgo = t.last_attack ? (Date.now() / 1000 - t.last_attack) : null;
@@ -1831,11 +1832,12 @@ function targetRowHtml(t, estRespect) {
     const status = targetStatusInfo(t);
     let button, caption;
     if (status.kind === 'okay') {
-        button = '<span class="wt-attack-btn" data-attack-id="' + t.player_id + '" style="flex:1; display:flex; align-items:center; justify-content:center; background:linear-gradient(to bottom, #4CAF50, #2E7D32); color:#fff; border:1px solid #1B5E20; border-radius:2px; padding:4px 2px; font-size:0.7em; font-weight:bold; text-transform:uppercase; cursor:pointer; white-space:nowrap;">⚔️ Attack</span>';
+        button = '<span class="wt-attack-btn" data-attack-id="' + t.player_id + '" style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.15; background:linear-gradient(to bottom, #4CAF50, #2E7D32); color:#fff; border:1px solid #1B5E20; border-radius:2px; padding:4px 2px; font-weight:bold; text-transform:uppercase; cursor:pointer; white-space:nowrap;"><span style="font-size:1.2em;">⚔️</span><span style="font-size:0.7em;">Attack</span></span>';
         caption = hospCheckCaption(t);
     } else {
-        button = '<span style="flex:1; display:flex; align-items:center; justify-content:center; background:' + status.color + '; color:#fff; border:1px solid ' + status.color + '; border-radius:2px; padding:4px 2px; font-size:0.7em; font-weight:bold; text-transform:uppercase; white-space:nowrap;">' + status.label + '</span>';
-        caption = status.left > 0 ? '<span style="color:' + status.color + '; font-family:monospace; font-size:0.75em;">' + hospRemainingLabel(status.left) + '</span>' : '';
+        const timer = status.left > 0 ? '<span style="font-family:monospace; font-size:0.75em; font-weight:bold;">' + hospRemainingLabel(status.left) + '</span>' : '';
+        button = '<span style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.15; background:' + status.color + '; color:#fff; border:1px solid ' + status.color + '; border-radius:2px; padding:4px 2px; font-weight:bold; text-transform:uppercase; white-space:nowrap;"><span style="font-size:1.2em;">' + status.icon + '</span><span style="font-size:0.7em;">' + status.label + '</span>' + timer + '</span>';
+        caption = '';
     }
     return '<div style="display:flex; justify-content:space-between; align-items:stretch; gap:10px; padding:6px 0; border-bottom:1px solid #1f2229;">'
         + '<div style="display:flex; align-items:center; gap:8px; flex:1; min-width:0;">'
@@ -1852,7 +1854,7 @@ function targetRowHtml(t, estRespect) {
         + '</div></div>'
         + '<div style="display:flex; align-items:stretch; gap:4px; flex-shrink:0;">'
         + '<span class="wt-fav-btn" data-pid="' + t.player_id + '" title="Favorite" style="display:inline-flex; align-items:center; flex-shrink:0; padding:0 6px; font-size:1.05em; cursor:pointer;">' + star + '</span>'
-        + '<div style="display:flex; flex-direction:column; align-items:stretch; width:56px; flex-shrink:0;">' + button
+        + '<div style="display:flex; flex-direction:column; align-items:stretch; width:60px; flex-shrink:0;">' + button
         + '<div style="text-align:center; font-size:0.7em; white-space:nowrap; min-height:1em;">' + caption + '</div></div>'
         + '</div></div>';
 }
