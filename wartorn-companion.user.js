@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.93
+// @version      3.94
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.93';
+    const COMPANION_VERSION_FALLBACK = '3.94';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1813,7 +1813,7 @@
                 lastHit = '<span style="color:#888; font-style:italic;">No recent attacks</span>';
             }
             const attack = canAttack
-                ? '<span class="wt-attack-btn" data-attack-id="' + t.player_id + '" style="display:inline-flex; align-items:center; background:linear-gradient(to bottom, #4CAF50, #2E7D32); color:#fff; border:1px solid #1B5E20; border-radius:2px; padding:4px 8px; font-size:0.8em; font-weight:bold; text-transform:uppercase; cursor:pointer; white-space:nowrap;">⚔️ Attack</span>'
+                ? '<span class="wt-attack-btn" data-attack-id="' + t.player_id + '" style="display:inline-flex; align-items:center; background:linear-gradient(to bottom, #4CAF50, #2E7D32); color:#fff; border:1px solid #1B5E20; border-radius:2px; padding:4px 4px; font-size:0.75em; font-weight:bold; text-transform:uppercase; cursor:pointer; white-space:nowrap; width:76px; justify-content:center;">⚔️ Attack</span>'
                 : '';
             const star = isFavorited(t.player_id) ? '⭐' : '☆';
             return '<div style="display:flex; justify-content:space-between; align-items:stretch; gap:10px; padding:6px 0; border-bottom:1px solid #1f2229;">'
@@ -1825,8 +1825,8 @@
                 + '<a href="https://www.torn.com/profiles.php?XID=' + t.player_id + '" target="_blank" style="color:inherit; text-decoration:none; font-weight:bold;">' + t.name + '</a>'
                 + '<span style="margin-left:4px; font-size:0.8em; background:#252525; border:1px solid #444; color:#aaa; padding:0 4px; border-radius:3px;">Lv ' + (t.level || 0) + '</span>'
                 + '</div>'
-                + '<div style="font-size:0.85em; margin-top:2px;"><span style="color:#fbbf24; font-weight:bold;">Est: ' + est + '</span>'
-                + '<span style="color:' + ffColor + '; border:1px solid ' + ffColor + '; font-size:0.8em; padding:1px 4px; margin-left:6px; border-radius:3px;">FF: ' + ffText + ' (~' + estRespect + ' rep)</span></div>'
+                + '<div style="font-size:0.85em; margin-top:2px;"><span style="color:#fbbf24; font-weight:bold;">Est: ' + est + '</span></div>'
+                + '<div style="margin-top:2px;"><span style="display:inline-block; color:' + ffColor + '; border:1px solid ' + ffColor + '; font-size:0.8em; padding:1px 4px; border-radius:3px; white-space:nowrap;">FF ' + ffText + ' · ~' + estRespect + ' rep</span></div>'
                 + '<div style="font-size:0.8em; margin-top:3px;">' + lastHit + '</div>'
                 + '<div style="font-size:0.8em; margin-top:2px;">' + targetStatusHtml(t) + '</div>'
                 + '</div></div>'
@@ -1840,7 +1840,7 @@
             const st = override ? override.state : t.state;
             const until = override ? override.until : t.until;
             const left = until ? secsUntil(until) : 0;
-            if (st === 'Hospital' && left > 0) return '<span style="color:#FF9800;">In hospital for ' + hospRemainingLabel(left) + '</span>';
+            if (st === 'Hospital' && left > 0) return '<span style="color:#f44336;">In hospital for ' + hospRemainingLabel(left) + '</span>';
             const tag = abbreviateStatus(st, until, t.desc);
             let html = '<span style="color:' + tag.color + ';">' + tag.label + '</span>';
             const hitAgo = t.last_attack ? (Date.now() / 1000 - t.last_attack) : null;
