@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.85
+// @version      3.86
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.85';
+    const COMPANION_VERSION_FALLBACK = '3.86';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1801,7 +1801,7 @@
             const tag = abbreviateStatus(st, until, t.desc);
             let html = '<span style="color:' + tag.color + ';">' + tag.label + '</span>';
             const hitAgo = t.last_attack ? (Date.now() / 1000 - t.last_attack) : null;
-            if (!override && t.last_attack_result === 'Hospitalized' && hitAgo !== null && hitAgo < 86400) {
+            if (!override && t.last_attack_result === 'Hospitalized' && hitAgo !== null && hitAgo < 86400 && !(t.status_checked_at > t.last_attack)) {
                 html += ' <span class="wt-hosp-check" data-pid="' + t.player_id + '" style="color:#00e5ff; text-decoration:underline; cursor:pointer;">check hosp</span>';
             }
             return html;
