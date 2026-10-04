@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.95
+// @version      3.96
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.95';
+    const COMPANION_VERSION_FALLBACK = '3.96';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1795,60 +1795,67 @@
             const ss = String(sec).padStart(2, '0');
             return h > 0 ? h + ':' + String(m).padStart(2, '0') + ':' + ss : m + ':' + ss;
         }
-        // Mirrors the dashboard's Chains list row: avatar, level, Est, colored FF badge with
-        // respect, last hit, status, and a full-height Attack button on the right.
-        function targetRowHtml(t, estRespect, canAttack) {
-            const ffColor = getFFColour(t.fair_fight || 1);
-            const ffText = t.fair_fight ? Number(t.fair_fight).toFixed(2) : '-';
-            const est = t.bs_estimate ? Number(t.bs_estimate).toLocaleString() : '?';
-            const avatar = t.avatar_url ? '<img src="' + wtChatAbsUrl(t.avatar_url) + '" style="width:42px; height:58px; object-fit:cover; border-radius:3px; flex-shrink:0;" onerror="this.style.display=\'none\';">' : '';
-            let lastHit = '';
-            if (t.last_attack) {
-                const resText = t.last_attack_result === 'Attacked' ? 'Left' : (t.last_attack_result || '');
-                const color = ['Lost', 'Stalemate', 'Escape', 'Defended'].includes(t.last_attack_result) ? '#dc3545' : '#28a745';
-                const mins = Math.max(0, Math.floor((Date.now() / 1000 - t.last_attack) / 60));
-                const ago = mins >= 60 ? Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm' : mins + 'm';
-                lastHit = '<span style="color:#aaa;">Last hit: <b style="color:' + color + ';">' + resText + '</b> (' + ago + ' ago)</span>';
-            } else {
-                lastHit = '<span style="color:#888; font-style:italic;">No recent attacks</span>';
-            }
-            const attack = canAttack
-                ? '<span class="wt-attack-btn" data-attack-id="' + t.player_id + '" style="display:inline-flex; align-items:center; background:linear-gradient(to bottom, #4CAF50, #2E7D32); color:#fff; border:1px solid #1B5E20; border-radius:2px; padding:4px 2px; font-size:0.7em; font-weight:bold; text-transform:uppercase; cursor:pointer; white-space:nowrap; width:56px; justify-content:center;">⚔️ Attack</span>'
-                : '';
-            const star = isFavorited(t.player_id) ? '⭐' : '☆';
-            return '<div style="display:flex; justify-content:space-between; align-items:stretch; gap:10px; padding:6px 0; border-bottom:1px solid #1f2229;">'
-                + '<div style="display:flex; align-items:center; gap:8px; flex:1; min-width:0;">'
-                + (t.online_status !== undefined ? onlineDotHtml(t.online_status) : '')
-                + avatar
-                + '<div style="display:flex; flex-direction:column; min-width:0; flex:1; overflow:hidden;">'
-                + '<div style="display:flex; align-items:center; flex-wrap:wrap;">'
-                + '<a href="https://www.torn.com/profiles.php?XID=' + t.player_id + '" target="_blank" style="color:inherit; text-decoration:none; font-weight:bold;">' + t.name + '</a>'
-                + '<span style="margin-left:4px; font-size:0.8em; background:#252525; border:1px solid #444; color:#aaa; padding:0 4px; border-radius:3px;">Lv ' + (t.level || 0) + '</span>'
-                + '</div>'
-                + '<div style="font-size:0.85em; margin-top:2px;"><span style="color:#fbbf24; font-weight:bold;">Est: ' + est + '</span></div>'
-                + '<div style="margin-top:2px;"><span style="display:inline-block; color:' + ffColor + '; border:1px solid ' + ffColor + '; font-size:0.8em; padding:1px 4px; border-radius:3px; white-space:nowrap;">FF ' + ffText + ' · ~' + estRespect + ' rep</span></div>'
-                + '<div style="font-size:0.8em; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + lastHit + '</div>'
-                + '<div style="font-size:0.8em; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + targetStatusHtml(t) + '</div>'
-                + '</div></div>'
-                + '<div style="display:flex; align-items:stretch; gap:4px; flex-shrink:0;">'
-                + '<span class="wt-fav-btn" data-pid="' + t.player_id + '" title="Favorite" style="display:inline-flex; align-items:center; flex-shrink:0; padding:0 6px; font-size:1.05em; cursor:pointer;">' + star + '</span>'
-                + attack
-                + '</div></div>';
-        }
-        function targetStatusHtml(t) {
-            const override = companionHospChecks[String(t.player_id)];
-            const st = override ? override.state : t.state;
-            const until = override ? override.until : t.until;
-            const left = until ? secsUntil(until) : 0;
-            if (st === 'Hospital' && left > 0) return '<span style="color:#f44336;">In hospital for ' + hospRemainingLabel(left) + '</span>';
-            const tag = abbreviateStatus(st, until, t.desc);
-            let html = '<span style="color:' + tag.color + ';">' + tag.label + '</span>';
-            const hitAgo = t.last_attack ? (Date.now() / 1000 - t.last_attack) : null;
-            if (!override && t.last_attack_result === 'Hospitalized' && hitAgo !== null && hitAgo < 86400 && !(t.status_checked_at > t.last_attack)) {
-                html += ' <span class="wt-hosp-check" data-pid="' + t.player_id + '" style="color:#00e5ff; text-decoration:underline; cursor:pointer;">check hosp</span>';
-            }
-            return html;
-        }
+// Mirrors the dashboard's Chains list row. Status lives on the button column: a green
+// Attack when they're fair game, otherwise a coloured status button (red HOSP with the
+// timer under it, grey for jail/travel/etc.). The last-hit line stays on the row.
+function targetStatusInfo(t) {
+    const override = companionHospChecks[String(t.player_id)];
+    const st = override ? override.state : t.state;
+    const until = override ? override.until : t.until;
+    const left = until ? (secsUntil(until) || 0) : 0;
+    if (!st || st === 'Okay' || (st === 'Hospital' && left <= 0)) return { kind: 'okay', left: 0 };
+    const labels = { Hospital: 'HOSP', Jail: 'JAIL', Federal: 'FED', Traveling: 'TRAVEL', Abroad: 'ABROAD' };
+    return { kind: 'blocked', left, label: labels[st] || String(st).toUpperCase().slice(0, 6), color: st === 'Hospital' ? '#c62828' : '#616161' };
+}
+function hospCheckCaption(t) {
+    const hitAgo = t.last_attack ? (Date.now() / 1000 - t.last_attack) : null;
+    if (companionHospChecks[String(t.player_id)] || t.last_attack_result !== 'Hospitalized' || hitAgo === null || hitAgo >= 86400 || t.status_checked_at > t.last_attack) return '';
+    return '<span class="wt-hosp-check" data-pid="' + t.player_id + '" style="color:#00e5ff; text-decoration:underline; cursor:pointer;">check hosp</span>';
+}
+function targetRowHtml(t, estRespect) {
+    const ffColor = getFFColour(t.fair_fight || 1);
+    const ffText = t.fair_fight ? Number(t.fair_fight).toFixed(2) : '-';
+    const est = t.bs_estimate ? Number(t.bs_estimate).toLocaleString() : '?';
+    const avatar = t.avatar_url ? '<img src="' + wtChatAbsUrl(t.avatar_url) + '" style="width:42px; height:58px; object-fit:cover; border-radius:3px; flex-shrink:0;" onerror="this.style.display=\'none\';">' : '';
+    const star = isFavorited(t.player_id) ? '⭐' : '☆';
+    let lastHit = '';
+    if (t.last_attack) {
+        const resText = t.last_attack_result === 'Attacked' ? 'Left' : (t.last_attack_result || '');
+        const color = ['Lost', 'Stalemate', 'Escape', 'Defended'].includes(t.last_attack_result) ? '#dc3545' : '#28a745';
+        const mins = Math.max(0, Math.floor((Date.now() / 1000 - t.last_attack) / 60));
+        const ago = mins >= 60 ? Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm' : mins + 'm';
+        lastHit = '<span style="color:#aaa;">Last hit: <b style="color:' + color + ';">' + resText + '</b> (' + ago + ' ago)</span>';
+    } else {
+        lastHit = '<span style="color:#888; font-style:italic;">No recent attacks</span>';
+    }
+    const status = targetStatusInfo(t);
+    let button, caption;
+    if (status.kind === 'okay') {
+        button = '<span class="wt-attack-btn" data-attack-id="' + t.player_id + '" style="flex:1; display:flex; align-items:center; justify-content:center; background:linear-gradient(to bottom, #4CAF50, #2E7D32); color:#fff; border:1px solid #1B5E20; border-radius:2px; padding:4px 2px; font-size:0.7em; font-weight:bold; text-transform:uppercase; cursor:pointer; white-space:nowrap;">⚔️ Attack</span>';
+        caption = hospCheckCaption(t);
+    } else {
+        button = '<span style="flex:1; display:flex; align-items:center; justify-content:center; background:' + status.color + '; color:#fff; border:1px solid ' + status.color + '; border-radius:2px; padding:4px 2px; font-size:0.7em; font-weight:bold; text-transform:uppercase; white-space:nowrap;">' + status.label + '</span>';
+        caption = status.left > 0 ? '<span style="color:' + status.color + '; font-family:monospace; font-size:0.75em;">' + hospRemainingLabel(status.left) + '</span>' : '';
+    }
+    return '<div style="display:flex; justify-content:space-between; align-items:stretch; gap:10px; padding:6px 0; border-bottom:1px solid #1f2229;">'
+        + '<div style="display:flex; align-items:center; gap:8px; flex:1; min-width:0;">'
+        + (t.online_status !== undefined ? onlineDotHtml(t.online_status) : '')
+        + avatar
+        + '<div style="display:flex; flex-direction:column; min-width:0; flex:1; overflow:hidden;">'
+        + '<div style="display:flex; align-items:center; flex-wrap:wrap;">'
+        + '<a href="https://www.torn.com/profiles.php?XID=' + t.player_id + '" target="_blank" style="color:inherit; text-decoration:none; font-weight:bold;">' + t.name + '</a>'
+        + '<span style="margin-left:4px; font-size:0.8em; background:#252525; border:1px solid #444; color:#aaa; padding:0 4px; border-radius:3px;">Lv ' + (t.level || 0) + '</span>'
+        + '</div>'
+        + '<div style="font-size:0.85em; margin-top:2px;"><span style="color:#fbbf24; font-weight:bold;">Est: ' + est + '</span></div>'
+        + '<div style="margin-top:2px;"><span style="display:inline-block; color:' + ffColor + '; border:1px solid ' + ffColor + '; font-size:0.8em; padding:1px 4px; border-radius:3px; white-space:nowrap;">FF ' + ffText + ' · ~' + estRespect + ' rep</span></div>'
+        + '<div style="font-size:0.8em; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + lastHit + '</div>'
+        + '</div></div>'
+        + '<div style="display:flex; align-items:stretch; gap:4px; flex-shrink:0;">'
+        + '<span class="wt-fav-btn" data-pid="' + t.player_id + '" title="Favorite" style="display:inline-flex; align-items:center; flex-shrink:0; padding:0 6px; font-size:1.05em; cursor:pointer;">' + star + '</span>'
+        + '<div style="display:flex; flex-direction:column; align-items:stretch; width:56px; flex-shrink:0;">' + button
+        + '<div style="text-align:center; font-size:0.7em; white-space:nowrap; min-height:1em;">' + caption + '</div></div>'
+        + '</div></div>';
+}
         // Filter button and settings form live above the body, outside what each
         // render replaces, so opening them isn't undone by the next refresh.
         function ensureTargetsSettingsUI(body) {
@@ -1856,8 +1863,8 @@
             const parent = body.parentElement;
             const bar = document.createElement('div');
             bar.id = 'wt-targets-toolbar';
-            bar.style.cssText = 'display:flex; justify-content:flex-end; padding:4px 8px; border-bottom:1px solid #333;';
-            bar.innerHTML = '<span id="wt-targets-gear" title="Target filters" style="cursor:pointer; color:#ccc; font-size:0.85em;">⚙️ Filters</span>';
+            bar.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:4px 8px; border-bottom:1px solid #333;';
+            bar.innerHTML = '<span id="wt-targets-ff" style="color:#888; font-size:0.8em;"></span><span id="wt-targets-gear" title="Target filters" style="cursor:pointer; color:#ccc; font-size:0.85em;">⚙️ Filters</span>';
             const form = document.createElement('div');
             form.id = 'wt-targets-settings';
             form.style.cssText = 'display:none; padding:8px; border-bottom:1px solid #333; font-size:0.8em; color:#ccc;';
@@ -1984,6 +1991,8 @@
                 // match order, which often buried whichever targets the
                 // dashboard puts first further down this much smaller panel.
                 ensureTargetsSettingsUI(body);
+                const ffLabel = document.getElementById('wt-targets-ff');
+                if (ffLabel) ffLabel.textContent = cts.custom ? 'Custom filters' : 'Target FF ' + (parseFloat(chainFfSetting) || 3.0).toFixed(2);
                 const visibleTargets = data.targets.filter(t => !(companionChainSettings.hideFaction && t.has_faction) && !(companionChainSettings.hideAbroad && (t.state === 'Traveling' || t.state === 'Abroad')));
                 if (!visibleTargets.length) { body.innerHTML = '<div style="color:#888;">No targets match your filters.</div>'; return; }
                 const sortedTargets = [...visibleTargets].sort((a, b) => {
@@ -1999,8 +2008,7 @@
                 const chainMod = (warPanel && warPanel.chain && warPanel.chain.modifier) || 1.0;
                 body.innerHTML = sortedTargets.map(t => {
                     const estRespect = ((0.7 + 1.36 * (t.fair_fight || 1.0)) * chainMod * (0.6226 + 0.00321 * (t.level || 25))).toFixed(2);
-                    const okay = t.state === 'Okay';
-                    return targetRowHtml(t, estRespect, okay);
+                    return targetRowHtml(t, estRespect);
                 }).join('');
                 wireAttackButtons(body);
             } catch (e) {
