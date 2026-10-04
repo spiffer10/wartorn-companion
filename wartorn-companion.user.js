@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.105
+// @version      3.106
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.105';
+    const COMPANION_VERSION_FALLBACK = '3.106';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1878,7 +1878,7 @@ function targetRowHtml(t, estRespect) {
 }
         // Target FF lives on the Chain Targets toolbar as a quick adjuster.
         function adjustTargetFf(delta) {
-            const next = Math.min(10, Math.max(1, Math.round(((parseFloat(chainFfSetting) || 3.0) + delta) * 10) / 10));
+            const next = Math.min(10, Math.max(1, Math.round(((parseFloat(chainFfSetting) || 3.0) + delta) * 20) / 20));
             chainFfSetting = next;
             safeGmSet('wt_chain_ff', next);
             renderTargetsPanel();
@@ -1922,8 +1922,8 @@ function targetRowHtml(t, estRespect) {
                 safeGmSet('wt_show_chain_bar', chainBarEnabled);
                 renderChainBar();
             });
-            bar.querySelector('#wt-ff-minus').addEventListener('click', () => adjustTargetFf(-0.1));
-            bar.querySelector('#wt-ff-plus').addEventListener('click', () => adjustTargetFf(0.1));
+            bar.querySelector('#wt-ff-minus').addEventListener('click', () => adjustTargetFf(-0.05));
+            bar.querySelector('#wt-ff-plus').addEventListener('click', () => adjustTargetFf(0.05));
         }
         function loadTargetsSettingsForm(form) {
             const cts = companionChainSettings.chainTargetSettings || {};
