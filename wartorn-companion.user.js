@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.87
+// @version      3.88
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.87';
+    const COMPANION_VERSION_FALLBACK = '3.88';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1498,7 +1498,7 @@
         // wouldn't resolve. Buttons instead carry a data-attack-id and get
         // wired up via wireAttackButtons() after every render.
         function attackButtonHtml(id) {
-            return `<span class="wt-attack-btn" data-attack-id="${id}" style="background:#4CAF50; color:#fff; padding:0 12px; border-radius:4px; font-size:1.05em; font-weight:bold; white-space:nowrap; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; height:100%; box-sizing:border-box;">⚔️</span>`;
+            return `<span class="wt-attack-btn" data-attack-id="${id}" style="background:#4CAF50; color:#fff; padding:0 12px; border-radius:4px; font-size:1.05em; font-weight:bold; white-space:nowrap; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; box-sizing:border-box;">⚔️</span>`;
         }
         // Populated by renderWarTargetsPanel() from /api/companion/target-calls -
         // shared here so EVERY attack button (War Targets and Chain Targets
