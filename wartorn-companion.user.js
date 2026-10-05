@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.110
+// @version      3.111
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.110';
+    const COMPANION_VERSION_FALLBACK = '3.111';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2877,18 +2877,28 @@ function targetRowHtml(t, estRespect) {
                         </div>
                         <div style="position:sticky; bottom:-10px; margin:8px -12px -10px -12px; padding:8px 12px; background:#15171c; border-top:1px solid #333; display:flex; gap:6px; align-items:center;">
                             <span id="wt-chat-emoji-btn" title="Emoji" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.9em; flex-shrink:0;">😀</span>
+                            <span id="wt-chat-img-btn" title="Send an image (or paste one)" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.8em; flex-shrink:0;">🖼️</span>
                             <span id="wt-chat-gif-btn" title="GIF" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.6em; font-weight:bold; flex-shrink:0;">GIF</span>
                             <input id="wt-chat-input" type="text" placeholder="Message..." maxlength="1000" style="flex:1; min-width:0; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 8px; border-radius:4px; font-size:0.85em;">
                             <span id="wt-chat-send-btn" style="background:#4CAF50; color:#fff; padding:0 12px; height:26px; border-radius:4px; font-size:0.9em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;">Send</span>
                             <div id="wt-chat-emoji-picker" style="display:none; flex-wrap:wrap; gap:2px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; max-height:180px; overflow-y:auto; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
-                            <div id="wt-chat-gif-picker" style="display:none; flex-direction:column; gap:6px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
+                            <input id="wt-chat-img-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none;">
+                        <div id="wt-chat-gif-picker" style="display:none; flex-direction:column; gap:6px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
                         </div>
                     `;
-                    body.scrollTop = body.scrollHeight;
+                    wtChatScrollToBottom(body);
                     document.getElementById('wt-chat-send-btn').addEventListener('click', wtChatSend);
                     document.getElementById('wt-chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') wtChatSend(); });
                     document.getElementById('wt-chat-emoji-btn').addEventListener('click', wtChatToggleEmojiPicker);
                     document.getElementById('wt-chat-gif-btn').addEventListener('click', wtChatToggleGifPicker);
+                    document.getElementById('wt-chat-img-btn').addEventListener('click', () => document.getElementById('wt-chat-img-input').click());
+                    document.getElementById('wt-chat-img-input').addEventListener('change', (e) => { wtChatSendImageFile(e.target.files[0]); e.target.value = ''; });
+                    document.getElementById('wt-chat-input').addEventListener('paste', (e) => {
+                        const items = (e.clipboardData && e.clipboardData.items) || [];
+                        for (const it of items) {
+                            if (it.kind === 'file' && /^image\//.test(it.type)) { e.preventDefault(); wtChatSendImageFile(it.getAsFile()); return; }
+                        }
+                    });
                 } else {
                     const newOnes = messages.filter(m => m.id > wtChatRenderedMaxId);
                     if (newOnes.length) {
@@ -2896,7 +2906,7 @@ function targetRowHtml(t, estRespect) {
                         if (list) {
                             if (list.firstElementChild && list.firstElementChild.innerText === 'No messages yet - say hello.') list.innerHTML = '';
                             list.insertAdjacentHTML('beforeend', newOnes.map(wtChatMsgRowHtml).join(''));
-                            body.scrollTop = body.scrollHeight;
+                            wtChatScrollToBottom(body);
                         }
                         wtChatRenderedMaxId = messages[messages.length - 1].id;
                     }
@@ -2913,6 +2923,55 @@ function targetRowHtml(t, estRespect) {
             } catch (e) {
                 if (freshOpen) body.innerHTML = `<div style="color:#f44336;">Failed to load chat.</div>`;
             }
+        }
+        // Pins the chat to the newest message. Stays pinned only while the reader is
+        // at the bottom, so images loading later (which grow the list) don't leave it mid-chat.
+        function wtChatScrollToBottom(body) {
+            body._wtStick = true;
+            if (!body._wtStickBound) {
+                body._wtStickBound = true;
+                body.addEventListener('scroll', () => { body._wtStick = body.scrollHeight - body.scrollTop - body.clientHeight < 60; });
+            }
+            const pin = () => { if (body._wtStick) body.scrollTop = body.scrollHeight; };
+            pin();
+            requestAnimationFrame(pin);
+            body.querySelectorAll('img').forEach(img => {
+                if (!img.complete) img.addEventListener('load', pin, { once: true });
+            });
+        }
+        // Uploads a picked or pasted image through the companion route, then posts it to chat.
+        function wtChatSendImageFile(file) {
+            if (!file) return;
+            const input = document.getElementById('wt-chat-input');
+            const flash = (text) => {
+                if (!input) return;
+                input.placeholder = text;
+                setTimeout(() => { input.placeholder = 'Message...'; }, 3000);
+            };
+            flash('Uploading image...');
+            const reader = new FileReader();
+            reader.onload = () => {
+                GM_xmlhttpRequest({
+                    method: 'POST',
+                    url: `${WARTORN_HOST}/api/companion/chat-upload`,
+                    headers: { 'Content-Type': 'application/json', 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
+                    data: JSON.stringify({ imageData: reader.result }),
+                    timeout: 30000,
+                    onload: (res) => {
+                        if (res.status === 401) { wtHandleUnauthorized(); return; }
+                        let d = {};
+                        try { d = JSON.parse(res.responseText); } catch (e) {}
+                        if (res.status === 200 && d.success && d.url) {
+                            postToWartorn('chat-send', { message: '', imageUrl: d.url }).then(() => renderChatPanel()).catch(() => flash('Could not send image'));
+                        } else {
+                            flash(d.error || 'Upload failed');
+                        }
+                    },
+                    onerror: () => flash('Upload failed'),
+                    ontimeout: () => flash('Upload timed out')
+                });
+            };
+            reader.readAsDataURL(file);
         }
         function wtChatSend() {
             const input = document.getElementById('wt-chat-input');
