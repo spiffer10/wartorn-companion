@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.111
+// @version      4.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.111';
+    const COMPANION_VERSION_FALLBACK = '4.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3809,7 +3809,6 @@ function targetRowHtml(t, estRespect) {
             persistOpenWindowKeys();
 
             const body = document.getElementById('wt-panel-body-' + key);
-            body.style.scrollBehavior = 'smooth';
             // Manually drive scrolling and stop the wheel event from
             // bubbling - Torn's own page can otherwise swallow/intercept
             // wheel events before the browser's native overflow-y:auto
@@ -3823,10 +3822,16 @@ function targetRowHtml(t, estRespect) {
             // handles a burst of wheel events (extending the animation
             // instead of restarting it) far more reliably than a hand-timed
             // easing loop would.
+            // Only this one smooth scroll per wheel event. The browser's own scroll is cancelled
+            // here so it doesn't run as well; running both made the list overshoot and snap back
+            // when the wheel stopped. Programmatic scroll changes (keeping position on refresh,
+            // pinning chat to the newest message) are instant, not animated.
             body.addEventListener('wheel', (e) => {
                 e.stopPropagation();
-                body.scrollBy({ top: e.deltaY, behavior: 'smooth' });
-            }, { passive: true });
+                e.preventDefault();
+                const unit = e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? body.clientHeight : 1);
+                body.scrollBy({ top: e.deltaY * unit, behavior: 'smooth' });
+            }, { passive: false });
 
             const closeBtn = document.getElementById('wt-window-close-' + key);
             // Stops the close click from also being seen as the start of a
