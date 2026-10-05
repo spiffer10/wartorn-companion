@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.107
+// @version      3.108
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.107';
+    const COMPANION_VERSION_FALLBACK = '3.108';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1639,6 +1639,10 @@
             const attackUrl = `https://www.torn.com/page.php?sid=attack&user2ID=${id}`;
             if (isTornPDA()) {
                 window.location.href = attackUrl;
+            } else if (safeGmGet('wt_attack_new_tab', false)) {
+                // Same as the dashboard's 'Open Attacks in New Tab' option: a plain _blank tab, no popup features.
+                const tab = window.open(attackUrl, '_blank');
+                if (!tab) window.location.href = attackUrl;
             } else {
                 const popup = window.open(attackUrl, 'attack_window', 'width=450,height=750,left=150,top=100,popup=yes,scrollbars=yes');
                 if (!popup) window.location.href = attackUrl;
@@ -1903,7 +1907,7 @@ function targetRowHtml(t, estRespect) {
             const bar = document.createElement('div');
             bar.id = 'wt-targets-toolbar';
             bar.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:4px 8px; border-bottom:1px solid #333;';
-            bar.innerHTML = '<span style="display:flex; align-items:center; gap:4px;"><button id="wt-ff-minus" style="background:#252525; border:1px solid #555; color:#ccc; border-radius:3px; padding:0 6px; cursor:pointer;">−</button><span id="wt-targets-ff" style="color:#ccc; font-size:0.8em; min-width:84px; text-align:center;"></span><button id="wt-ff-plus" style="background:#252525; border:1px solid #555; color:#ccc; border-radius:3px; padding:0 6px; cursor:pointer;">+</button></span><span id="wt-targets-gear" title="Target filters" style="cursor:pointer; color:#ccc; font-size:0.85em;">⚙️ Filters</span>';
+            bar.innerHTML = '<span style="display:flex; align-items:center; gap:4px;"><button id="wt-ff-minus" style="background:#252525; border:1px solid #555; color:#ccc; border-radius:3px; padding:0 6px; cursor:pointer;">−</button><span id="wt-targets-ff" style="color:#ccc; font-size:0.8em; min-width:84px; text-align:center;"></span><button id="wt-ff-plus" style="background:#252525; border:1px solid #555; color:#ccc; border-radius:3px; padding:0 6px; cursor:pointer;">+</button></span><span id="wt-targets-gear" title="Target options" style="cursor:pointer; color:#ccc; font-size:0.85em;">⚙️ Options</span>';
             const form = document.createElement('div');
             form.id = 'wt-targets-settings';
             form.style.cssText = 'display:none; padding:8px; border-bottom:1px solid #333; font-size:0.8em; color:#ccc;';
@@ -1920,6 +1924,7 @@ function targetRowHtml(t, estRespect) {
                 + check('wt-tgs-hidefaction', 'Hide faction members')
                 + check('wt-tgs-hideabroad', 'Hide abroad')
                 + check('wt-tgs-chainbar', 'Floating chain timer bar')
+                + check('wt-tgs-attacktab', 'Open attacks in new tab')
                 + '<div style="text-align:right; margin-top:6px;"><button id="wt-tgs-save" style="background:#9C27B0; color:#fff; border:none; padding:4px 10px; border-radius:4px; cursor:pointer;">Save &amp; refresh</button></div>';
             parent.insertBefore(form, body);
             parent.insertBefore(bar, form);
@@ -1929,6 +1934,9 @@ function targetRowHtml(t, estRespect) {
                 if (opening) loadTargetsSettingsForm(form);
             });
             form.querySelector('#wt-tgs-save').addEventListener('click', () => saveTargetsSettings(form));
+            // Local to this browser, like the chain bar toggle - not part of the synced target settings.
+            form.querySelector('#wt-tgs-attacktab').checked = !!safeGmGet('wt_attack_new_tab', false);
+            form.querySelector('#wt-tgs-attacktab').addEventListener('change', (e) => safeGmSet('wt_attack_new_tab', e.target.checked));
             form.querySelector('#wt-tgs-chainbar').addEventListener('change', (e) => {
                 chainBarEnabled = e.target.checked;
                 safeGmSet('wt_show_chain_bar', chainBarEnabled);
