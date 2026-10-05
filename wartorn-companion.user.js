@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.0.1
+// @version      4.0.2
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.0.1';
+    const COMPANION_VERSION_FALLBACK = '4.0.2';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3835,14 +3835,23 @@ function targetRowHtml(t, estRespect) {
                 const base = body._wtScrollFrame ? body._wtScrollTarget : body.scrollTop;
                 body._wtScrollTarget = Math.max(0, Math.min(max, base + e.deltaY * unit));
                 if (body._wtScrollFrame) return;
+                body._wtScrollLast = body.scrollTop;
                 const step = () => {
+                    // The list moved by something other than this easing (scrollbar drag,
+                    // touch, keyboard), so hand control back to the browser.
+                    if (Math.abs(body.scrollTop - body._wtScrollLast) > 2) { body._wtScrollFrame = null; return; }
                     const diff = body._wtScrollTarget - body.scrollTop;
                     if (Math.abs(diff) < 0.5) { body.scrollTop = body._wtScrollTarget; body._wtScrollFrame = null; return; }
                     body.scrollTop = body.scrollTop + diff * 0.2;
+                    body._wtScrollLast = body.scrollTop;
                     body._wtScrollFrame = requestAnimationFrame(step);
                 };
                 body._wtScrollFrame = requestAnimationFrame(step);
             }, { passive: false });
+            // Pressing on the list (scrollbar, touch) always ends any wheel easing right away.
+            const stopWheelEasing = () => { if (body._wtScrollFrame) { cancelAnimationFrame(body._wtScrollFrame); body._wtScrollFrame = null; } };
+            body.addEventListener('pointerdown', stopWheelEasing, { passive: true });
+            body.addEventListener('touchstart', stopWheelEasing, { passive: true });
 
             const closeBtn = document.getElementById('wt-window-close-' + key);
             // Stops the close click from also being seen as the start of a
