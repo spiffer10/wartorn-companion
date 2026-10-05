@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.0
+// @version      4.0.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.0';
+    const COMPANION_VERSION_FALLBACK = '4.0.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3822,15 +3822,26 @@ function targetRowHtml(t, estRespect) {
             // handles a burst of wheel events (extending the animation
             // instead of restarting it) far more reliably than a hand-timed
             // easing loop would.
-            // Only this one smooth scroll per wheel event. The browser's own scroll is cancelled
-            // here so it doesn't run as well; running both made the list overshoot and snap back
-            // when the wheel stopped. Programmatic scroll changes (keeping position on refresh,
-            // pinning chat to the newest message) are instant, not animated.
+            // The browser's own wheel scroll is cancelled and replaced by this. Each wheel
+            // event adds to a target position, and the list eases toward that target a fixed
+            // fraction per frame. Fast wheel spins just move the target further, so the speed
+            // stays the same however quickly the wheel turns. Programmatic scroll changes
+            // (keeping position on refresh, pinning chat) stay instant.
             body.addEventListener('wheel', (e) => {
                 e.stopPropagation();
                 e.preventDefault();
                 const unit = e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? body.clientHeight : 1);
-                body.scrollBy({ top: e.deltaY * unit, behavior: 'smooth' });
+                const max = Math.max(0, body.scrollHeight - body.clientHeight);
+                const base = body._wtScrollFrame ? body._wtScrollTarget : body.scrollTop;
+                body._wtScrollTarget = Math.max(0, Math.min(max, base + e.deltaY * unit));
+                if (body._wtScrollFrame) return;
+                const step = () => {
+                    const diff = body._wtScrollTarget - body.scrollTop;
+                    if (Math.abs(diff) < 0.5) { body.scrollTop = body._wtScrollTarget; body._wtScrollFrame = null; return; }
+                    body.scrollTop = body.scrollTop + diff * 0.2;
+                    body._wtScrollFrame = requestAnimationFrame(step);
+                };
+                body._wtScrollFrame = requestAnimationFrame(step);
             }, { passive: false });
 
             const closeBtn = document.getElementById('wt-window-close-' + key);
