@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.108
+// @version      3.109
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.108';
+    const COMPANION_VERSION_FALLBACK = '3.109';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1397,14 +1397,64 @@
             const diff = untilEpochSecs - Math.floor(nowServerMs() / 1000);
             return diff > 0 ? diff : null;
         }
+        // Some panels also keep their last result in browser storage, so a page
+        // change (a fresh script run with an empty in-memory cache) can reuse it
+        // instead of refetching everything at once. Only the targets list and war
+        // status - and only for a short window, so they stay current. Scoped to
+        // the API key so two accounts in one browser never see each other's data.
+        const PERSIST_TTL = { targets: 60000, war: PANEL_CACHE_TTL };
+        function persistTtlFor(cacheKey) {
+            if (cacheKey === 'war') return PERSIST_TTL.war;
+            if (cacheKey.indexOf('targets') === 0) return PERSIST_TTL.targets;
+            return 0;
+        }
+        function panelPersistStoreKey() { return 'wt_panel_persist_' + String(userApiKey || '').slice(-8); }
+        function readPersistedPanel(cacheKey) {
+            const ttl = persistTtlFor(cacheKey);
+            if (!ttl) return null;
+            const store = safeGmGet(panelPersistStoreKey(), {});
+            const entry = store && store[cacheKey];
+            if (!entry || !entry.data || (Date.now() - entry.ts) >= ttl) return null;
+            return entry;
+        }
+        function writePersistedPanel(cacheKey, entry) {
+            const ttl = persistTtlFor(cacheKey);
+            if (!ttl) return;
+            // _wtId is a per-page-load counter used for render keys - never persist it.
+            const data = Object.assign({}, entry.data);
+            delete data._wtId;
+            const store = safeGmGet(panelPersistStoreKey(), {});
+            const now = Date.now();
+            Object.keys(store).forEach(k => { if (!store[k] || (now - store[k].ts) >= 60000) delete store[k]; });
+            store[cacheKey] = { data, ts: entry.ts };
+            safeGmSet(panelPersistStoreKey(), store);
+        }
+        // Drops a stored copy so the next read goes to the server (used by the live refresh timers).
+        function forgetPersistedPanel(cacheKey) {
+            const store = safeGmGet(panelPersistStoreKey(), {});
+            if (store && store[cacheKey]) { delete store[cacheKey]; safeGmSet(panelPersistStoreKey(), store); }
+        }
         async function getPanelData(cacheKey, endpoint, timeoutMs) {
             const cached = panelCache[cacheKey];
             if (cached && (Date.now() - cached.ts) < PANEL_CACHE_TTL) return cached.data;
+            // Only the first read after a page change uses the stored copy. Once this page
+            // has its own entry (even an expired one), reads go to the server as before.
+            const persisted = cached ? null : readPersistedPanel(cacheKey);
+            if (persisted) {
+                // The server clock offset is worked out from the fetch time, so a
+                // stored snapshot gives it the same way, using when it was fetched.
+                if (cacheKey === 'war' && persisted.data.user_cooldowns && persisted.data.user_cooldowns.server_time) {
+                    serverClockOffsetMs = (persisted.data.user_cooldowns.server_time * 1000) - persisted.ts;
+                }
+                panelCache[cacheKey] = persisted;
+                return persisted.data;
+            }
             const data = await fetchFromWartorn(endpoint, timeoutMs);
             if (cacheKey === 'war' && data && data.user_cooldowns && data.user_cooldowns.server_time) {
                 serverClockOffsetMs = (data.user_cooldowns.server_time * 1000) - Date.now();
             }
             panelCache[cacheKey] = { data, ts: Date.now() };
+            writePersistedPanel(cacheKey, panelCache[cacheKey]);
             return data;
         }
 
@@ -1781,6 +1831,7 @@
             w.refreshTimer = setInterval(() => {
                 if (key !== 'war' && key !== 'milestone') return;
                 delete panelCache[key];
+                forgetPersistedPanel(key);
                 if (key === 'war') delete panelCache.targetCalls;
                 PANEL_DEFS[key].render();
             }, 5000);
