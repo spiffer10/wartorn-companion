@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      3.109
+// @version      3.110
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '3.109';
+    const COMPANION_VERSION_FALLBACK = '3.110';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1627,6 +1627,9 @@
         let chainSoundEnabled = safeGmGet('wt_chain_sound', false);
         let chainHitsSirenEnabled = safeGmGet('wt_chain_hits_siren', false);
         let chainWarnSecs = safeGmGet('wt_chain_warn_secs', 120);
+        const CHAIN_WARN_SOUNDS = { beep: 'Beep', chime: 'Chime', pulse: 'Triple pulse', siren: 'Siren' };
+        let chainWarnSound = safeGmGet('wt_chain_warn_sound', 'beep');
+        let chainWarnSoundSynced = false;
         // Static chrome (border/shadow/font/colors/scrollbar) - identical
         // for every window, set once at creation and never touched again.
         // Geometry (top/left/width/height/z-index) is computed separately
@@ -2530,6 +2533,9 @@ function targetRowHtml(t, estRespect) {
                             ⛓️ Chain warning sound
                         </label>
                         <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em;">
+                            Sound <select id="wt-set-chainsound-type" style="background:#0b0c10; border:1px solid #444; color:#fff; padding:3px 6px; border-radius:3px;">${Object.keys(CHAIN_WARN_SOUNDS).map(k => '<option value="' + k + '"' + (k === chainWarnSound ? ' selected' : '') + '>' + CHAIN_WARN_SOUNDS[k] + '</option>').join('')}</select>
+                        </label>
+                        <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em;">
                             Warn at <input type="number" id="wt-set-chainwarn" min="30" max="300" step="10" value="${chainWarnSecs}" style="width:70px; background:#0b0c10; border:1px solid #444; color:#fff; padding:3px 6px; border-radius:3px;"> seconds left
                         </label>
                         <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
@@ -2608,6 +2614,12 @@ function targetRowHtml(t, estRespect) {
                 chainWarnSecs = Math.min(300, Math.max(30, parseInt(e.target.value, 10) || 120));
                 e.target.value = chainWarnSecs;
                 safeGmSet('wt_chain_warn_secs', chainWarnSecs);
+            });
+            document.getElementById('wt-set-chainsound-type').addEventListener('change', (e) => {
+                chainWarnSound = Object.prototype.hasOwnProperty.call(CHAIN_WARN_SOUNDS, e.target.value) ? e.target.value : 'beep';
+                safeGmSet('wt_chain_warn_sound', chainWarnSound);
+                // Saved to the account so the same choice follows you to other devices.
+                postToWartorn('chain-settings', { chainWarnSound: chainWarnSound }).catch(() => {});
             });
             document.getElementById('wt-set-chainhitssiren').addEventListener('change', (e) => {
                 chainHitsSirenEnabled = e.target.checked;
@@ -5390,6 +5402,47 @@ function targetRowHtml(t, estRespect) {
             } catch (e) {}
         }
 
+        // Picks the warning sound chosen in Options. 'beep' keeps the original
+        // sound; the others reuse the travel chime and police siren, plus a short triple pulse.
+        function playChainWarnSound(urgent) {
+            if (chainWarnSound === 'chime') playTravelLandingChime();
+            else if (chainWarnSound === 'pulse') playPulseWarning();
+            else if (chainWarnSound === 'siren') playPoliceSiren();
+            else playChainBeep(urgent);
+        }
+        function playPulseWarning() {
+            if (!sharedAudioCtx) return;
+            try {
+                const ctx = sharedAudioCtx;
+                for (let i = 0; i < 3; i++) {
+                    const t = ctx.currentTime + i * 0.2;
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'square';
+                    osc.frequency.setValueAtTime(600, t);
+                    gain.gain.setValueAtTime(0.2, t);
+                    gain.gain.setValueAtTime(0, t + 0.12);
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start(t);
+                    osc.stop(t + 0.12);
+                }
+            } catch (e) {}
+        }
+        // Reads the account's saved sound once per page load, the first time a warning
+        // is due, so a choice made on another device applies here without extra polling.
+        async function syncChainWarnSound() {
+            if (chainWarnSoundSynced) return;
+            chainWarnSoundSynced = true;
+            try {
+                const d = await fetchFromWartorn('chain-settings');
+                if (d && Object.prototype.hasOwnProperty.call(CHAIN_WARN_SOUNDS, d.chainWarnSound)) {
+                    chainWarnSound = d.chainWarnSound;
+                    safeGmSet('wt_chain_warn_sound', chainWarnSound);
+                }
+            } catch (e) {}
+        }
+
         // Chain Hits going active. The first version was two short, gapped
         // "chirps" - real siren wails don't have silence in the middle,
         // they sweep continuously - so this instead ramps ONE oscillator's
@@ -5994,7 +6047,8 @@ function targetRowHtml(t, estRespect) {
                     const now = Date.now();
                     if (now - lastChainBeepTime >= 4000) {
                         lastChainBeepTime = now;
-                        playChainBeep(left <= chainWarnSecs * 0.75);
+                        syncChainWarnSound();
+                        playChainWarnSound(left <= chainWarnSecs * 0.75);
                     }
                 }
             }
