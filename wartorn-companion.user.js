@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.0.2
+// @version      4.0.3
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.0.2';
+    const COMPANION_VERSION_FALLBACK = '4.0.3';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3147,7 +3147,7 @@ function targetRowHtml(t, estRespect) {
         // renderFlightWidget) in case flagcdn.com itself is unreachable
         // there for some unrelated reason (blocked, offline, etc).
         const FLIGHT_FLAG_ISO = { mex: 'mx', cay: 'ky', can: 'ca', haw: 'us-hi', uni: 'gb', arg: 'ar', swi: 'ch', jap: 'jp', chi: 'cn', uae: 'ae', sou: 'za' };
-        const FLIGHT_MINS_MAP = { mex: 24, cay: 66, can: 43, haw: 140, uni: 151, arg: 191, swi: 166, jap: 213, chi: 229, uae: 254, sou: 282 };
+        const FLIGHT_MINS_MAP = { mex: 24, cay: 33, can: 39, haw: 127, uni: 151, arg: 158, swi: 166, jap: 213, chi: 229, uae: 257, sou: 282 };
         // Same names/spellings as flight-planner.js's own yataMap, so the
         // widget's country label matches what the dashboard already shows.
         const FLIGHT_COUNTRY_NAMES = { mex: 'Mexico', cay: 'Cayman', can: 'Canada', haw: 'Hawaii', uni: 'United Kingdom', arg: 'Argentina', swi: 'Switzerland', jap: 'Japan', chi: 'China', uae: 'UAE', sou: 'South Africa' };
