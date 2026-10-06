@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.1.4
+// @version      4.1.5
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.1.4';
+    const COMPANION_VERSION_FALLBACK = '4.1.5';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6005,8 +6005,7 @@ function readActiveBook() {
     const m = (el.getAttribute('aria-label') || '').match(/^Reading Book:\s*(.+?)(Provides\s.*)$/);
     if (!m) return null;
     const effect = m[2].trim();
-    const days = parseInt((effect.match(/for\s+(\d+)\s+days/i) || [])[1], 10) || 31;
-    return { name: m[1].trim(), effect, days };
+    return { name: m[1].trim(), effect };
 }
 let lastActiveBookName = null;
 function syncActiveBook() {
@@ -6018,42 +6017,6 @@ function syncActiveBook() {
 }
 syncActiveBook();
 setInterval(syncActiveBook, 15000);
-// The book's tooltip shows the exact time left, e.g. "28 days, 23 hours, 45 minutes and 52 seconds".
-// Reads it whenever the tooltip appears, and sends the exact end time.
-function parseBookSecondsLeft(text) {
-    const m = String(text).match(/(\d+)\s+days?,\s*(\d+)\s+hours?,\s*(\d+)\s+minutes?\s+and\s+(\d+)\s+seconds?/i);
-    if (!m) return null;
-    return (+m[1]) * 86400 + (+m[2]) * 3600 + (+m[3]) * 60 + (+m[4]);
-}
-let lastSentBookEndsAt = 0;
-const bookTooltipObserver = new MutationObserver(mutations => {
-    for (const mu of mutations) for (const n of mu.addedNodes) {
-        if (n.nodeType !== 1 || !/Provides a passive/.test(n.textContent || '')) continue;
-        const secs = parseBookSecondsLeft(n.textContent);
-        const b = readActiveBook();
-        if (!secs || !b) continue;
-        const endsAt = Date.now() + secs * 1000;
-        if (Math.abs(endsAt - lastSentBookEndsAt) < 60000) continue;
-        lastSentBookEndsAt = endsAt;
-        sendToWartorn('active-book', { name: b.name, effect: b.effect, endsAt });
-        safeGmSet('wt_book_hint_done', b.name);
-        const hint = document.getElementById('wt-book-hint'); if (hint) hint.remove();
-    }
-});
-bookTooltipObserver.observe(document.body, { childList: true, subtree: true });
-// If a book is being read and its time left has not been read yet, ask the player to hover
-// the icon once. Asked once per book; the player's own hover is what reads it.
-function askBookHoverOnce() {
-    const b = readActiveBook();
-    if (!b || safeGmGet('wt_book_hint_done', '') === b.name || document.getElementById('wt-book-hint')) return;
-    const hint = document.createElement('div');
-    hint.id = 'wt-book-hint';
-    hint.style.cssText = 'position:fixed; left:12px; bottom:12px; z-index:999998; background:#15171c; color:#ddd; border:1px solid #00e5ff; border-radius:8px; padding:10px 14px; font-size:13px; box-shadow:0 4px 12px rgba(0,0,0,0.5); max-width:280px;';
-    hint.innerHTML = '📖 Hover the book icon in the sidebar once to read how long <b>' + b.name + '</b> has left. <span id="wt-book-hint-x" style="cursor:pointer; color:#888; margin-left:6px;">✕</span>';
-    document.body.appendChild(hint);
-    document.getElementById('wt-book-hint-x').addEventListener('click', () => hint.remove());
-}
-setTimeout(askBookHoverOnce, 3000);
 setInterval(pushSelfStatus, 20000);
         pushSelfStatus();
 
