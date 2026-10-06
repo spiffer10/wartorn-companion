@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.0.2
+// @version      4.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.0.2';
+    const COMPANION_VERSION_FALLBACK = '4.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -5996,7 +5996,29 @@ function targetRowHtml(t, estRespect) {
             }
             try { await postToWartorn('self-status', status); } catch (e) {}
         }
-        setInterval(pushSelfStatus, 20000);
+        // Reads the book being read from the sidebar icon's label, e.g.
+// "Reading Book: Weaseling Out Of TroubleProvides a passive 100% bonus ..." (no separator
+// between the title and the effect). Only sends when the book changes.
+function readActiveBook() {
+    const el = document.querySelector('a[aria-label^="Reading Book"]');
+    if (!el) return null;
+    const m = (el.getAttribute('aria-label') || '').match(/^Reading Book:\s*(.+?)(Provides\s.*)$/);
+    if (!m) return null;
+    const effect = m[2].trim();
+    const days = parseInt((effect.match(/for\s+(\d+)\s+days/i) || [])[1], 10) || 31;
+    return { name: m[1].trim(), effect, days };
+}
+let lastActiveBookName = null;
+function syncActiveBook() {
+    const b = readActiveBook();
+    const name = b ? b.name : '';
+    if (name === lastActiveBookName) return;
+    lastActiveBookName = name;
+    sendToWartorn('active-book', b || { name: null });
+}
+syncActiveBook();
+setInterval(syncActiveBook, 15000);
+setInterval(pushSelfStatus, 20000);
         pushSelfStatus();
 
         async function checkLiveAlerts() {
