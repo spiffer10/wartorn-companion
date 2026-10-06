@@ -3147,7 +3147,7 @@ function targetRowHtml(t, estRespect) {
         // renderFlightWidget) in case flagcdn.com itself is unreachable
         // there for some unrelated reason (blocked, offline, etc).
         const FLIGHT_FLAG_ISO = { mex: 'mx', cay: 'ky', can: 'ca', haw: 'us-hi', uni: 'gb', arg: 'ar', swi: 'ch', jap: 'jp', chi: 'cn', uae: 'ae', sou: 'za' };
-        const FLIGHT_MINS_MAP = { mex: 24, cay: 33, can: 39, haw: 127, uni: 151, arg: 158, swi: 166, jap: 213, chi: 229, uae: 257, sou: 282 };
+        const FLIGHT_MINS_MAP = { mex: 24, cay: 66, can: 43, haw: 140, uni: 151, arg: 191, swi: 166, jap: 213, chi: 229, uae: 254, sou: 282 };
         // Same names/spellings as flight-planner.js's own yataMap, so the
         // widget's country label matches what the dashboard already shows.
         const FLIGHT_COUNTRY_NAMES = { mex: 'Mexico', cay: 'Cayman', can: 'Canada', haw: 'Hawaii', uni: 'United Kingdom', arg: 'Argentina', swi: 'Switzerland', jap: 'Japan', chi: 'China', uae: 'UAE', sou: 'South Africa' };
