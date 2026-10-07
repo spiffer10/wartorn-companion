@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.1.6
+// @version      4.2.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.1.6';
+    const COMPANION_VERSION_FALLBACK = '4.2.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -5998,6 +5998,69 @@ function targetRowHtml(t, estRespect) {
             }
             try { await postToWartorn('self-status', status); } catch (e) {}
         }
+
+        // A faction or war-opponent member's own profile page shows a travel status bar
+        // ("Traveling from Argentina to Torn . Type of plane: Personal") with no timer of its
+        // own - FFScouter upsells its paid tier for exactly this. Reads it passively (same as
+        // self-status above: no click, no navigation) and asks the backend for a countdown,
+        // which gates on own-faction/war-opponent same as Vendettas and returns nothing for
+        // anyone else. The backend also owns the flight-time math and the first-seen clock, so
+        // whichever faction member's companion happens to see it first starts it for everyone.
+        let wtFlightTimerState = { key: null, tickInterval: null };
+        function getProfileTargetId() {
+            const m = window.location.href.match(/XID=(\d+)/);
+            return m ? parseInt(m[1], 10) : null;
+        }
+        function parseProfileTravelBar() {
+            try {
+                const w = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+                const bar = w.document.querySelector('.profile-status');
+                if (!bar) return null;
+                const labelEl = bar.querySelector('[aria-label]');
+                const aria = labelEl ? labelEl.getAttribute('aria-label') || '' : '';
+                const m = aria.match(/travel+ing from (.+?) to (.+?)\s*\./i);
+                if (!m) return null;
+                const planeM = aria.match(/Type of plane:\s*([^".]+)/i);
+                return { bar, origin: m[1].trim(), destination: m[2].trim(), planeType: planeM ? planeM[1].trim() : '' };
+            } catch (e) { return null; }
+        }
+        function renderFlightTimer(bar, etaMs, isEstimate) {
+            const slot = bar.querySelector('.sub-desc') || bar.querySelector('.description');
+            if (!slot) return;
+            let el = slot.querySelector('.wt-flight-timer');
+            if (!el) {
+                el = document.createElement('span');
+                el.className = 'wt-flight-timer';
+                el.style.cssText = 'color:#00e5ff; font-weight:bold; font-size:0.85em;';
+                slot.appendChild(el);
+            }
+            if (wtFlightTimerState.tickInterval) clearInterval(wtFlightTimerState.tickInterval);
+            const tick = () => {
+                if (!document.body.contains(el)) { clearInterval(wtFlightTimerState.tickInterval); return; }
+                if (etaMs == null) { el.textContent = '🛬 (unknown route)'; return; }
+                const remain = etaMs - Date.now();
+                const suffix = isEstimate ? ' (est.)' : '';
+                if (remain <= 0) { el.textContent = '🛬 Landing any moment' + suffix; return; }
+                const h = Math.floor(remain / 3600000), m = Math.floor((remain % 3600000) / 60000);
+                el.textContent = `🛬 Landing in ${h > 0 ? h + 'h ' : ''}${m}m` + suffix;
+            };
+            tick();
+            wtFlightTimerState.tickInterval = setInterval(tick, 1000);
+        }
+        async function scanProfileFlightBar() {
+            if (!/profiles\.php/.test(window.location.pathname)) return;
+            const targetId = getProfileTargetId();
+            const info = targetId ? parseProfileTravelBar() : null;
+            if (!info) return;
+            const key = targetId + '|' + info.origin + '|' + info.destination + '|' + info.planeType;
+            if (wtFlightTimerState.key === key) return; // already fetched and rendering for this exact flight
+            wtFlightTimerState.key = key;
+            try {
+                const res = await postToWartorn('flight-sighting', { targetId, origin: info.origin, destination: info.destination, planeType: info.planeType });
+                if (res && res.allowed) renderFlightTimer(info.bar, res.etaMs, res.estimate);
+            } catch (e) {}
+        }
+
         // Reads the book being read from the sidebar icon's label, e.g.
 // "Reading Book: Weaseling Out Of TroubleProvides a passive 100% bonus ..." (no separator
 // between the title and the effect). Only sends when the book changes.
@@ -6021,6 +6084,8 @@ syncActiveBook();
 setInterval(syncActiveBook, 15000);
 setInterval(pushSelfStatus, 20000);
         pushSelfStatus();
+setInterval(scanProfileFlightBar, 3000);
+        scanProfileFlightBar();
 
         async function checkLiveAlerts() {
             try {
