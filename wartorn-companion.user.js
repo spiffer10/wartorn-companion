@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.2.0
+// @version      4.2.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.2.0';
+    const COMPANION_VERSION_FALLBACK = '4.2.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6025,14 +6025,15 @@ function targetRowHtml(t, estRespect) {
             } catch (e) { return null; }
         }
         function renderFlightTimer(bar, etaMs, isEstimate) {
-            const slot = bar.querySelector('.sub-desc') || bar.querySelector('.description');
-            if (!slot) return;
-            let el = slot.querySelector('.wt-flight-timer');
+            // A standalone block appended to the bar itself, not nested inside Torn's own .sub-desc -
+            // that span is empty by default and may be sized/hidden by Torn's own CSS for the empty
+            // case, which would make anything appended inside it invisible too.
+            let el = bar.querySelector('.wt-flight-timer');
             if (!el) {
-                el = document.createElement('span');
+                el = document.createElement('div');
                 el.className = 'wt-flight-timer';
-                el.style.cssText = 'color:#00e5ff; font-weight:bold; font-size:0.85em;';
-                slot.appendChild(el);
+                el.style.cssText = 'display:block; clear:both; margin:4px 0 0 46px; color:#00e5ff; font-weight:bold; font-size:12px;';
+                bar.appendChild(el);
             }
             if (wtFlightTimerState.tickInterval) clearInterval(wtFlightTimerState.tickInterval);
             const tick = () => {
