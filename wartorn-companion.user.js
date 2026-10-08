@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.2.6
+// @version      4.2.7
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.2.6';
+    const COMPANION_VERSION_FALLBACK = '4.2.7';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6043,7 +6043,19 @@ function targetRowHtml(t, estRespect) {
                 if (etaMs == null) { el.textContent = '🛬 (unknown route)'; return; }
                 const remain = etaMs - nowServerMs(); // Wartorn's own clock, not the browser's local one
                 const suffix = isEstimate ? ' (est.)' : '';
-                if (remain <= 0) { el.textContent = '🛬 Landing any moment' + suffix; return; }
+                if (remain <= 0) { el.textContent = '🛬 Landing any moment' + suffix; el.style.color = '#ff5252'; return; }
+                // Exact data (never a guess), close to landing: seconds, not minutes - post-landing
+                // immunity is only ~15s, so "landing in 1m" is nowhere near tight enough to time an
+                // attack against it. Estimates stay minute-level; showing fake second-precision on a
+                // guess would be misleading in exactly the situation accuracy matters most.
+                if (!isEstimate && remain < 5 * 60000) {
+                    const totalSecs = Math.ceil(remain / 1000);
+                    const mm = Math.floor(totalSecs / 60), ss = totalSecs % 60;
+                    el.textContent = `🛬 Landing in ${mm}:${String(ss).padStart(2, '0')}`;
+                    el.style.color = remain <= 20000 ? '#ff5252' : '#fff';
+                    return;
+                }
+                el.style.color = '#fff';
                 const h = Math.floor(remain / 3600000), m = Math.floor((remain % 3600000) / 60000);
                 el.textContent = `🛬 Landing in ${h > 0 ? h + 'h ' : ''}${m}m` + suffix;
             };
