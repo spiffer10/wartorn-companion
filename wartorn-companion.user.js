@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.2.1
+// @version      4.2.2
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.2.1';
+    const COMPANION_VERSION_FALLBACK = '4.2.2';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6054,11 +6054,25 @@ function targetRowHtml(t, estRespect) {
             const info = targetId ? parseProfileTravelBar() : null;
             if (!info) return;
             const key = targetId + '|' + info.origin + '|' + info.destination + '|' + info.planeType;
-            if (wtFlightTimerState.key === key) return; // already fetched and rendering for this exact flight
-            wtFlightTimerState.key = key;
+            if (wtFlightTimerState.key === key) {
+                // Already have this flight's data - but Torn's own profile widget re-renders
+                // periodically (confirmed: a sighting call succeeded minutes ago, yet the element
+                // was gone with no error by the next check), wiping out anything injected into it.
+                // No new network call needed, just put it back if it's missing.
+                if (wtFlightTimerState.fetched && !info.bar.querySelector('.wt-flight-timer')) {
+                    renderFlightTimer(info.bar, wtFlightTimerState.etaMs, wtFlightTimerState.estimate);
+                }
+                return;
+            }
+            wtFlightTimerState = { key, fetched: false, etaMs: null, estimate: false, tickInterval: wtFlightTimerState.tickInterval };
             try {
                 const res = await postToWartorn('flight-sighting', { targetId, origin: info.origin, destination: info.destination, planeType: info.planeType });
-                if (res && res.allowed) renderFlightTimer(info.bar, res.etaMs, res.estimate);
+                if (res && res.allowed) {
+                    wtFlightTimerState.fetched = true;
+                    wtFlightTimerState.etaMs = res.etaMs;
+                    wtFlightTimerState.estimate = res.estimate;
+                    renderFlightTimer(info.bar, res.etaMs, res.estimate);
+                }
             } catch (e) {}
         }
 
