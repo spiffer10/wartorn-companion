@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.2.3
+// @version      4.2.4
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.2.3';
+    const COMPANION_VERSION_FALLBACK = '4.2.4';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6015,17 +6015,14 @@ function targetRowHtml(t, estRespect) {
             try {
                 const w = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
                 const bar = w.document.querySelector('.profile-status');
-                if (!bar) { console.log('[WT-FlightTimer] no .profile-status element found'); return null; }
+                if (!bar) return null;
                 const labelEl = bar.querySelector('[aria-label]');
                 const aria = labelEl ? labelEl.getAttribute('aria-label') || '' : '';
-                console.log('[WT-FlightTimer] bar found, aria-label:', JSON.stringify(aria));
                 const m = aria.match(/travel+ing from (.+?) to (.+?)\s*\./i);
-                if (!m) { console.log('[WT-FlightTimer] aria-label did not match the travel pattern'); return null; }
+                if (!m) return null;
                 const planeM = aria.match(/Type of plane:\s*([^".]+)/i);
-                const result = { bar, origin: m[1].trim(), destination: m[2].trim(), planeType: planeM ? planeM[1].trim() : '' };
-                console.log('[WT-FlightTimer] parsed:', JSON.stringify({ origin: result.origin, destination: result.destination, planeType: result.planeType }));
-                return result;
-            } catch (e) { console.log('[WT-FlightTimer] parseProfileTravelBar threw:', e && e.message); return null; }
+                return { bar, origin: m[1].trim(), destination: m[2].trim(), planeType: planeM ? planeM[1].trim() : '' };
+            } catch (e) { return null; }
         }
         function renderFlightTimer(bar, etaMs, isEstimate) {
             // A standalone block appended to the bar itself, not nested inside Torn's own .sub-desc -
@@ -6037,7 +6034,6 @@ function targetRowHtml(t, estRespect) {
                 el.className = 'wt-flight-timer';
                 el.style.cssText = 'display:block; clear:both; margin:4px 0 0 46px; color:#00e5ff; font-weight:bold; font-size:12px;';
                 bar.appendChild(el);
-                console.log('[WT-FlightTimer] element created and appended, still attached:', document.body.contains(el));
             }
             if (wtFlightTimerState.tickInterval) clearInterval(wtFlightTimerState.tickInterval);
             const tick = () => {
@@ -6055,15 +6051,13 @@ function targetRowHtml(t, estRespect) {
         async function scanProfileFlightBar() {
             if (!/profiles\.php/.test(window.location.pathname)) return;
             const targetId = getProfileTargetId();
-            if (!targetId) { console.log('[WT-FlightTimer] on a profile page but no XID matched in the URL'); return; }
-            const info = parseProfileTravelBar();
+            const info = targetId ? parseProfileTravelBar() : null;
             if (!info) return;
             const key = targetId + '|' + info.origin + '|' + info.destination + '|' + info.planeType;
             if (wtFlightTimerState.key === key) {
-                // Already have this flight's data - but Torn's own profile widget re-renders
-                // periodically (confirmed: a sighting call succeeded minutes ago, yet the element
-                // was gone with no error by the next check), wiping out anything injected into it.
-                // No new network call needed, just put it back if it's missing.
+                // Already have this flight's data - just a cheap defensive check that the element
+                // is still there (no network call either way), in case Torn's own profile widget
+                // ever re-renders that part of the page and discards anything injected into it.
                 if (wtFlightTimerState.fetched && !info.bar.querySelector('.wt-flight-timer')) {
                     renderFlightTimer(info.bar, wtFlightTimerState.etaMs, wtFlightTimerState.estimate);
                 }
@@ -6071,15 +6065,16 @@ function targetRowHtml(t, estRespect) {
             }
             wtFlightTimerState = { key, fetched: false, etaMs: null, estimate: false, tickInterval: wtFlightTimerState.tickInterval };
             try {
+                // postToWartorn resolves {status, data} - the actual payload is under .data.
                 const res = await postToWartorn('flight-sighting', { targetId, origin: info.origin, destination: info.destination, planeType: info.planeType });
-                console.log('[WT-FlightTimer] backend response:', JSON.stringify(res));
-                if (res && res.allowed) {
+                const data = res && res.data;
+                if (data && data.allowed) {
                     wtFlightTimerState.fetched = true;
-                    wtFlightTimerState.etaMs = res.etaMs;
-                    wtFlightTimerState.estimate = res.estimate;
-                    renderFlightTimer(info.bar, res.etaMs, res.estimate);
+                    wtFlightTimerState.etaMs = data.etaMs;
+                    wtFlightTimerState.estimate = data.estimate;
+                    renderFlightTimer(info.bar, data.etaMs, data.estimate);
                 }
-            } catch (e) { console.log('[WT-FlightTimer] postToWartorn threw:', e && e.message); }
+            } catch (e) {}
         }
 
         // Reads the book being read from the sidebar icon's label, e.g.
