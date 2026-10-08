@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.2.5
+// @version      4.2.6
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.2.5';
+    const COMPANION_VERSION_FALLBACK = '4.2.6';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6034,14 +6034,14 @@ function targetRowHtml(t, estRespect) {
             if (!el) {
                 el = document.createElement('div');
                 el.className = 'wt-flight-timer';
-                el.style.cssText = 'display:block; margin-top:4px; color:#fff; font-weight:bold; font-size:15px; text-shadow:0 1px 2px rgba(0,0,0,0.6);';
-                slot.appendChild(el);
+                el.style.cssText = 'display:block; margin-bottom:4px; color:#fff; font-weight:bold; font-size:15px; text-shadow:0 1px 2px rgba(0,0,0,0.6);';
+                slot.prepend(el); // above the "X to Torn" text, not below it
             }
             if (wtFlightTimerState.tickInterval) clearInterval(wtFlightTimerState.tickInterval);
             const tick = () => {
                 if (!document.body.contains(el)) { clearInterval(wtFlightTimerState.tickInterval); return; }
                 if (etaMs == null) { el.textContent = '🛬 (unknown route)'; return; }
-                const remain = etaMs - Date.now();
+                const remain = etaMs - nowServerMs(); // Wartorn's own clock, not the browser's local one
                 const suffix = isEstimate ? ' (est.)' : '';
                 if (remain <= 0) { el.textContent = '🛬 Landing any moment' + suffix; return; }
                 const h = Math.floor(remain / 3600000), m = Math.floor((remain % 3600000) / 60000);
