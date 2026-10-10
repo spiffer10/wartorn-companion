@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.2.8
+// @version      4.2.9
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.2.8';
+    const COMPANION_VERSION_FALLBACK = '4.2.9';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2768,12 +2768,42 @@ function targetRowHtml(t, estRespect) {
             }
         }
 
+        // Grouped sort, same order as the dashboard's own
+        // vendettaFactionSortCompare (frontend/index.html) - can't literally
+        // share the function across these two files, so keep this in sync
+        // by hand if the order ever changes. OK first (highest battlestat),
+        // then Hospital (soonest release first), then Traveling/Abroad
+        // (soonest landing first), then Jail/Federal last.
+        function vendettaFactionSortGroup(state) {
+            const s = String(state || '').toLowerCase();
+            if (s === 'okay') return 0;
+            if (s === 'hospital') return 1;
+            if (s === 'traveling' || s === 'abroad') return 2;
+            if (s === 'jail' || s === 'federal') return 3;
+            return 4;
+        }
+        function vendettaFactionSortCompare(a, b) {
+            const ga = vendettaFactionSortGroup(a.state);
+            const gb = vendettaFactionSortGroup(b.state);
+            if (ga !== gb) return ga - gb;
+            if (ga === 1 || ga === 2) {
+                const ua = a.until || Infinity;
+                const ub = b.until || Infinity;
+                if (ua !== ub) return ua - ub;
+            }
+            const sa = a.sort_stat || 0;
+            const sb = b.sort_stat || 0;
+            if (sa !== sb) return sb - sa;
+            return (a.name || '').localeCompare(b.name || '');
+        }
+
         // Faction mode - mirrors the dashboard's Faction Tracker sub-tab:
         // pick (or just view, if already set on the dashboard) a faction ID
-        // and see its members' live status, sorted highest stat first, with
-        // an attack button straight from this panel. No attack-log side
-        // here (there's no room for it in a 280px panel, and the dashboard
-        // already has it) - this is the status-tracking half only.
+        // and see its members' live status, grouped OK/Hospital/Traveling/
+        // Jail (see vendettaFactionSortCompare above), with an attack
+        // button straight from this panel. No attack-log side here (there's
+        // no room for it in a 280px panel, and the dashboard already has
+        // it) - this is the status-tracking half only.
         async function renderVendettaFactionBody(body) {
             await refreshVendettaFactionId();
             const factionId = companionVendettaFactionId.id;
@@ -2819,7 +2849,7 @@ function targetRowHtml(t, estRespect) {
                     wireHeader();
                     return;
                 }
-                const sorted = members.slice().sort((a, b) => (b.sort_stat || 0) - (a.sort_stat || 0));
+                const sorted = members.slice().sort(vendettaFactionSortCompare);
                 const nameLine = `<div style="color:#aaa; font-size:0.8em; margin-bottom:8px;">${data.faction_name || ''}${data.tag ? ' [' + data.tag + ']' : ''}</div>`;
                 const rowsHtml = sorted.map(m => {
                     const abbr = abbreviateStatus(m.state, m.until, m.desc);
