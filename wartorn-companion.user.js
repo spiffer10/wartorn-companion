@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.2.7
+// @version      4.2.8
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.2.7';
+    const COMPANION_VERSION_FALLBACK = '4.2.8';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2671,14 +2671,59 @@ function targetRowHtml(t, estRespect) {
             delete panelCache.vendetta;
             renderVendettaPanel();
         }
-        async function renderVendettaPanel() {
+
+        // Targets vs Faction - same split as the dashboard's own Vendettas
+        // tab. Which mode is showing is purely a local display choice (GM
+        // storage, like every other panel toggle), but WHICH faction is
+        // tracked is shared with the dashboard server-side (see
+        // GET/POST .../vendettas/faction-id) - that's the whole point of
+        // this toggle: see "your" faction target here without re-typing it
+        // on torn.com.
+        let vendettaViewMode = safeGmGet('wt_vendetta_view', 'targets');
+        let companionVendettaFactionId = { loaded: false, fetchedAt: 0, id: null };
+        async function refreshVendettaFactionId(force) {
+            if (!force && companionVendettaFactionId.loaded && Date.now() - companionVendettaFactionId.fetchedAt < 10000) return;
+            try {
+                const d = await fetchFromWartorn('vendettas/faction-id');
+                companionVendettaFactionId = { loaded: true, fetchedAt: Date.now(), id: (d && d.factionId) ? String(d.factionId) : null };
+            } catch (e) {}
+        }
+        async function setVendettaFactionIdCompanion(id) {
+            try { await postToWartorn('vendettas/faction-id', { factionId: id || null }); } catch (e) {}
+            companionVendettaFactionId = { loaded: true, fetchedAt: Date.now(), id: id || null };
+            delete panelCache['vendettaFaction_' + id];
+            renderVendettaPanel();
+        }
+        function setVendettaViewMode(mode) {
+            vendettaViewMode = mode;
+            safeGmSet('wt_vendetta_view', mode);
+            // A fresh mode starts its own "has this ever loaded" tracking -
+            // without this, switching to Faction right after Targets loaded
+            // successfully would make a genuine first-time Faction failure
+            // silently swallow its own error (see the wtLoaded check in both
+            // bodies below), since the flag was already '1' from Targets.
             const body = document.getElementById('wt-panel-body-vendetta');
-            if (!body) return;
-            const addFormHtml = `<div style="display:flex; gap:4px; margin-bottom:10px;">
+            if (body) body.dataset.wtLoaded = '';
+            renderVendettaPanel();
+        }
+        function vendettaToggleBarHtml() {
+            const targetsActive = vendettaViewMode !== 'faction';
+            const btn = (mode, label, active) => `<span class="wt-vendetta-mode-btn" data-mode="${mode}" style="flex:1; text-align:center; padding:6px 0; border-radius:4px; font-size:0.85em; font-weight:bold; cursor:pointer; background:${active ? '#E91E63' : '#252525'}; color:${active ? '#fff' : '#888'}; border:1px solid ${active ? '#E91E63' : '#444'};">${label}</span>`;
+            return `<div style="display:flex; gap:4px; margin-bottom:10px;">${btn('targets', '🔪 Targets', targetsActive)}${btn('faction', '🏴 Faction', !targetsActive)}</div>`;
+        }
+        function wireVendettaToggleBar(body) {
+            body.querySelectorAll('.wt-vendetta-mode-btn').forEach(btn => {
+                btn.addEventListener('click', () => setVendettaViewMode(btn.dataset.mode));
+            });
+        }
+
+        async function renderVendettaTargetsBody(body) {
+            const addFormHtml = vendettaToggleBarHtml() + `<div style="display:flex; gap:4px; margin-bottom:10px;">
                 <input id="wt-vendetta-add-input" type="text" placeholder="Player ID or profile link" style="flex:1; min-width:0; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 8px; border-radius:4px; font-size:0.85em;">
                 <span id="wt-vendetta-add-btn" style="background:#E91E63; color:#fff; padding:0 12px; border-radius:4px; font-size:0.9em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; white-space:nowrap;">+ Add</span>
             </div>`;
             const wireAddForm = () => {
+                wireVendettaToggleBar(body);
                 const addBtn = document.getElementById('wt-vendetta-add-btn');
                 if (addBtn) addBtn.addEventListener('click', addVendettaCompanion);
                 const addInput = document.getElementById('wt-vendetta-add-input');
@@ -2687,7 +2732,7 @@ function targetRowHtml(t, estRespect) {
             try {
                 const data = await getPanelData('vendetta', 'vendettas');
                 body.dataset.wtLoaded = '1';
-                if (!openWindows.has('vendetta') || !document.getElementById('wt-panel-body-vendetta')) return;
+                if (!openWindows.has('vendetta') || vendettaViewMode === 'faction' || !document.getElementById('wt-panel-body-vendetta')) return;
                 const vendettas = (data && data.vendettas) || [];
                 if (!vendettas.length) {
                     body.innerHTML = addFormHtml + '<div style="color:#888;">No vendetta targets saved yet.</div>';
@@ -2716,11 +2761,92 @@ function targetRowHtml(t, estRespect) {
                 // See renderTargetsPanel's catch for why this is skipped once
                 // the panel has already loaded successfully at least once.
                 if (body.dataset.wtLoaded === '1') { console.warn('[Wartorn] Vendettas refresh failed:', e); return; }
-                if (openWindows.has('vendetta') && document.getElementById('wt-panel-body-vendetta')) {
+                if (openWindows.has('vendetta') && vendettaViewMode !== 'faction' && document.getElementById('wt-panel-body-vendetta')) {
                     document.getElementById('wt-panel-body-vendetta').innerHTML = addFormHtml + `<div style="color:#f44336;">Failed to load (${(e && e.message) || 'unknown error'}) - if this persists, check your Wartorn key is still valid.</div>`;
                     wireAddForm();
                 }
             }
+        }
+
+        // Faction mode - mirrors the dashboard's Faction Tracker sub-tab:
+        // pick (or just view, if already set on the dashboard) a faction ID
+        // and see its members' live status, sorted highest stat first, with
+        // an attack button straight from this panel. No attack-log side
+        // here (there's no room for it in a 280px panel, and the dashboard
+        // already has it) - this is the status-tracking half only.
+        async function renderVendettaFactionBody(body) {
+            await refreshVendettaFactionId();
+            const factionId = companionVendettaFactionId.id;
+            const inputBarHtml = `<div style="display:flex; gap:4px; margin-bottom:8px;">
+                <input id="wt-vendetta-faction-input" type="text" placeholder="Faction ID" value="${factionId || ''}" style="flex:1; min-width:0; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 8px; border-radius:4px; font-size:0.85em;">
+                <span id="wt-vendetta-faction-track-btn" style="background:#E91E63; color:#fff; padding:0 10px; border-radius:4px; font-size:0.85em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; white-space:nowrap;">Track</span>
+                ${factionId ? `<span id="wt-vendetta-faction-clear-btn" title="Clear" style="background:#252525; border:1px solid #444; color:#ccc; padding:0 10px; border-radius:4px; font-size:0.85em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center;">✕</span>` : ''}
+            </div>`;
+            const header = vendettaToggleBarHtml() + inputBarHtml;
+            const wireHeader = () => {
+                wireVendettaToggleBar(body);
+                const trackBtn = document.getElementById('wt-vendetta-faction-track-btn');
+                if (trackBtn) trackBtn.addEventListener('click', () => {
+                    const input = document.getElementById('wt-vendetta-faction-input');
+                    const match = input && String(input.value || '').match(/\d+/);
+                    if (!match) return;
+                    setVendettaFactionIdCompanion(match[0]);
+                });
+                const inputEl = document.getElementById('wt-vendetta-faction-input');
+                if (inputEl) inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') document.getElementById('wt-vendetta-faction-track-btn').click(); });
+                const clearBtn = document.getElementById('wt-vendetta-faction-clear-btn');
+                if (clearBtn) clearBtn.addEventListener('click', () => setVendettaFactionIdCompanion(null));
+            };
+
+            if (!factionId) {
+                body.innerHTML = header + '<div style="color:#888;">No faction tracked yet - set one here or on the dashboard\'s Vendettas tab.</div>';
+                wireHeader();
+                return;
+            }
+
+            try {
+                const data = await getPanelData('vendettaFaction_' + factionId, 'vendettas/faction/' + factionId, 15000);
+                body.dataset.wtLoaded = '1';
+                if (!openWindows.has('vendetta') || vendettaViewMode !== 'faction' || !document.getElementById('wt-panel-body-vendetta')) return;
+                if (!data || data.error) {
+                    body.innerHTML = header + `<div style="color:#f44336;">${(data && data.error) || 'Failed to load faction.'}</div>`;
+                    wireHeader();
+                    return;
+                }
+                const members = data.members || [];
+                if (!members.length) {
+                    body.innerHTML = header + '<div style="color:#888;">No members found.</div>';
+                    wireHeader();
+                    return;
+                }
+                const sorted = members.slice().sort((a, b) => (b.sort_stat || 0) - (a.sort_stat || 0));
+                const nameLine = `<div style="color:#aaa; font-size:0.8em; margin-bottom:8px;">${data.faction_name || ''}${data.tag ? ' [' + data.tag + ']' : ''}</div>`;
+                const rowsHtml = sorted.map(m => {
+                    const abbr = abbreviateStatus(m.state, m.until, m.desc);
+                    const statColor = m.stat_source === 'API' ? '#00BCD4' : (m.stat_source === 'SPY' ? '#FFD700' : (m.stat_source === 'TS' ? '#4CAF50' : '#FF9800'));
+                    const statLabel = m.sort_stat > 0 ? ((m.stat_source === 'FFS' ? 'Est: ' : '') + Number(m.sort_stat).toLocaleString()) : '?';
+                    const ffHtml = m.ff_score ? ` <span style="color:${getFFColour(m.ff_score)};">FF ${Number(m.ff_score).toFixed(2)}</span>` : '';
+                    const subtitleHtml = `<span style="color:${abbr.color}; font-weight:bold;">${abbr.label}</span> <span style="color:#666;">·</span> <span style="color:${statColor};">${statLabel}</span>${ffHtml}`;
+                    const attackHtml = attackButtonHtml(m.id);
+                    return rowHtml(m.name, subtitleHtml, attackHtml, m.online_status, m.id);
+                }).join('');
+                body.innerHTML = header + nameLine + rowsHtml;
+                wireHeader();
+                wireAttackButtons(body);
+            } catch (e) {
+                if (body.dataset.wtLoaded === '1') { console.warn('[Wartorn] Faction tracker refresh failed:', e); return; }
+                if (openWindows.has('vendetta') && vendettaViewMode === 'faction' && document.getElementById('wt-panel-body-vendetta')) {
+                    body.innerHTML = header + `<div style="color:#f44336;">Failed to load (${(e && e.message) || 'unknown error'}).</div>`;
+                    wireHeader();
+                }
+            }
+        }
+
+        async function renderVendettaPanel() {
+            const body = document.getElementById('wt-panel-body-vendetta');
+            if (!body) return;
+            if (vendettaViewMode === 'faction') await renderVendettaFactionBody(body);
+            else await renderVendettaTargetsBody(body);
         }
 
         // Persisted via GM storage (not just an in-memory variable) so a
