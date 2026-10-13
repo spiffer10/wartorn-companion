@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.2.9
+// @version      4.3.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.2.9';
+    const COMPANION_VERSION_FALLBACK = '4.3.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6272,6 +6272,72 @@ setInterval(pushSelfStatus, 20000);
         pushSelfStatus();
 setInterval(scanProfileFlightBar, 3000);
         scanProfileFlightBar();
+
+        // --- MODULE: OC MASTER ALERTS ---
+        // Ambient toast notifications for the OC Master role (mirrors the
+        // dashboard's own window.wfCheckOcMasterAlerts) - runs regardless of
+        // which Torn page is open, not gated to any particular panel being
+        // open. isOcMaster is re-checked occasionally rather than once,
+        // since the role can change (Faction Options) without a companion
+        // reload. The crimes poll itself only runs at all while isOcMaster
+        // is true, to avoid spending API budget on every companion user.
+        let wtIsOcMaster = false;
+        let wtOcCrimesTimer = null;
+        const wtOcNotifiedKeys = new Set();
+        function wtCheckOcMasterStatus() {
+            fetchFromWartorn('oc/status').then(data => {
+                wtIsOcMaster = !!(data && data.isOcMaster);
+                if (wtIsOcMaster && !wtOcCrimesTimer) {
+                    wtPollOcCrimesForAlerts();
+                    wtOcCrimesTimer = setInterval(wtPollOcCrimesForAlerts, 90000);
+                } else if (!wtIsOcMaster && wtOcCrimesTimer) {
+                    clearInterval(wtOcCrimesTimer);
+                    wtOcCrimesTimer = null;
+                    wtOcNotifiedKeys.clear();
+                }
+            }).catch(() => {});
+        }
+        wtCheckOcMasterStatus();
+        setInterval(wtCheckOcMasterStatus, 300000);
+
+        // One toast per newly-detected condition, not one per poll - same
+        // latch-and-release pattern as the dashboard's own
+        // wfCheckOcMasterAlerts (see frontend/index.html), kept as a
+        // separate Set here since this runs in a completely different page
+        // context.
+        function wtPollOcCrimesForAlerts() {
+            fetchFromWartorn('oc/crimes').then(data => {
+                if (!data || !Array.isArray(data.crimes)) return;
+                const nowSecs = Math.floor(Date.now() / 1000);
+                const currentKeys = new Map();
+                data.crimes.forEach(c => {
+                    if (c.status === 'Successful' && !c.paidOut) {
+                        currentKeys.set(`payment:${c.id}`, `💰 ${c.name} (Lvl ${c.difficulty}) is ready to pay out - $${Math.round(c.effectiveReward).toLocaleString()}`);
+                    }
+                    if (c.status === 'Planning' && c.readyAt && !c.executedAt && nowSecs >= c.readyAt) {
+                        currentKeys.set(`stalled:${c.id}`, `🛑 ${c.name} is stalled - ready but not executing`);
+                    }
+                    (c.slots || []).forEach(s => {
+                        if (!s.filled) return;
+                        if (s.itemId && !s.itemOk) {
+                            currentKeys.set(`item:${c.id}:${s.positionId}`, `🎒 ${s.name} is missing ${s.itemName || 'an item'} for ${c.name}`);
+                        }
+                        if (s.passRate != null && s.meetsPassThreshold === false) {
+                            currentKeys.set(`pass:${c.id}:${s.positionId}`, `⚠️ ${s.name}'s skill (${s.passRate}%) is below the ${c.passThreshold}%+ needed for ${c.name}`);
+                        }
+                    });
+                });
+                currentKeys.forEach((msg, key) => {
+                    if (!wtOcNotifiedKeys.has(key)) {
+                        wtOcNotifiedKeys.add(key);
+                        showCompanionToast(msg);
+                    }
+                });
+                Array.from(wtOcNotifiedKeys).forEach(key => {
+                    if (!currentKeys.has(key)) wtOcNotifiedKeys.delete(key);
+                });
+            }).catch(() => {});
+        }
 
         async function checkLiveAlerts() {
             try {
