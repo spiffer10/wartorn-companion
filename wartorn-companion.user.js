@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.3.3
+// @version      4.4.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.3.3';
+    const COMPANION_VERSION_FALLBACK = '4.4.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3269,6 +3269,11 @@ function targetRowHtml(t, estRespect) {
             milestone: { icon: '🔥', title: 'Chain Hits', render: renderMilestonePanel, ticking: true },
             vendetta: { icon: '🔪', title: 'Vendettas', render: renderVendettaPanel, ticking: false },
             chat: { icon: '💬', title: 'Faction Chat', render: renderChatPanel, ticking: false },
+            // Master/Helper/admin only - button hidden otherwise (see
+            // wtUpdateOcIssuesBadge). Not ticking: content comes from the
+            // already-cached wtOcCrimesCache (refreshed every 90s by the
+            // shared OC poll), nothing to redraw every second.
+            ocIssues: { icon: '🚨', title: 'OC Issues', render: renderOcIssuesPanel, ticking: false },
             // Not ticking: the setup form (label/h/m/s inputs) would get
             // wiped out and reset every second by that window's own tick
             // timer (startWindowTick) while someone's still typing into it. The live
@@ -4147,6 +4152,7 @@ function targetRowHtml(t, estRespect) {
                 btn.addEventListener('click', () => togglePanelWindow(key));
                 wrap.appendChild(btn);
             });
+            wtUpdateOcIssuesBadge(); // hides the button immediately for anyone not Master/Helper/admin, rather than a visible flash until the first OC status check resolves
 
             // Reopen whichever of these synchronous panels were open
             // before this navigation - radio (async, faction-gated) is
@@ -6284,14 +6290,24 @@ setInterval(scanProfileFlightBar, 3000);
         // occasionally rather than once, since both can change (Faction
         // Options) without a companion reload.
         let wtHasOcView = false;
-        let wtIsOcMaster = false;
+        let wtCanReceiveOcAlerts = false;
         let wtOcCrimesTimer = null;
         let wtOcCrimesCache = [];
         const wtOcNotifiedKeys = new Set();
+        // Backs the OC Issues panel/button: wtOcIssueDetails is the latest
+        // key->message map (same keys the toast latch uses); wtOcIssuesSeenKeys
+        // is whatever's already been shown to the viewer (cleared/refreshed
+        // only when they actually open the panel) - the button wiggles
+        // whenever there's a key in the first set not yet in the second,
+        // i.e. a genuinely NEW issue, not just "any issue still outstanding."
+        let wtOcIssueDetails = new Map();
+        let wtOcIssuesSeenKeys = new Set();
         function wtCheckOcAccessStatus() {
             fetchFromWartorn('oc/status').then(data => {
                 wtHasOcView = !!(data && data.hasOcView);
-                wtIsOcMaster = !!(data && data.isOcMaster);
+                // Master OR Helper OR the site admin (testing) - same
+                // combined flag the dashboard uses now.
+                wtCanReceiveOcAlerts = !!(data && data.canReceiveOcAlerts);
                 if (wtHasOcView && !wtOcCrimesTimer) {
                     wtFetchOcCrimes();
                     wtOcCrimesTimer = setInterval(wtFetchOcCrimes, 90000);
@@ -6310,7 +6326,8 @@ setInterval(scanProfileFlightBar, 3000);
             fetchFromWartorn('oc/crimes').then(data => {
                 if (!data || !Array.isArray(data.crimes)) return;
                 wtOcCrimesCache = data.crimes;
-                if (wtIsOcMaster) wtCheckOcMasterAlerts(data.crimes);
+                if (wtCanReceiveOcAlerts) wtCheckOcMasterAlerts(data.crimes);
+                wtUpdateOcIssuesBadge();
             }).catch(() => {});
         }
 
@@ -6352,6 +6369,39 @@ setInterval(scanProfileFlightBar, 3000);
             Array.from(wtOcNotifiedKeys).forEach(key => {
                 if (!currentKeys.has(key)) wtOcNotifiedKeys.delete(key);
             });
+            wtOcIssueDetails = currentKeys; // key -> message, read by renderOcIssuesPanel
+            wtUpdateOcIssuesBadge();
+        }
+
+        // Button only shows for Master/Helper/admin (same gate as the toast
+        // alerts - a regular member has no action to take on any of this),
+        // and wiggles - reusing the exact same CSS class the Chain Hits
+        // button already uses, per explicit request - only while there's at
+        // least one issue the viewer hasn't actually opened the panel to
+        // see yet. Opening it (renderOcIssuesPanel) marks everything
+        // currently showing as seen, which is what actually clears the
+        // wiggle; a still-unresolved-but-already-seen issue doesn't keep
+        // wiggling forever, only a genuinely new one does.
+        function wtUpdateOcIssuesBadge() {
+            const btn = document.querySelector('.wt-side-btn[data-key="ocIssues"]');
+            if (!btn) return;
+            btn.style.display = wtCanReceiveOcAlerts ? '' : 'none';
+            const hasNew = Array.from(wtOcIssueDetails.keys()).some(k => !wtOcIssuesSeenKeys.has(k));
+            btn.classList.toggle('wt-chain-active', hasNew);
+        }
+
+        function renderOcIssuesPanel() {
+            const body = document.getElementById('wt-panel-body-ocIssues');
+            if (!body) return;
+            body.dataset.wtLoaded = '1';
+            // Opening the panel is what counts as "seen" - clears the wiggle
+            // until something new shows up on a later poll.
+            wtOcIssuesSeenKeys = new Set(wtOcIssueDetails.keys());
+            wtUpdateOcIssuesBadge();
+            if (!wtOcIssueDetails.size) { body.innerHTML = '<div style="color:#888;">No OC issues right now.</div>'; return; }
+            body.innerHTML = Array.from(wtOcIssueDetails.values())
+                .map(msg => `<div style="padding:6px 0; border-bottom:1px solid #1f2229; font-size:0.85em; color:#ddd;">${wtChatEscapeHtml(msg)}</div>`)
+                .join('');
         }
 
         // Torn's OC list (.tt-oc2-list, seen on the faction Crimes tab) is a
@@ -6411,6 +6461,59 @@ setInterval(scanProfileFlightBar, 3000);
         }
         setInterval(wtEnrichOcListPage, 3000);
         wtEnrichOcListPage();
+
+        // --- MODULE: WHAT'S NEW POPUP (one-time) ---
+        // Shows the dashboard's own changelog entry (whats-new.json, a
+        // public static file - not behind /api/companion/, so this talks to
+        // WARTORN_HOST directly rather than through fetchFromWartorn) once
+        // on the companion too, the first time its version differs from
+        // what's already been acknowledged HERE - a separate GM-stored flag
+        // from the dashboard's own localStorage, since they're completely
+        // different origins with no shared storage.
+        function wtCheckWhatsNew() {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `${WARTORN_HOST}/whats-new.json`,
+                timeout: 10000,
+                onload: (res) => {
+                    try {
+                        const changelog = JSON.parse(res.responseText);
+                        if (!Array.isArray(changelog) || !changelog.length) return;
+                        const latest = changelog[0];
+                        const seen = safeGmGet('wt_whats_new_seen', '');
+                        if (seen === latest.version) return;
+                        safeGmSet('wt_whats_new_seen', latest.version);
+                        // Never pop up on the very first install - nothing to
+                        // compare against yet, this just seeds the baseline
+                        // silently so only a REAL later update triggers it.
+                        if (!seen) return;
+                        wtShowWhatsNewPopup(latest);
+                    } catch (e) {}
+                },
+                onerror: () => {},
+                ontimeout: () => {}
+            });
+        }
+        function wtShowWhatsNewPopup(entry) {
+            if (document.getElementById('wt-whats-new-popup')) return;
+            const overlay = document.createElement('div');
+            overlay.id = 'wt-whats-new-popup';
+            overlay.style.cssText = 'position:fixed; inset:0; z-index:999999999; background:rgba(0,0,0,0.75); display:flex; align-items:center; justify-content:center; padding:20px;';
+            overlay.innerHTML = `
+                <div style="background:#15171c; border:2px solid #00e5ff; border-radius:10px; max-width:420px; width:100%; padding:24px; box-shadow:0 8px 40px rgba(0,0,0,0.8); font-family:sans-serif;">
+                    <div style="color:#00e5ff; font-weight:bold; font-size:1.2em; margin-bottom:4px;">🆕 What's New - v${wtChatEscapeHtml(entry.version || '')}</div>
+                    <div style="color:#888; font-size:0.8em; margin-bottom:14px;">${wtChatEscapeHtml(entry.date || '')}</div>
+                    <ul style="color:#ddd; font-size:0.9em; line-height:1.6; margin:0 0 18px; padding-left:20px;">
+                        ${(entry.items || []).map(i => `<li>${wtChatEscapeHtml(i)}</li>`).join('')}
+                    </ul>
+                    <div style="text-align:right;">
+                        <span onclick="document.getElementById('wt-whats-new-popup').remove()" style="background:#00e5ff; color:#000; padding:8px 18px; border-radius:6px; cursor:pointer; font-weight:bold; display:inline-block;">Got it</span>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+        }
+        wtCheckWhatsNew();
 
         async function checkLiveAlerts() {
             try {
