@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.4.1
+// @version      4.4.2
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.4.1';
+    const COMPANION_VERSION_FALLBACK = '4.4.2';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3282,7 +3282,7 @@ function targetRowHtml(t, estRespect) {
             // (PANEL_DEFS order drives the button stack order) so it lands
             // right below the flight widget, which is itself inserted right
             // before 'settings' - see the key === 'settings' check below.
-            ocIssues: { icon: '🦹', title: 'OC Issues', render: renderOcIssuesPanel, ticking: false },
+            ocIssues: { icon: '💰', title: 'OC Issues', render: renderOcIssuesPanel, ticking: false },
             settings: { icon: '⚙️', title: 'Settings', render: renderSettingsPanel, ticking: false }
         };
 
