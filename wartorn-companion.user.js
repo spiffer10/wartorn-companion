@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.6.0
+// @version      4.6.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.6.0';
+    const COMPANION_VERSION_FALLBACK = '4.6.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3780,20 +3780,27 @@ function targetRowHtml(t, estRespect) {
         }
 
         // Shared by refreshButtonHighlights and the per-button hover
-        // handlers below, so "unread" (currently only chat sets
-        // dataset.unread) stays correct through hover in/out instead of
-        // being a one-off green flash that the very next mouseleave wipes
-        // back to plain grey.
+        // handlers below, so "unread" (chat and ocIssues both set
+        // dataset.unread - see wtChatSetButtonUnread/wtUpdateOcIssuesBadge)
+        // stays correct through hover in/out instead of being a one-off
+        // flash that the very next mouseleave wipes back to plain grey.
+        // ocIssues gets red instead of chat's green - everything else
+        // (no transform, no keyframes, just a plain background/border swap
+        // on the same element chat already uses successfully) is identical,
+        // per explicit request to stop trying bespoke animated treatments.
+        function wtUnreadColor(key) {
+            return key === 'ocIssues' ? '#f44336' : '#4CAF50';
+        }
         function buttonRestColor(key, btn) {
             if (openWindows.has(key)) return 'rgba(10,11,14,0.95)';
-            if (btn.dataset.unread === '1') return 'rgba(76,175,80,0.25)';
+            if (btn.dataset.unread === '1') return key === 'ocIssues' ? 'rgba(244,67,54,0.3)' : 'rgba(76,175,80,0.25)';
             return 'rgba(21,23,28,0.9)';
         }
         function refreshButtonHighlights() {
             document.querySelectorAll('.wt-side-btn').forEach(b => {
                 const isOpen = openWindows.has(b.dataset.key);
                 b.style.background = buttonRestColor(b.dataset.key, b);
-                b.style.borderColor = (!isOpen && b.dataset.unread === '1') ? '#4CAF50' : '#3a3f4b';
+                b.style.borderColor = (!isOpen && b.dataset.unread === '1') ? wtUnreadColor(b.dataset.key) : '#3a3f4b';
                 b.style.opacity = isOpen ? '1' : '0.85';
             });
         }
@@ -4112,19 +4119,6 @@ function targetRowHtml(t, estRespect) {
                 }
                 .wt-side-btn.wt-chain-active {
                     animation: wt-chainbtn-pulse 0.5s linear infinite, wt-chainbtn-wiggle 2.4s ease-in-out infinite;
-                }
-                /* OC Issues: a plain static red, no animation at all (not
-                   even the color-only pulse tried before) - any form of the
-                   Chain Hits treatment kept visibly drifting the money bag
-                   icon on the user's device, so this drops transforms AND
-                   keyframes entirely. !important because
-                   refreshButtonHighlights() sets inline background/
-                   borderColor on every .wt-side-btn element directly and
-                   would otherwise override this. */
-                .wt-side-btn.wt-oc-attention {
-                    background: rgba(244,67,54,0.55) !important;
-                    border-color: #f44336 !important;
-                    box-shadow: 0 0 10px rgba(244,67,54,0.6) !important;
                 }
             `;
             document.head.appendChild(scrollbarStyle);
@@ -6395,10 +6389,15 @@ setInterval(scanProfileFlightBar, 3000);
         }
 
         // Button only shows for Master/Helper/admin (a regular member has no
-        // action to take on any of this), and turns solid red (wt-oc-
-        // attention, static - no animation) only while there's at least one
-        // issue the viewer hasn't actually opened the panel to see yet.
-        // Opening it (renderOcIssuesPanel) marks everything currently
+        // action to take on any of this), and turns solid red only while
+        // there's at least one issue the viewer hasn't actually opened the
+        // panel to see yet - via the exact same dataset.unread +
+        // refreshButtonHighlights() mechanism the chat button already uses
+        // successfully (wtChatSetButtonUnread), just red instead of green
+        // (see wtUnreadColor). No custom CSS class, no transform, nothing
+        // bespoke - every animated variant tried before this kept drifting
+        // the icon on the user's device; this path doesn't animate at all.
+        // Opening the panel (renderOcIssuesPanel) marks everything currently
         // showing as seen, which is what actually clears the red; a still-
         // unresolved-but-already-seen issue doesn't stay red forever, only
         // a genuinely new one does.
@@ -6407,7 +6406,8 @@ setInterval(scanProfileFlightBar, 3000);
             if (!btn) return;
             btn.style.display = wtCanReceiveOcAlerts ? '' : 'none';
             const hasNew = Array.from(wtOcIssueDetails.keys()).some(k => !wtOcIssuesSeenKeys.has(k));
-            btn.classList.toggle('wt-oc-attention', hasNew);
+            btn.dataset.unread = hasNew ? '1' : '0';
+            refreshButtonHighlights();
         }
 
         function renderOcIssuesPanel() {
@@ -6449,7 +6449,12 @@ setInterval(scanProfileFlightBar, 3000);
                 if (!badge) {
                     badge = document.createElement('div');
                     badge.className = 'wt-oc-badge';
-                    badge.style.cssText = 'margin-top:3px; font-size:11px; font-weight:bold; line-height:1.5;';
+                    // Dark backdrop (not just bare text) - this sits directly
+                    // on Torn's own page background, and plain yellow text
+                    // with nothing behind it was unreadable there regardless
+                    // of Torn's skin. The pill keeps every line (red/green/
+                    // yellow/grey) readable the same way.
+                    badge.style.cssText = 'margin-top:4px; font-size:11px; font-weight:bold; line-height:1.7; background:rgba(21,23,28,0.92); border:1px solid #2a2d34; border-radius:5px; padding:4px 8px; display:inline-block; max-width:100%;';
                     titleEl.insertAdjacentElement('afterend', badge);
                 }
                 const lines = [];
