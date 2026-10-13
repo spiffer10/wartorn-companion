@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.3.1
+// @version      4.3.2
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.3.1';
+    const COMPANION_VERSION_FALLBACK = '4.3.2';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6383,11 +6383,17 @@ setInterval(scanProfileFlightBar, 3000);
                 if (stuck) lines.push('<span style="color:#ff5252;">🛑 Stalled</span>');
                 const missingSlot = (c.slots || []).find(s => s.filled && s.itemId && !s.itemOk);
                 if (missingSlot) lines.push(`<span style="color:#ff5252;">🎒 ${wtChatEscapeHtml(missingSlot.name)} missing ${wtChatEscapeHtml(missingSlot.itemName || 'item')}</span>`);
+                // Shown on every crime, not just Successful ones - the
+                // configured split is already known before the crime even
+                // executes, and seeing it in advance (not just after the
+                // fact) is exactly the point per explicit request.
+                const splitLabel = `${c.factionCutPct}% faction / ${100 - c.factionCutPct}% player`;
                 if (c.status === 'Successful') {
-                    const splitLabel = `${c.factionCutPct}% faction / ${100 - c.factionCutPct}% player`;
                     lines.push(c.paidOut
                         ? `<span style="color:#4CAF50;">💰 ${splitLabel} - Paid</span>`
                         : `<span style="color:#FFD700;">💰 ${splitLabel} - Awaiting payment</span>`);
+                } else if (c.status === 'Recruiting' || c.status === 'Planning') {
+                    lines.push(`<span style="color:#888;">💰 Expected split: ${splitLabel}</span>`);
                 }
                 badge.innerHTML = lines.join(' &middot; ');
                 badge.style.display = lines.length ? 'block' : 'none';
