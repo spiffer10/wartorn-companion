@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.5.1
+// @version      4.6.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.5.1';
+    const COMPANION_VERSION_FALLBACK = '4.6.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4113,16 +4113,18 @@ function targetRowHtml(t, estRespect) {
                 .wt-side-btn.wt-chain-active {
                     animation: wt-chainbtn-pulse 0.5s linear infinite, wt-chainbtn-wiggle 2.4s ease-in-out infinite;
                 }
-                /* OC Issues reuses only the color pulse, not the scale+rotate
-                   wiggle - the money bag glyph visibly drifted off-center
-                   under rotate+scale (confirmed via a user screenshot) in a
-                   way the Chain Hits fire icon didn't, almost certainly
-                   because that glyph's own ink isn't centered within its
-                   font's advance box on their device/webview. Color pulse
-                   alone still signals "new issue" without ever transforming
-                   the box, so it can't expose that regardless of glyph. */
-                .wt-side-btn.wt-oc-pulse {
-                    animation: wt-chainbtn-pulse 0.5s linear infinite;
+                /* OC Issues: a plain static red, no animation at all (not
+                   even the color-only pulse tried before) - any form of the
+                   Chain Hits treatment kept visibly drifting the money bag
+                   icon on the user's device, so this drops transforms AND
+                   keyframes entirely. !important because
+                   refreshButtonHighlights() sets inline background/
+                   borderColor on every .wt-side-btn element directly and
+                   would otherwise override this. */
+                .wt-side-btn.wt-oc-attention {
+                    background: rgba(244,67,54,0.55) !important;
+                    border-color: #f44336 !important;
+                    box-shadow: 0 0 10px rgba(244,67,54,0.6) !important;
                 }
             `;
             document.head.appendChild(scrollbarStyle);
@@ -6325,7 +6327,6 @@ setInterval(scanProfileFlightBar, 3000);
         let wtCanReceiveOcAlerts = false;
         let wtOcCrimesTimer = null;
         let wtOcCrimesCache = [];
-        const wtOcNotifiedKeys = new Set();
         // Backs the OC Issues panel/button: wtOcIssueDetails is the latest
         // key->message map (same keys the toast latch uses); wtOcIssuesSeenKeys
         // is whatever's already been shown to the viewer (cleared/refreshed
@@ -6347,7 +6348,6 @@ setInterval(scanProfileFlightBar, 3000);
                     clearInterval(wtOcCrimesTimer);
                     wtOcCrimesTimer = null;
                     wtOcCrimesCache = [];
-                    wtOcNotifiedKeys.clear();
                 }
             }).catch(() => {});
         }
@@ -6358,17 +6358,15 @@ setInterval(scanProfileFlightBar, 3000);
             fetchFromWartorn('oc/crimes').then(data => {
                 if (!data || !Array.isArray(data.crimes)) return;
                 wtOcCrimesCache = data.crimes;
-                if (wtCanReceiveOcAlerts) wtCheckOcMasterAlerts(data.crimes);
+                if (wtCanReceiveOcAlerts) wtComputeOcIssues(data.crimes);
                 wtUpdateOcIssuesBadge();
             }).catch(() => {});
         }
 
-        // One toast per newly-detected condition, not one per poll - same
-        // latch-and-release pattern as the dashboard's own
-        // wfCheckOcMasterAlerts (see frontend/index.html), kept as a
-        // separate Set here since this runs in a completely different page
-        // context.
-        function wtCheckOcMasterAlerts(crimes) {
+        // Builds the issue list the OC Issues panel/button show - no toast
+        // here (removed per explicit request: the button turning red is the
+        // only notice now, same as it would be noisy/redundant with chat).
+        function wtComputeOcIssues(crimes) {
             const nowSecs = Math.floor(Date.now() / 1000);
             const currentKeys = new Map();
             crimes.forEach(c => {
@@ -6392,33 +6390,24 @@ setInterval(scanProfileFlightBar, 3000);
                     }
                 });
             });
-            currentKeys.forEach((msg, key) => {
-                if (!wtOcNotifiedKeys.has(key)) {
-                    wtOcNotifiedKeys.add(key);
-                    showCompanionToast(msg);
-                }
-            });
-            Array.from(wtOcNotifiedKeys).forEach(key => {
-                if (!currentKeys.has(key)) wtOcNotifiedKeys.delete(key);
-            });
             wtOcIssueDetails = currentKeys; // key -> message, read by renderOcIssuesPanel
             wtUpdateOcIssuesBadge();
         }
 
-        // Button only shows for Master/Helper/admin (same gate as the toast
-        // alerts - a regular member has no action to take on any of this),
-        // and pulses (color only, see wt-oc-pulse above) only while there's
-        // at least one issue the viewer hasn't actually opened the panel to
-        // see yet. Opening it (renderOcIssuesPanel) marks everything
-        // currently showing as seen, which is what actually clears the
-        // pulse; a still-unresolved-but-already-seen issue doesn't keep
-        // pulsing forever, only a genuinely new one does.
+        // Button only shows for Master/Helper/admin (a regular member has no
+        // action to take on any of this), and turns solid red (wt-oc-
+        // attention, static - no animation) only while there's at least one
+        // issue the viewer hasn't actually opened the panel to see yet.
+        // Opening it (renderOcIssuesPanel) marks everything currently
+        // showing as seen, which is what actually clears the red; a still-
+        // unresolved-but-already-seen issue doesn't stay red forever, only
+        // a genuinely new one does.
         function wtUpdateOcIssuesBadge() {
             const btn = document.querySelector('.wt-side-btn[data-key="ocIssues"]');
             if (!btn) return;
             btn.style.display = wtCanReceiveOcAlerts ? '' : 'none';
             const hasNew = Array.from(wtOcIssueDetails.keys()).some(k => !wtOcIssuesSeenKeys.has(k));
-            btn.classList.toggle('wt-oc-pulse', hasNew);
+            btn.classList.toggle('wt-oc-attention', hasNew);
         }
 
         function renderOcIssuesPanel() {
@@ -6468,6 +6457,20 @@ setInterval(scanProfileFlightBar, 3000);
                 if (stuck) lines.push('<span style="color:#ff5252;">🛑 Stalled</span>');
                 const missingSlot = (c.slots || []).find(s => s.filled && s.itemId && !s.itemOk);
                 if (missingSlot) lines.push(`<span style="color:#ff5252;">🎒 ${wtChatEscapeHtml(missingSlot.name)} missing ${wtChatEscapeHtml(missingSlot.itemName || 'item')}</span>`);
+                // Shown regardless of current status (delay is recorded
+                // against the crime, not cleared on execution) - this is the
+                // one flag that matters most when someone's about to key a
+                // payment split into Torn's own faction-money screen by
+                // hand: an even split would be WRONG for this crime, since
+                // whoever's named here is getting docked per the penalty %.
+                const delayedSlots = (c.slots || []).filter(s => s.filled && s.delaySeconds > 0);
+                if (delayedSlots.length) {
+                    const who = delayedSlots.map(s => {
+                        const sp = (c.suggestedSplit || []).find(x => x.playerId === s.playerId);
+                        return wtChatEscapeHtml(s.name) + (sp ? ` (-${sp.penaltyPct}%)` : '');
+                    }).join(', ');
+                    lines.push(`<span style="color:#ff9800; font-weight:bold;">⚠️ Delayed on Torn: ${who} - do NOT split evenly</span>`);
+                }
                 // Shown on every crime, not just Successful ones - the
                 // configured split is already known before the crime even
                 // executes, and seeing it in advance (not just after the
@@ -6546,7 +6549,166 @@ setInterval(scanProfileFlightBar, 3000);
         }
         wtCheckWhatsNew();
 
-        // --- MODULE: NEWSLETTER TOAST ---
+        // --- MODULE: NEWSLETTER POPUP ---
+        // Ports the dashboard's own newsletter renderer (frontend/index.html's
+        // wfNlRenderDelta/wfNlRenderBlocks/wfNlRenderInline/wfNlDeltaNode)
+        // so the companion can show the REAL issue - title, author, date,
+        // and full rich body including images - not just a one-line toast
+        // naming it.
+        const WT_NL_FONT_MAP = { 'arial': 'Arial', 'georgia': 'Georgia', 'times-new-roman': 'Times New Roman', 'courier-new': 'Courier New', 'verdana': 'Verdana', 'trebuchet-ms': 'Trebuchet MS', 'impact': 'Impact', 'comic-sans-ms': 'Comic Sans MS' };
+        function wtNlSafeHref(h) { return /^https?:\/\//i.test(h || '') ? h : null; }
+        // Chat-upload image paths are relative to WARTORN_HOST (the
+        // dashboard's own origin, where the dashboard's identical renderer
+        // runs same-origin) - this script runs on torn.com, so a bare
+        // "/chat-uploads/..." path has to be prefixed or it 404s against
+        // torn.com instead.
+        function wtNlSafeSrc(s) {
+            s = s || '';
+            if (s.indexOf('/chat-uploads/') === 0 && s.indexOf('..') < 0) return WARTORN_HOST + s;
+            if (/^https:\/\/[^\s]*giphy\.com\//i.test(s)) return s;
+            return null;
+        }
+        function wtNlDeltaNode(text, a) {
+            let node = document.createTextNode(text);
+            if (a.underline) { const e = document.createElement('u'); e.appendChild(node); node = e; }
+            if (a.italic) { const e = document.createElement('i'); e.appendChild(node); node = e; }
+            if (a.bold) { const e = document.createElement('b'); e.appendChild(node); node = e; }
+            if (a.link) {
+                const href = wtNlSafeHref(a.link);
+                const e = document.createElement(href ? 'a' : 'span');
+                if (href) { e.href = href; e.target = '_blank'; e.rel = 'noopener'; e.style.color = '#00e5ff'; }
+                e.appendChild(node); node = e;
+            }
+            if (a.font || a.size || a.color) {
+                const sp = document.createElement('span');
+                if (WT_NL_FONT_MAP[a.font]) sp.style.fontFamily = WT_NL_FONT_MAP[a.font];
+                if (a.size) sp.style.fontSize = a.size;
+                if (a.color) sp.style.color = a.color;
+                sp.appendChild(node); node = sp;
+            }
+            return node;
+        }
+        function wtNlRenderDelta(ops) {
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'color:#ddd; line-height:1.6; word-break:break-word; font-size:1.05em;';
+            const lines = [];
+            let cur = { frag: document.createDocumentFragment(), attrs: {} };
+            (ops || []).forEach(op => {
+                const a = op.attributes || {};
+                if (typeof op.insert === 'string') {
+                    const parts = op.insert.split('\n');
+                    parts.forEach((part, i) => {
+                        if (part) cur.frag.appendChild(wtNlDeltaNode(part, a));
+                        if (i < parts.length - 1) { cur.attrs = a; lines.push(cur); cur = { frag: document.createDocumentFragment(), attrs: {} }; }
+                    });
+                } else if (op.insert && typeof op.insert.image === 'string') {
+                    const src = wtNlSafeSrc(op.insert.image);
+                    if (!src) return;
+                    const img = document.createElement('img');
+                    img.src = src; img.loading = 'lazy';
+                    img.style.cssText = 'max-width:100%; height:auto; border-radius:6px; margin:8px 0; display:block;' + (a.width ? ' width:' + a.width + ';' : '');
+                    cur.frag.appendChild(img);
+                }
+            });
+            if (cur.frag.childNodes.length) lines.push(cur);
+            let list = null;
+            lines.forEach(ln => {
+                if (ln.attrs.list) {
+                    const tag = ln.attrs.list === 'ordered' ? 'ol' : 'ul';
+                    if (!list || list.tagName.toLowerCase() !== tag) { list = document.createElement(tag); list.style.cssText = 'margin:0 0 10px 22px;'; wrap.appendChild(list); }
+                    const li = document.createElement('li'); li.appendChild(ln.frag); list.appendChild(li);
+                    return;
+                }
+                list = null;
+                const h = parseInt(ln.attrs.header, 10);
+                const el = document.createElement(h ? 'h' + Math.min(h, 3) : 'p');
+                el.style.cssText = h ? 'margin:12px 0 8px; color:#fff; font-size:' + (h === 1 ? '1.4em' : h === 2 ? '1.25em' : '1.1em') + ';' : 'margin:0 0 10px; min-height:1em;';
+                el.appendChild(ln.frag);
+                wrap.appendChild(el);
+            });
+            return wrap;
+        }
+        function wtNlRenderInline(list) {
+            const frag = document.createDocumentFragment();
+            (list || []).forEach(n => {
+                if (n.t === 'br') { frag.appendChild(document.createElement('br')); return; }
+                if (n.t === 'a') {
+                    const href = wtNlSafeHref(n.href || '');
+                    const a = document.createElement(href ? 'a' : 'span');
+                    if (href) { a.href = href; a.target = '_blank'; a.rel = 'noopener'; a.style.color = '#00e5ff'; }
+                    a.appendChild(wtNlRenderInline(n.c));
+                    frag.appendChild(a);
+                    return;
+                }
+                let node = document.createTextNode(n.s || '');
+                if (n.u) { const e = document.createElement('u'); e.appendChild(node); node = e; }
+                if (n.i) { const e = document.createElement('i'); e.appendChild(node); node = e; }
+                if (n.b) { const e = document.createElement('b'); e.appendChild(node); node = e; }
+                if (n.f || n.z || n.c) { const sp = document.createElement('span'); if (n.f) sp.style.fontFamily = n.f; if (n.z) sp.style.fontSize = n.z + 'px'; if (n.c) sp.style.color = n.c; sp.appendChild(node); node = sp; }
+                frag.appendChild(node);
+            });
+            return frag;
+        }
+        function wtNlRenderBlocks(blocks) {
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'color:#ddd; line-height:1.6; word-break:break-word; font-size:1.05em;';
+            (blocks || []).forEach(b => {
+                if (b.t === 'p') {
+                    const p = document.createElement('p'); p.style.margin = '0 0 10px';
+                    p.appendChild(wtNlRenderInline(b.c)); wrap.appendChild(p);
+                } else if (b.t === 'h3') {
+                    const h = document.createElement('h3'); h.style.cssText = 'margin:12px 0 8px; color:#fff; font-size:1.1em;';
+                    h.appendChild(wtNlRenderInline(b.c)); wrap.appendChild(h);
+                } else if (b.t === 'ul' || b.t === 'ol') {
+                    const l = document.createElement(b.t); l.style.cssText = 'margin:0 0 10px 22px;';
+                    (b.items || []).forEach(it => { const li = document.createElement('li'); li.appendChild(wtNlRenderInline(it)); l.appendChild(li); });
+                    wrap.appendChild(l);
+                } else if (b.t === 'img') {
+                    const src = wtNlSafeSrc(b.src || '');
+                    if (src) { const img = document.createElement('img'); img.src = src; img.loading = 'lazy'; img.style.cssText = 'width:' + (b.w || 100) + '%; max-width:100%; height:auto; border-radius:6px; margin:8px 0; display:block;'; wrap.appendChild(img); }
+                }
+            });
+            return wrap;
+        }
+        // Large (600px, up to 85vh scrollable) rather than a toast - per
+        // explicit request, so images and longer issues are actually
+        // readable instead of just naming the issue.
+        function wtShowNewsletterPopup(issue) {
+            const old = document.getElementById('wt-newsletter-popup');
+            if (old) old.remove();
+            const overlay = document.createElement('div');
+            overlay.id = 'wt-newsletter-popup';
+            overlay.style.cssText = 'position:fixed; inset:0; z-index:999999999; background:rgba(0,0,0,0.8); display:flex; align-items:center; justify-content:center; padding:20px;';
+            const card = document.createElement('div');
+            card.style.cssText = 'background:#15171c; border:2px solid #FFD700; border-radius:10px; width:600px; max-width:95vw; max-height:85vh; display:flex; flex-direction:column; box-shadow:0 8px 40px rgba(0,0,0,0.8); font-family:sans-serif;';
+            const header = document.createElement('div');
+            header.style.cssText = 'padding:20px 24px 12px; border-bottom:1px solid #2a2d34; flex-shrink:0;';
+            header.innerHTML = `
+                <div style="color:#FFD700; font-weight:bold; font-size:1.3em; margin-bottom:4px;">📰 ${wtChatEscapeHtml(issue.title)}</div>
+                <div style="color:#888; font-size:0.8em;">By ${wtChatEscapeHtml(issue.authorName)} - ${new Date(issue.publishedAt).toLocaleString()}</div>
+            `;
+            const body = document.createElement('div');
+            body.style.cssText = 'padding:18px 24px; overflow-y:auto; flex:1;';
+            if (issue.format === 'delta') body.appendChild(wtNlRenderDelta(issue.ops));
+            else if (issue.format === 'blocks') body.appendChild(wtNlRenderBlocks(issue.blocks));
+            else {
+                const p = document.createElement('div');
+                p.style.cssText = 'color:#ddd; white-space:pre-wrap; word-break:break-word; font-size:1.05em;';
+                p.textContent = issue.body || '';
+                body.appendChild(p);
+            }
+            const footer = document.createElement('div');
+            footer.style.cssText = 'padding:12px 24px 20px; text-align:right; flex-shrink:0;';
+            const gotIt = document.createElement('span');
+            gotIt.textContent = 'Got it';
+            gotIt.style.cssText = 'background:#FFD700; color:#000; padding:8px 18px; border-radius:6px; cursor:pointer; font-weight:bold; display:inline-block;';
+            gotIt.addEventListener('click', () => overlay.remove());
+            footer.appendChild(gotIt);
+            card.appendChild(header); card.appendChild(body); card.appendChild(footer);
+            overlay.appendChild(card);
+            document.body.appendChild(overlay);
+        }
+
         // Faction newsletters are published on the dashboard's Home tab with
         // no companion equivalent at all - a staff member publishing one
         // while people are mostly on torn.com via the companion otherwise
@@ -6559,7 +6721,7 @@ setInterval(scanProfileFlightBar, 3000);
         // elsewhere the instant you open the dashboard, so a same-session
         // popup would be redundant; a faction newsletter has no such
         // elsewhere-visible fallback for someone living in the companion, so
-        // the first real check genuinely should toast if there's an
+        // the first real check genuinely should pop up if there's an
         // unseen-by-this-script issue (this also means it fires once for
         // brand-new companion installs about whatever's currently the
         // latest issue, which is the right tradeoff over never firing).
@@ -6572,7 +6734,7 @@ setInterval(scanProfileFlightBar, 3000);
                 if (wtNewsletterSeenId === idStr) return;
                 wtNewsletterSeenId = idStr;
                 safeGmSet('wt_newsletter_seen_id', idStr);
-                showCompanionToast(`📰 New newsletter: ${issue.title}`);
+                wtShowNewsletterPopup(issue);
             }).catch(() => {});
         }
         wtCheckNewsletter();
