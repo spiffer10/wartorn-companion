@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.3.2
+// @version      4.3.3
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.3.2';
+    const COMPANION_VERSION_FALLBACK = '4.3.3';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6323,7 +6323,11 @@ setInterval(scanProfileFlightBar, 3000);
             const nowSecs = Math.floor(Date.now() / 1000);
             const currentKeys = new Map();
             crimes.forEach(c => {
-                if (c.status === 'Successful' && !c.paidOut) {
+                // paidOutUnknown crimes excluded - Torn's own payout log
+                // can't confirm those either way (too old), so nagging to
+                // pay out something that might already be paid would be
+                // actively misleading, not just noisy.
+                if (c.status === 'Successful' && !c.paidOut && !c.paidOutUnknown) {
                     currentKeys.set(`payment:${c.id}`, `💰 ${c.name} (Lvl ${c.difficulty}) is ready to pay out - $${Math.round(c.effectiveReward).toLocaleString()}`);
                 }
                 if (c.status === 'Planning' && c.readyAt && !c.executedAt && nowSecs >= c.readyAt) {
@@ -6389,9 +6393,15 @@ setInterval(scanProfileFlightBar, 3000);
                 // fact) is exactly the point per explicit request.
                 const splitLabel = `${c.factionCutPct}% faction / ${100 - c.factionCutPct}% player`;
                 if (c.status === 'Successful') {
+                    // Torn's own payout news only covers the last ~25 recent
+                    // entries (~a day) - older than that can never be
+                    // confirmed either way, so say so rather than implying
+                    // it's simply sitting unactioned.
                     lines.push(c.paidOut
                         ? `<span style="color:#4CAF50;">💰 ${splitLabel} - Paid</span>`
-                        : `<span style="color:#FFD700;">💰 ${splitLabel} - Awaiting payment</span>`);
+                        : c.paidOutUnknown
+                            ? `<span style="color:#888;">💰 ${splitLabel} - Payout unknown (too old to confirm)</span>`
+                            : `<span style="color:#FFD700;">💰 ${splitLabel} - Awaiting payment</span>`);
                 } else if (c.status === 'Recruiting' || c.status === 'Planning') {
                     lines.push(`<span style="color:#888;">💰 Expected split: ${splitLabel}</span>`);
                 }
