@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.3.0
+// @version      4.3.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.3.0';
+    const COMPANION_VERSION_FALLBACK = '4.3.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6273,71 +6273,128 @@ setInterval(pushSelfStatus, 20000);
 setInterval(scanProfileFlightBar, 3000);
         scanProfileFlightBar();
 
-        // --- MODULE: OC MASTER ALERTS ---
-        // Ambient toast notifications for the OC Master role (mirrors the
-        // dashboard's own window.wfCheckOcMasterAlerts) - runs regardless of
-        // which Torn page is open, not gated to any particular panel being
-        // open. isOcMaster is re-checked occasionally rather than once,
-        // since the role can change (Faction Options) without a companion
-        // reload. The crimes poll itself only runs at all while isOcMaster
-        // is true, to avoid spending API budget on every companion user.
+        // --- MODULE: OC MASTER ALERTS + OC LIST PAGE ENRICHMENT ---
+        // Two features sharing one data poll: (1) ambient toast notifications
+        // for the OC Master role specifically, runs regardless of which Torn
+        // page is open; (2) a payment-split/stalled/missing-item badge
+        // injected after each crime's name on Torn's own OC list page,
+        // visible to anyone with OC view access (not just the Master) -
+        // same idea as scanProfileFlightBar's landing timer, just a
+        // different target page. hasOcView/isOcMaster are re-checked
+        // occasionally rather than once, since both can change (Faction
+        // Options) without a companion reload.
+        let wtHasOcView = false;
         let wtIsOcMaster = false;
         let wtOcCrimesTimer = null;
+        let wtOcCrimesCache = [];
         const wtOcNotifiedKeys = new Set();
-        function wtCheckOcMasterStatus() {
+        function wtCheckOcAccessStatus() {
             fetchFromWartorn('oc/status').then(data => {
+                wtHasOcView = !!(data && data.hasOcView);
                 wtIsOcMaster = !!(data && data.isOcMaster);
-                if (wtIsOcMaster && !wtOcCrimesTimer) {
-                    wtPollOcCrimesForAlerts();
-                    wtOcCrimesTimer = setInterval(wtPollOcCrimesForAlerts, 90000);
-                } else if (!wtIsOcMaster && wtOcCrimesTimer) {
+                if (wtHasOcView && !wtOcCrimesTimer) {
+                    wtFetchOcCrimes();
+                    wtOcCrimesTimer = setInterval(wtFetchOcCrimes, 90000);
+                } else if (!wtHasOcView && wtOcCrimesTimer) {
                     clearInterval(wtOcCrimesTimer);
                     wtOcCrimesTimer = null;
+                    wtOcCrimesCache = [];
                     wtOcNotifiedKeys.clear();
                 }
             }).catch(() => {});
         }
-        wtCheckOcMasterStatus();
-        setInterval(wtCheckOcMasterStatus, 300000);
+        wtCheckOcAccessStatus();
+        setInterval(wtCheckOcAccessStatus, 300000);
+
+        function wtFetchOcCrimes() {
+            fetchFromWartorn('oc/crimes').then(data => {
+                if (!data || !Array.isArray(data.crimes)) return;
+                wtOcCrimesCache = data.crimes;
+                if (wtIsOcMaster) wtCheckOcMasterAlerts(data.crimes);
+            }).catch(() => {});
+        }
 
         // One toast per newly-detected condition, not one per poll - same
         // latch-and-release pattern as the dashboard's own
         // wfCheckOcMasterAlerts (see frontend/index.html), kept as a
         // separate Set here since this runs in a completely different page
         // context.
-        function wtPollOcCrimesForAlerts() {
-            fetchFromWartorn('oc/crimes').then(data => {
-                if (!data || !Array.isArray(data.crimes)) return;
-                const nowSecs = Math.floor(Date.now() / 1000);
-                const currentKeys = new Map();
-                data.crimes.forEach(c => {
-                    if (c.status === 'Successful' && !c.paidOut) {
-                        currentKeys.set(`payment:${c.id}`, `💰 ${c.name} (Lvl ${c.difficulty}) is ready to pay out - $${Math.round(c.effectiveReward).toLocaleString()}`);
+        function wtCheckOcMasterAlerts(crimes) {
+            const nowSecs = Math.floor(Date.now() / 1000);
+            const currentKeys = new Map();
+            crimes.forEach(c => {
+                if (c.status === 'Successful' && !c.paidOut) {
+                    currentKeys.set(`payment:${c.id}`, `💰 ${c.name} (Lvl ${c.difficulty}) is ready to pay out - $${Math.round(c.effectiveReward).toLocaleString()}`);
+                }
+                if (c.status === 'Planning' && c.readyAt && !c.executedAt && nowSecs >= c.readyAt) {
+                    currentKeys.set(`stalled:${c.id}`, `🛑 ${c.name} is stalled - ready but not executing`);
+                }
+                (c.slots || []).forEach(s => {
+                    if (!s.filled) return;
+                    if (s.itemId && !s.itemOk) {
+                        currentKeys.set(`item:${c.id}:${s.positionId}`, `🎒 ${s.name} is missing ${s.itemName || 'an item'} for ${c.name}`);
                     }
-                    if (c.status === 'Planning' && c.readyAt && !c.executedAt && nowSecs >= c.readyAt) {
-                        currentKeys.set(`stalled:${c.id}`, `🛑 ${c.name} is stalled - ready but not executing`);
-                    }
-                    (c.slots || []).forEach(s => {
-                        if (!s.filled) return;
-                        if (s.itemId && !s.itemOk) {
-                            currentKeys.set(`item:${c.id}:${s.positionId}`, `🎒 ${s.name} is missing ${s.itemName || 'an item'} for ${c.name}`);
-                        }
-                        if (s.passRate != null && s.meetsPassThreshold === false) {
-                            currentKeys.set(`pass:${c.id}:${s.positionId}`, `⚠️ ${s.name}'s skill (${s.passRate}%) is below the ${c.passThreshold}%+ needed for ${c.name}`);
-                        }
-                    });
-                });
-                currentKeys.forEach((msg, key) => {
-                    if (!wtOcNotifiedKeys.has(key)) {
-                        wtOcNotifiedKeys.add(key);
-                        showCompanionToast(msg);
+                    if (s.passRate != null && s.meetsPassThreshold === false) {
+                        currentKeys.set(`pass:${c.id}:${s.positionId}`, `⚠️ ${s.name}'s skill (${s.passRate}%) is below the ${c.passThreshold}%+ needed for ${c.name}`);
                     }
                 });
-                Array.from(wtOcNotifiedKeys).forEach(key => {
-                    if (!currentKeys.has(key)) wtOcNotifiedKeys.delete(key);
-                });
-            }).catch(() => {});
+            });
+            currentKeys.forEach((msg, key) => {
+                if (!wtOcNotifiedKeys.has(key)) {
+                    wtOcNotifiedKeys.add(key);
+                    showCompanionToast(msg);
+                }
+            });
+            Array.from(wtOcNotifiedKeys).forEach(key => {
+                if (!currentKeys.has(key)) wtOcNotifiedKeys.delete(key);
+            });
         }
+
+        // Torn's OC list (.tt-oc2-list, seen on the faction Crimes tab) is a
+        // hash-routed SPA panel, not a real page navigation - polled on an
+        // interval like scanProfileFlightBar rather than keyed off a URL
+        // change. data-oc-id on each card is Torn's own stable attribute
+        // (unlike the hashed CSS-module class names around it, e.g.
+        // "panelTitle____Ko9_" - matched with [class*=] so a hash change on
+        // Torn's end doesn't silently break this), and happens to be the
+        // exact same id oc_crimes.id already keys on, so no translation
+        // needed to look a card up in wtOcCrimesCache.
+        function wtEnrichOcListPage() {
+            if (!wtHasOcView || !wtOcCrimesCache.length) return;
+            const cards = document.querySelectorAll('[data-oc-id]');
+            if (!cards.length) return;
+            const nowSecs = Math.floor(Date.now() / 1000);
+            const crimesById = {};
+            wtOcCrimesCache.forEach(c => { crimesById[c.id] = c; });
+            cards.forEach(card => {
+                const c = crimesById[parseInt(card.getAttribute('data-oc-id'), 10)];
+                if (!c) return;
+                const titleEl = card.querySelector('[class*="panelTitle"]');
+                if (!titleEl) return;
+                let badge = card.querySelector('.wt-oc-badge');
+                if (!badge) {
+                    badge = document.createElement('div');
+                    badge.className = 'wt-oc-badge';
+                    badge.style.cssText = 'margin-top:3px; font-size:11px; font-weight:bold; line-height:1.5;';
+                    titleEl.insertAdjacentElement('afterend', badge);
+                }
+                const lines = [];
+                const stuck = c.status === 'Planning' && c.readyAt && !c.executedAt && nowSecs >= c.readyAt;
+                if (stuck) lines.push('<span style="color:#ff5252;">🛑 Stalled</span>');
+                const missingSlot = (c.slots || []).find(s => s.filled && s.itemId && !s.itemOk);
+                if (missingSlot) lines.push(`<span style="color:#ff5252;">🎒 ${wtChatEscapeHtml(missingSlot.name)} missing ${wtChatEscapeHtml(missingSlot.itemName || 'item')}</span>`);
+                if (c.status === 'Successful') {
+                    const splitLabel = `${c.factionCutPct}% faction / ${100 - c.factionCutPct}% player`;
+                    lines.push(c.paidOut
+                        ? `<span style="color:#4CAF50;">💰 ${splitLabel} - Paid</span>`
+                        : `<span style="color:#FFD700;">💰 ${splitLabel} - Awaiting payment</span>`);
+                }
+                badge.innerHTML = lines.join(' &middot; ');
+                badge.style.display = lines.length ? 'block' : 'none';
+            });
+        }
+        setInterval(wtEnrichOcListPage, 3000);
+        wtEnrichOcListPage();
 
         async function checkLiveAlerts() {
             try {
