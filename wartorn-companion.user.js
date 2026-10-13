@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.4.0
+// @version      4.4.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.4.0';
+    const COMPANION_VERSION_FALLBACK = '4.4.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3269,17 +3269,20 @@ function targetRowHtml(t, estRespect) {
             milestone: { icon: '🔥', title: 'Chain Hits', render: renderMilestonePanel, ticking: true },
             vendetta: { icon: '🔪', title: 'Vendettas', render: renderVendettaPanel, ticking: false },
             chat: { icon: '💬', title: 'Faction Chat', render: renderChatPanel, ticking: false },
-            // Master/Helper/admin only - button hidden otherwise (see
-            // wtUpdateOcIssuesBadge). Not ticking: content comes from the
-            // already-cached wtOcCrimesCache (refreshed every 90s by the
-            // shared OC poll), nothing to redraw every second.
-            ocIssues: { icon: '🚨', title: 'OC Issues', render: renderOcIssuesPanel, ticking: false },
             // Not ticking: the setup form (label/h/m/s inputs) would get
             // wiped out and reset every second by that window's own tick
             // timer (startWindowTick) while someone's still typing into it. The live
             // countdown display (once a timer is actually running) instead
             // gets its own dedicated 1s redraw below, well past PANEL_DEFS.
             timer: { icon: '⏰', title: 'Custom Timer', render: renderTimerPanel, ticking: false },
+            // Master/Helper/admin only - button hidden otherwise (see
+            // wtUpdateOcIssuesBadge). Not ticking: content comes from the
+            // already-cached wtOcCrimesCache (refreshed every 90s by the
+            // shared OC poll), nothing to redraw every second. Placed last
+            // (PANEL_DEFS order drives the button stack order) so it lands
+            // right below the flight widget, which is itself inserted right
+            // before 'settings' - see the key === 'settings' check below.
+            ocIssues: { icon: '🦹', title: 'OC Issues', render: renderOcIssuesPanel, ticking: false },
             settings: { icon: '⚙️', title: 'Settings', render: renderSettingsPanel, ticking: false }
         };
 
@@ -4119,12 +4122,7 @@ function targetRowHtml(t, estRespect) {
             // the logo, which is 130px tall (see injectGhostLogo() above).
             const WRAP_TRANSITION = 'opacity 0.3s ease, transform 0.3s ease';
             wrap.style.cssText = `position:fixed; z-index:9999999; display:flex; flex-direction:column; gap:6px; pointer-events:none; transform-origin:top center; transition:${WRAP_TRANSITION};`;
-            Object.keys(PANEL_DEFS).forEach(key => {
-                // Not a togglable panel - a live status widget - so it's
-                // inserted here rather than added to PANEL_DEFS, right
-                // before Settings specifically (an explicit ask, and
-                // 'settings' is guaranteed to be PANEL_DEFS' last key).
-                if (key === 'settings') wrap.appendChild(createFlightWidget());
+            function buildSideButton(key) {
                 const def = PANEL_DEFS[key];
                 const btn = document.createElement('div');
                 btn.className = 'wt-side-btn';
@@ -4138,7 +4136,10 @@ function targetRowHtml(t, estRespect) {
                 // UI - background color separately signals which panel (if
                 // any) is currently open, or (chat only, so far) whether
                 // there's something unread - see buttonRestColor above.
-                btn.style.cssText = 'width:34px; height:34px; display:flex; align-items:center; justify-content:center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.1em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
+                // line-height:1 keeps the emoji glyph's own font metrics
+                // from pushing it off-center vertically inside the flex box
+                // (seen live on some emoji/webviews without it).
+                btn.style.cssText = 'width:34px; height:34px; display:flex; align-items:center; justify-content:center; line-height:1; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.1em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
                 btn.addEventListener('mouseenter', () => {
                     btn.style.opacity = '1';
                     btn.style.transform = 'scale(1.05)';
@@ -4150,7 +4151,22 @@ function targetRowHtml(t, estRespect) {
                     btn.style.background = buttonRestColor(key, btn);
                 });
                 btn.addEventListener('click', () => togglePanelWindow(key));
-                wrap.appendChild(btn);
+                return btn;
+            }
+            Object.keys(PANEL_DEFS).forEach(key => {
+                // ocIssues is placed manually right after the flight widget
+                // below instead of here, so it lands directly below Flights
+                // regardless of where it sits in PANEL_DEFS itself.
+                if (key === 'ocIssues') return;
+                // Not a togglable panel - a live status widget - so it's
+                // inserted here rather than added to PANEL_DEFS, right
+                // before Settings specifically (an explicit ask, and
+                // 'settings' is guaranteed to be PANEL_DEFS' last key).
+                if (key === 'settings') {
+                    wrap.appendChild(createFlightWidget());
+                    wrap.appendChild(buildSideButton('ocIssues'));
+                }
+                wrap.appendChild(buildSideButton(key));
             });
             wtUpdateOcIssuesBadge(); // hides the button immediately for anyone not Master/Helper/admin, rather than a visible flash until the first OC status check resolves
 
