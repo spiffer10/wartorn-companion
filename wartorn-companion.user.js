@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.6.1
+// @version      4.6.2
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.6.1';
+    const COMPANION_VERSION_FALLBACK = '4.6.2';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6372,7 +6372,7 @@ setInterval(scanProfileFlightBar, 3000);
                     currentKeys.set(`payment:${c.id}`, `💰 ${c.name} (Lvl ${c.difficulty}) is ready to pay out - $${Math.round(c.effectiveReward).toLocaleString()}`);
                 }
                 if (c.status === 'Planning' && c.readyAt && !c.executedAt && nowSecs >= c.readyAt) {
-                    currentKeys.set(`stalled:${c.id}`, `🛑 ${c.name} is stalled - ready but not executing`);
+                    currentKeys.set(`stalled:${c.id}`, '🛑 Stalled');
                 }
                 (c.slots || []).forEach(s => {
                     if (!s.filled) return;
@@ -6404,7 +6404,13 @@ setInterval(scanProfileFlightBar, 3000);
         function wtUpdateOcIssuesBadge() {
             const btn = document.querySelector('.wt-side-btn[data-key="ocIssues"]');
             if (!btn) return;
-            btn.style.display = wtCanReceiveOcAlerts ? '' : 'none';
+            // 'grid', not '' - buildSideButton sets display:grid inline (for
+            // place-items:center) and nothing else ever re-asserts it from a
+            // stylesheet, so clearing it with '' silently fell back to a
+            // plain <div>'s default display:block, which is exactly why the
+            // icon looked "centered until this ran" - place-items:center
+            // does nothing once the box isn't a grid anymore.
+            btn.style.display = wtCanReceiveOcAlerts ? 'grid' : 'none';
             const hasNew = Array.from(wtOcIssueDetails.keys()).some(k => !wtOcIssuesSeenKeys.has(k));
             btn.dataset.unread = hasNew ? '1' : '0';
             refreshButtonHighlights();
