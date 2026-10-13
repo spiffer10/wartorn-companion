@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.4.3
+// @version      4.5.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.4.3';
+    const COMPANION_VERSION_FALLBACK = '4.5.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4139,7 +4139,12 @@ function targetRowHtml(t, estRespect) {
                 // line-height:1 keeps the emoji glyph's own font metrics
                 // from pushing it off-center vertically inside the flex box
                 // (seen live on some emoji/webviews without it).
-                btn.style.cssText = 'width:34px; height:34px; display:flex; align-items:center; justify-content:center; line-height:1; transform-origin:center center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.35em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
+                // display:grid + place-items:center (rather than flex) centers
+                // the icon glyph itself, not just its line box - flex centering
+                // left some color-emoji glyphs (money bag in particular) sitting
+                // low-left in testing, since their intrinsic baseline metrics
+                // don't match plain text.
+                btn.style.cssText = 'width:34px; height:34px; display:grid; place-items:center; line-height:1; transform-origin:center center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.35em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
                 btn.addEventListener('mouseenter', () => {
                     btn.style.opacity = '1';
                     btn.style.transform = 'scale(1.05)';
@@ -4205,7 +4210,7 @@ function targetRowHtml(t, estRespect) {
                 radioBtn.style.pointerEvents = 'auto';
                 radioBtn.title = 'Tesseract Radio';
                 radioBtn.innerText = '🎵';
-                radioBtn.style.cssText = 'width:34px; height:34px; display:flex; align-items:center; justify-content:center; line-height:1; transform-origin:center center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.35em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
+                radioBtn.style.cssText = 'width:34px; height:34px; display:grid; place-items:center; line-height:1; transform-origin:center center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.35em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
                 radioBtn.addEventListener('mouseenter', () => {
                     radioBtn.style.opacity = '1';
                     radioBtn.style.transform = 'scale(1.05)';
@@ -6530,6 +6535,35 @@ setInterval(scanProfileFlightBar, 3000);
             document.body.appendChild(overlay);
         }
         wtCheckWhatsNew();
+
+        // --- MODULE: NEWSLETTER TOAST ---
+        // Faction newsletters are published on the dashboard's Home tab with
+        // no companion equivalent at all - a staff member publishing one
+        // while people are mostly on torn.com via the companion otherwise
+        // had no way of knowing it existed until they happened to open the
+        // dashboard. Mirrors wtCheckWhatsNew's seen/baseline convention, but
+        // against this faction's own newsletters (via /api/companion/
+        // newsletter-latest) and on a 5min interval, not just once on load -
+        // a new issue can get published at any point while already browsing.
+        let wtNewsletterSeenId = safeGmGet('wt_newsletter_seen_id', '');
+        function wtCheckNewsletter() {
+            fetchFromWartorn('newsletter-latest').then(data => {
+                const issue = data && data.issue;
+                if (!issue) return;
+                const idStr = String(issue.id);
+                if (wtNewsletterSeenId === idStr) return;
+                const firstCheck = !wtNewsletterSeenId;
+                wtNewsletterSeenId = idStr;
+                safeGmSet('wt_newsletter_seen_id', idStr);
+                // Never toasts on the very first check (nothing to compare
+                // against yet) - same reasoning as wtCheckWhatsNew's install
+                // guard, just seeds the baseline silently.
+                if (firstCheck) return;
+                showCompanionToast(`📰 New newsletter: ${issue.title}`);
+            }).catch(() => {});
+        }
+        wtCheckNewsletter();
+        setInterval(wtCheckNewsletter, 300000);
 
         async function checkLiveAlerts() {
             try {
