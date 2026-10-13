@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.5.0
+// @version      4.5.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.5.0';
+    const COMPANION_VERSION_FALLBACK = '4.5.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4113,6 +4113,17 @@ function targetRowHtml(t, estRespect) {
                 .wt-side-btn.wt-chain-active {
                     animation: wt-chainbtn-pulse 0.5s linear infinite, wt-chainbtn-wiggle 2.4s ease-in-out infinite;
                 }
+                /* OC Issues reuses only the color pulse, not the scale+rotate
+                   wiggle - the money bag glyph visibly drifted off-center
+                   under rotate+scale (confirmed via a user screenshot) in a
+                   way the Chain Hits fire icon didn't, almost certainly
+                   because that glyph's own ink isn't centered within its
+                   font's advance box on their device/webview. Color pulse
+                   alone still signals "new issue" without ever transforming
+                   the box, so it can't expose that regardless of glyph. */
+                .wt-side-btn.wt-oc-pulse {
+                    animation: wt-chainbtn-pulse 0.5s linear infinite;
+                }
             `;
             document.head.appendChild(scrollbarStyle);
 
@@ -6396,19 +6407,18 @@ setInterval(scanProfileFlightBar, 3000);
 
         // Button only shows for Master/Helper/admin (same gate as the toast
         // alerts - a regular member has no action to take on any of this),
-        // and wiggles - reusing the exact same CSS class the Chain Hits
-        // button already uses, per explicit request - only while there's at
-        // least one issue the viewer hasn't actually opened the panel to
+        // and pulses (color only, see wt-oc-pulse above) only while there's
+        // at least one issue the viewer hasn't actually opened the panel to
         // see yet. Opening it (renderOcIssuesPanel) marks everything
         // currently showing as seen, which is what actually clears the
-        // wiggle; a still-unresolved-but-already-seen issue doesn't keep
-        // wiggling forever, only a genuinely new one does.
+        // pulse; a still-unresolved-but-already-seen issue doesn't keep
+        // pulsing forever, only a genuinely new one does.
         function wtUpdateOcIssuesBadge() {
             const btn = document.querySelector('.wt-side-btn[data-key="ocIssues"]');
             if (!btn) return;
             btn.style.display = wtCanReceiveOcAlerts ? '' : 'none';
             const hasNew = Array.from(wtOcIssueDetails.keys()).some(k => !wtOcIssuesSeenKeys.has(k));
-            btn.classList.toggle('wt-chain-active', hasNew);
+            btn.classList.toggle('wt-oc-pulse', hasNew);
         }
 
         function renderOcIssuesPanel() {
@@ -6541,10 +6551,18 @@ setInterval(scanProfileFlightBar, 3000);
         // no companion equivalent at all - a staff member publishing one
         // while people are mostly on torn.com via the companion otherwise
         // had no way of knowing it existed until they happened to open the
-        // dashboard. Mirrors wtCheckWhatsNew's seen/baseline convention, but
-        // against this faction's own newsletters (via /api/companion/
-        // newsletter-latest) and on a 5min interval, not just once on load -
-        // a new issue can get published at any point while already browsing.
+        // dashboard. Checks via /api/companion/newsletter-latest on load and
+        // every 5 minutes after - a new issue can get published at any point
+        // while already browsing. Deliberately does NOT suppress the very
+        // first check the way wtCheckWhatsNew does for the changelog popup -
+        // that convention exists because the changelog is already visible
+        // elsewhere the instant you open the dashboard, so a same-session
+        // popup would be redundant; a faction newsletter has no such
+        // elsewhere-visible fallback for someone living in the companion, so
+        // the first real check genuinely should toast if there's an
+        // unseen-by-this-script issue (this also means it fires once for
+        // brand-new companion installs about whatever's currently the
+        // latest issue, which is the right tradeoff over never firing).
         let wtNewsletterSeenId = safeGmGet('wt_newsletter_seen_id', '');
         function wtCheckNewsletter() {
             fetchFromWartorn('newsletter-latest').then(data => {
@@ -6552,13 +6570,8 @@ setInterval(scanProfileFlightBar, 3000);
                 if (!issue) return;
                 const idStr = String(issue.id);
                 if (wtNewsletterSeenId === idStr) return;
-                const firstCheck = !wtNewsletterSeenId;
                 wtNewsletterSeenId = idStr;
                 safeGmSet('wt_newsletter_seen_id', idStr);
-                // Never toasts on the very first check (nothing to compare
-                // against yet) - same reasoning as wtCheckWhatsNew's install
-                // guard, just seeds the baseline silently.
-                if (firstCheck) return;
                 showCompanionToast(`📰 New newsletter: ${issue.title}`);
             }).catch(() => {});
         }
