@@ -1,17 +1,19 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.7.3
+// @version      4.8.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
 // @match        https://wartorn.spiffer10.com/*
+// @match        https://wartorn-fallback.spiffer10.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
 // @grant        unsafeWindow
 // @connect      wartorn.spiffer10.com
+// @connect      wartorn-fallback.spiffer10.com
 // @connect      api.torn.com
 // @connect      s12.myradiostream.com
 // @require      https://cdn.jsdelivr.net/npm/butterchurn@2.6.7/lib/butterchurn.min.js
@@ -23,7 +25,16 @@
  
 (function() {
     'use strict';
-    const WARTORN_HOST = 'https://wartorn.spiffer10.com';
+    const WARTORN_MAIN_HOST = 'https://wartorn.spiffer10.com';
+    // Office-VM fallback - see GET /api/public/fallback-status server-side
+    // and the companion-fallback-server plan. WARTORN_HOST is the
+    // CURRENTLY ACTIVE host (starts as main, reassigned by
+    // wtSwitchToFallback/wtSwitchToMain near the bottom of this file) -
+    // every fetchFromWartorn/postToWartorn call below reads it fresh at
+    // call time, so reassigning this one variable alone redirects every
+    // existing poll/interval without needing to restart any of them.
+    const WARTORN_FALLBACK_HOST = 'https://wartorn-fallback.spiffer10.com';
+    let WARTORN_HOST = WARTORN_MAIN_HOST;
     // Gates the radio button (see MODULE: LEFT-EDGE CONDENSED PANELS below)
     // to Tesseract's own faction for now, per an explicit ask.
     const TESSERACT_FACTION_ID = 53940;
@@ -39,7 +50,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.7.3';
+    const COMPANION_VERSION_FALLBACK = '4.8.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6979,9 +6990,70 @@ setInterval(scanProfileFlightBar, 3000);
         }
 
         let wtCompanionStarted = false;
+        let wtOnFallback = false;
         let wtReachabilityRetryTimer = null;
+
+        // startCompanionFeatures() only ever needs to run ONCE, against
+        // whichever host first succeeds - every fetchFromWartorn/
+        // postToWartorn call it set up reads WARTORN_HOST fresh each time,
+        // so later switching between main and fallback is just reassigning
+        // that one variable, never re-running this.
+        function wtSwitchToMain() {
+            WARTORN_HOST = WARTORN_MAIN_HOST;
+            wtOnFallback = false;
+            const logo = document.getElementById('wt-ghost-logo');
+            if (logo) { logo.href = WARTORN_MAIN_HOST; logo.style.cursor = 'grab'; logo.title = ''; }
+            wtRestoreUnreachableUi();
+            if (!wtCompanionStarted) { wtCompanionStarted = true; startCompanionFeatures(); }
+        }
+        // Click-through disabled (not just repointed) rather than linking
+        // to the fallback's own copy of the dashboard - it doesn't serve
+        // the full staff dashboard at all, only the companion-facing API,
+        // per the companion-fallback-server plan's scope decision, so a
+        // working link there would just be confusing.
+        function wtSwitchToFallback() {
+            WARTORN_HOST = WARTORN_FALLBACK_HOST;
+            wtOnFallback = true;
+            // Undoes any hidden state from wtShowUnreachableNotice first
+            // (this can run right after a prior failed attempt that hid
+            // the logo/buttons), then applies the fallback-specific
+            // disabled-click-through treatment on top.
+            wtRestoreUnreachableUi();
+            const logo = document.getElementById('wt-ghost-logo');
+            if (logo) { logo.removeAttribute('href'); logo.style.cursor = 'default'; logo.title = 'Running on the fallback server - main server is down'; }
+            if (!wtCompanionStarted) { wtCompanionStarted = true; startCompanionFeatures(); }
+            // Keeps checking for main even while successfully running on
+            // the fallback - this is what switches back the moment main
+            // is reachable again, same timer wtHandleUnreachable also uses
+            // for the "totally unreachable" case.
+            if (!wtReachabilityRetryTimer) wtReachabilityRetryTimer = setInterval(wtProbeServer, 60000);
+        }
+        // Only routes to the fallback if IT has independently decided it's
+        // ACTIVE (see GET /api/public/fallback-status's own comment
+        // server-side) - never just because this one companion couldn't
+        // reach main, which protects against one person's flaky home
+        // connection sending them to the fallback while main is fine for
+        // everyone else.
+        function wtCheckFallback() {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `${WARTORN_FALLBACK_HOST}/api/public/fallback-status?_=${Date.now()}`,
+                timeout: 1000,
+                onload: (res) => {
+                    let data = null;
+                    try { data = JSON.parse(res.responseText); } catch (e) {}
+                    if (data && data.active) wtSwitchToFallback();
+                    else wtHandleUnreachable();
+                },
+                onerror: wtHandleUnreachable,
+                ontimeout: wtHandleUnreachable
+            });
+        }
         // 1s, not the 8-10s used elsewhere (and quicker than the 2s this
-        // started at) - this one exists specifically to fail fast.
+        // started at) - this one exists specifically to fail fast. Always
+        // probes WARTORN_MAIN_HOST specifically, never the currently-
+        // active WARTORN_HOST - this is also what the retry loop uses to
+        // notice main's back while running on the fallback.
         //
         // onload fires for ANY completed HTTP response, including one
         // nginx generates itself (502/503/504) when the Node backend
@@ -6992,40 +7064,36 @@ setInterval(scanProfileFlightBar, 3000);
         // onload with a non-2xx status and an earlier version (missing
         // this check) happily started everything anyway. Only a real 2xx
         // counts as reachable.
-        function wtProbeServer(isRetry) {
+        function wtProbeServer() {
             GM_xmlhttpRequest({
                 method: 'GET',
-                url: `${WARTORN_HOST}/api/public/companion-version?_=${Date.now()}`,
+                url: `${WARTORN_MAIN_HOST}/api/public/companion-version?_=${Date.now()}`,
                 timeout: 1000,
                 onload: (res) => {
                     if (res.status >= 200 && res.status < 300) {
                         if (wtReachabilityRetryTimer) { clearInterval(wtReachabilityRetryTimer); wtReachabilityRetryTimer = null; }
-                        if (!wtCompanionStarted) {
-                            wtCompanionStarted = true;
-                            if (isRetry) wtRestoreUnreachableUi();
-                            startCompanionFeatures();
-                        }
+                        wtSwitchToMain();
                     } else {
-                        wtHandleUnreachable();
+                        wtCheckFallback();
                     }
                 },
-                onerror: wtHandleUnreachable,
-                ontimeout: wtHandleUnreachable
+                onerror: wtCheckFallback,
+                ontimeout: wtCheckFallback
             });
         }
-        // Only the FIRST detected failure shows the notice/slide-hide and
-        // starts the retry loop - every later retry tick that also fails
-        // just stays quiet and tries again in another minute, rather than
-        // re-showing the notice every time. Once a retry succeeds,
-        // wtProbeServer's onload handles clearing this interval and
-        // restoring the UI.
+        // Only the FIRST detected total failure (main AND fallback both
+        // down/not active) shows the notice/slide-hide and starts the
+        // retry loop - every later retry tick that also fails just stays
+        // quiet and tries again in another minute, rather than re-showing
+        // the notice every time. Once a retry succeeds, wtSwitchToMain
+        // handles clearing this interval and restoring the UI.
         function wtHandleUnreachable() {
             if (!wtReachabilityRetryTimer) {
                 wtShowUnreachableNotice();
-                wtReachabilityRetryTimer = setInterval(() => wtProbeServer(true), 60000);
+                wtReachabilityRetryTimer = setInterval(wtProbeServer, 60000);
             }
         }
-        wtProbeServer(false);
+        wtProbeServer();
     }
 
 })();
