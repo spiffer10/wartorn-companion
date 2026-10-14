@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.8.2
+// @version      4.8.3
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.8.2';
+    const COMPANION_VERSION_FALLBACK = '4.8.3';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -7109,17 +7109,41 @@ setInterval(scanProfileFlightBar, 3000);
                 wtReachabilityRetryTimer = setInterval(wtProbeServer, 60000);
             }
         }
-        // Delayed, not called immediately - this is the very first network
-        // call this whole module makes, firing essentially synchronously
-        // with page load. On TornPDA specifically, its own bridge between
-        // the embedded webview and GM_xmlhttpRequest may not be fully
-        // wired up that early (every other call in this script happens
-        // after some other delay/setup first, and nothing else has been
-        // reported broken there) - a short delay here costs nothing on
-        // desktop and gives TornPDA's bridge a moment to be ready before
-        // the probe that decides whether the rest of the companion starts
-        // at all.
-        setTimeout(wtProbeServer, 2000);
+        // A flat upfront delay (tried last) made EVERY load pay the same
+        // tax, including the overwhelming common case where the server
+        // and TornPDA's bridge are both already fine - reported as "very
+        // slow to load." A few fast retries right at startup only costs
+        // time when something's actually slow to respond (TornPDA's
+        // bridge not ready yet), and costs nothing when the first attempt
+        // just works, which is almost always. wtProbeServer itself (used
+        // for the slow 60s ongoing-outage retry loop above) stays a
+        // single plain attempt - this quick-retry behavior is only for
+        // the initial connection decision.
+        let wtInitialAttempts = 0;
+        function wtProbeServerInitial() {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `${WARTORN_MAIN_HOST}/api/public/companion-version?_=${Date.now()}`,
+                timeout: WT_PROBE_TIMEOUT_MS,
+                onload: (res) => {
+                    if (res.status >= 200 && res.status < 300) wtSwitchToMain();
+                    else wtInitialRetryOrGiveUp('non-2xx status ' + res.status);
+                },
+                onerror: (e) => wtInitialRetryOrGiveUp('onerror: ' + JSON.stringify(e)),
+                ontimeout: () => wtInitialRetryOrGiveUp('ontimeout after ' + WT_PROBE_TIMEOUT_MS + 'ms')
+            });
+        }
+        function wtInitialRetryOrGiveUp(reason) {
+            wtInitialAttempts++;
+            if (wtInitialAttempts < 3) {
+                console.warn('[Wartorn] initial probe attempt', wtInitialAttempts, 'failed (' + reason + ') - retrying shortly');
+                setTimeout(wtProbeServerInitial, 400 * wtInitialAttempts); // 400ms, then 800ms
+            } else {
+                console.warn('[Wartorn] initial probe failed after', wtInitialAttempts, 'attempts (' + reason + ') - checking fallback');
+                wtCheckFallback();
+            }
+        }
+        wtProbeServerInitial();
     }
 
 })();
