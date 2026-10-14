@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.8.1
+// @version      4.8.2
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.8.1';
+    const COMPANION_VERSION_FALLBACK = '4.8.2';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -7052,10 +7052,10 @@ setInterval(scanProfileFlightBar, 3000);
                     let data = null;
                     try { data = JSON.parse(res.responseText); } catch (e) {}
                     if (data && data.active) wtSwitchToFallback();
-                    else wtHandleUnreachable();
+                    else { console.warn('[Wartorn] fallback reachable but not active (or bad response):', res.status, res.responseText); wtHandleUnreachable(); }
                 },
-                onerror: wtHandleUnreachable,
-                ontimeout: wtHandleUnreachable
+                onerror: (e) => { console.warn('[Wartorn] fallback probe onerror:', e); wtHandleUnreachable(); },
+                ontimeout: () => { console.warn('[Wartorn] fallback probe ontimeout'); wtHandleUnreachable(); }
             });
         }
         // WT_PROBE_TIMEOUT_MS (1.2s desktop / 4s TornPDA), nowhere near the
@@ -7085,11 +7085,16 @@ setInterval(scanProfileFlightBar, 3000);
                         if (wtReachabilityRetryTimer) { clearInterval(wtReachabilityRetryTimer); wtReachabilityRetryTimer = null; }
                         wtSwitchToMain();
                     } else {
+                        console.warn('[Wartorn] main probe got non-2xx status:', res.status);
                         wtCheckFallback();
                     }
                 },
-                onerror: wtCheckFallback,
-                ontimeout: wtCheckFallback
+                // Logged so a real failure cause is visible (TornPDA's own
+                // console/logs) instead of just the end result ("server
+                // unreachable") with no way to tell timeout from a genuine
+                // connection error apart.
+                onerror: (e) => { console.warn('[Wartorn] main probe onerror:', e); wtCheckFallback(); },
+                ontimeout: () => { console.warn('[Wartorn] main probe ontimeout after', WT_PROBE_TIMEOUT_MS, 'ms'); wtCheckFallback(); }
             });
         }
         // Only the FIRST detected total failure (main AND fallback both
@@ -7104,7 +7109,17 @@ setInterval(scanProfileFlightBar, 3000);
                 wtReachabilityRetryTimer = setInterval(wtProbeServer, 60000);
             }
         }
-        wtProbeServer();
+        // Delayed, not called immediately - this is the very first network
+        // call this whole module makes, firing essentially synchronously
+        // with page load. On TornPDA specifically, its own bridge between
+        // the embedded webview and GM_xmlhttpRequest may not be fully
+        // wired up that early (every other call in this script happens
+        // after some other delay/setup first, and nothing else has been
+        // reported broken there) - a short delay here costs nothing on
+        // desktop and gives TornPDA's bridge a moment to be ready before
+        // the probe that decides whether the rest of the companion starts
+        // at all.
+        setTimeout(wtProbeServer, 2000);
     }
 
 })();
