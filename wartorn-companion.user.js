@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.8.0
+// @version      4.8.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -35,6 +35,15 @@
     // existing poll/interval without needing to restart any of them.
     const WARTORN_FALLBACK_HOST = 'https://wartorn-fallback.spiffer10.com';
     let WARTORN_HOST = WARTORN_MAIN_HOST;
+    // Used by the reachability probes further down (wtProbeServer/
+    // wtCheckFallback). Confirmed live 2026-10-14: a flat 1000ms (tuned for
+    // desktop Tampermonkey's fast round-trip) made TornPDA's companion
+    // report "server unreachable" permanently, even with the server fully
+    // up - its own bridging between the webview and GM_xmlhttpRequest adds
+    // real overhead a 1s budget doesn't survive. isTornPDA() is a function
+    // declaration (hoisted - callable here regardless of its own later
+    // position in the file).
+    const WT_PROBE_TIMEOUT_MS = isTornPDA() ? 4000 : 1200;
     // Gates the radio button (see MODULE: LEFT-EDGE CONDENSED PANELS below)
     // to Tesseract's own faction for now, per an explicit ask.
     const TESSERACT_FACTION_ID = 53940;
@@ -50,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.8.0';
+    const COMPANION_VERSION_FALLBACK = '4.8.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -7038,7 +7047,7 @@ setInterval(scanProfileFlightBar, 3000);
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: `${WARTORN_FALLBACK_HOST}/api/public/fallback-status?_=${Date.now()}`,
-                timeout: 1000,
+                timeout: WT_PROBE_TIMEOUT_MS,
                 onload: (res) => {
                     let data = null;
                     try { data = JSON.parse(res.responseText); } catch (e) {}
@@ -7049,11 +7058,13 @@ setInterval(scanProfileFlightBar, 3000);
                 ontimeout: wtHandleUnreachable
             });
         }
-        // 1s, not the 8-10s used elsewhere (and quicker than the 2s this
-        // started at) - this one exists specifically to fail fast. Always
-        // probes WARTORN_MAIN_HOST specifically, never the currently-
-        // active WARTORN_HOST - this is also what the retry loop uses to
-        // notice main's back while running on the fallback.
+        // WT_PROBE_TIMEOUT_MS (1.2s desktop / 4s TornPDA), nowhere near the
+        // 8-10s used elsewhere - this one exists specifically to fail fast,
+        // just not so fast it misreads TornPDA's own normal latency as an
+        // outage (see WT_PROBE_TIMEOUT_MS's own comment near the top of
+        // this file). Always probes WARTORN_MAIN_HOST specifically, never
+        // the currently-active WARTORN_HOST - this is also what the retry
+        // loop uses to notice main's back while running on the fallback.
         //
         // onload fires for ANY completed HTTP response, including one
         // nginx generates itself (502/503/504) when the Node backend
@@ -7068,7 +7079,7 @@ setInterval(scanProfileFlightBar, 3000);
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: `${WARTORN_MAIN_HOST}/api/public/companion-version?_=${Date.now()}`,
-                timeout: 1000,
+                timeout: WT_PROBE_TIMEOUT_MS,
                 onload: (res) => {
                     if (res.status >= 200 && res.status < 300) {
                         if (wtReachabilityRetryTimer) { clearInterval(wtReachabilityRetryTimer); wtReachabilityRetryTimer = null; }
