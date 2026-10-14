@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.7.0
+// @version      4.7.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.7.0';
+    const COMPANION_VERSION_FALLBACK = '4.7.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6927,18 +6927,34 @@ setInterval(scanProfileFlightBar, 3000);
         }, 1000);
         } // end startCompanionFeatures
 
+        // On failure, hide the side-button stack (in case an earlier,
+        // successful probe this same browser session already built it -
+        // Torn's SPA navigation doesn't tear this down between page loads,
+        // so a server that goes down mid-session could otherwise leave
+        // buttons sitting there that no longer do anything) and say so
+        // briefly - no retry, nothing else. Defined inline rather than
+        // reusing showCompanionToast since that's declared inside
+        // startCompanionFeatures, out of reach when this is the branch that
+        // runs instead of it.
+        function wtShowUnreachableToast() {
+            const buttons = document.getElementById('wt-side-buttons');
+            if (buttons) buttons.style.display = 'none';
+            const toast = document.createElement('div');
+            toast.textContent = '⚠️ Wartorn server unreachable';
+            toast.style.cssText = 'position:fixed; top:16px; right:16px; z-index:99999999; background:rgba(21,23,28,0.97); border:1px solid #f44336; color:#fff; padding:10px 16px; border-radius:6px; font-size:0.9em; font-weight:bold; box-shadow:0 4px 16px rgba(0,0,0,0.6); max-width:280px;';
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
         // 2s, not the 8-10s used elsewhere - this one exists specifically to
-        // fail fast. onerror/ontimeout both just do nothing: no retry, no
-        // toast, nothing - the server being unreachable is exactly the case
-        // this is meant to stay quiet for. If it's back by the next page
-        // load/navigation, this probe runs again then.
+        // fail fast. If it's back by the next page load/navigation, this
+        // probe runs again then.
         GM_xmlhttpRequest({
             method: 'GET',
             url: `${WARTORN_HOST}/api/public/companion-version?_=${Date.now()}`,
             timeout: 2000,
             onload: () => startCompanionFeatures(),
-            onerror: () => {},
-            ontimeout: () => {}
+            onerror: wtShowUnreachableToast,
+            ontimeout: wtShowUnreachableToast
         });
     }
 
