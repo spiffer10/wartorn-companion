@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.7.2
+// @version      4.7.3
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.7.2';
+    const COMPANION_VERSION_FALLBACK = '4.7.3';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -289,6 +289,7 @@
         place('wt-link-notice', 140, 1);
         place('wt-link-manual', 195, 1);
         place('wt-version-notice', 45, 44); // right of the logo, vertically centered on its 130px height
+        place('wt-unreachable-notice', 45, 44); // same slot as wt-version-notice - the two don't realistically show at once
         // Open panel windows (War Targets/Chain Targets/etc) used to follow
         // a drag of this anchor too, back when there was only ever one of
         // them and it had no independent position of its own. Now that
@@ -6927,44 +6928,104 @@ setInterval(scanProfileFlightBar, 3000);
         }, 1000);
         } // end startCompanionFeatures
 
-        // On failure, hide the side-button stack (in case an earlier,
-        // successful probe this same browser session already built it -
-        // Torn's SPA navigation doesn't tear this down between page loads,
-        // so a server that goes down mid-session could otherwise leave
-        // buttons sitting there that no longer do anything) and say so
-        // briefly - no retry, nothing else. Defined inline rather than
-        // reusing showCompanionToast since that's declared inside
-        // startCompanionFeatures, out of reach when this is the branch that
-        // runs instead of it.
-        function wtShowUnreachableToast() {
+        // Slide-out notice from the logo, same visual pattern as
+        // showUpdateNotice() above (width:0 -> width:Npx on a transition,
+        // positioned off the logo's own anchor via applyCompanionAnchor's
+        // place() calls) - then slides the logo itself away too, and hides
+        // the side-button stack in case an earlier, successful probe this
+        // same browser session already built it (Torn's SPA navigation
+        // doesn't tear this down between page loads, so a server that goes
+        // down mid-session could otherwise leave buttons sitting there that
+        // no longer do anything). Defined inline rather than reusing
+        // showCompanionToast/showUpdateNotice since those are declared
+        // inside startCompanionFeatures or depend on state only it sets up -
+        // out of reach when this is the branch that runs instead of it.
+        function wtShowUnreachableNotice() {
+            if (document.getElementById('wt-unreachable-notice')) return;
+            const notice = document.createElement('div');
+            notice.id = 'wt-unreachable-notice';
+            notice.style.cssText = 'position:fixed; z-index:9999998; height:40px; width:0; overflow:hidden; background:#15171c; border:1px solid #f44336; border-radius:0 6px 6px 0; box-shadow:0 4px 15px rgba(0,0,0,0.6); transition:width 0.4s ease; display:flex; align-items:center; white-space:nowrap;';
+            notice.innerHTML = '<span style="padding:0 14px; color:#f44336; font-size:0.8em; font-weight:bold;">⚠️ Wartorn server unreachable</span>';
+            document.body.appendChild(notice);
+            applyCompanionAnchor();
+            requestAnimationFrame(() => { notice.style.width = '260px'; });
+            setTimeout(() => {
+                notice.style.width = '0';
+                setTimeout(() => notice.remove(), 450);
+            }, 3000);
+
+            const logo = document.getElementById('wt-ghost-logo');
+            // translateX/opacity, not display:none - the logo's own
+            // mouseenter/leave handlers already animate these same two
+            // properties via its existing transition, so this slides
+            // smoothly using the same mechanism rather than a separate one.
+            if (logo) { logo.style.transform = 'translateX(-60px)'; logo.style.opacity = '0'; logo.style.pointerEvents = 'none'; }
             const buttons = document.getElementById('wt-side-buttons');
             if (buttons) buttons.style.display = 'none';
-            const toast = document.createElement('div');
-            toast.textContent = '⚠️ Wartorn server unreachable';
-            toast.style.cssText = 'position:fixed; top:16px; right:16px; z-index:99999999; background:rgba(21,23,28,0.97); border:1px solid #f44336; color:#fff; padding:10px 16px; border-radius:6px; font-size:0.9em; font-weight:bold; box-shadow:0 4px 16px rgba(0,0,0,0.6); max-width:280px;';
-            document.body.appendChild(toast);
-            setTimeout(() => toast.remove(), 3000);
         }
-        // 2s, not the 8-10s used elsewhere - this one exists specifically to
-        // fail fast. If it's back by the next page load/navigation, this
-        // probe runs again then.
+        // Reverses wtShowUnreachableNotice's hide - 'flex'/'0.85', not '',
+        // for the same reason the OC Issues button fix mattered: clearing
+        // an inline style that was ALSO part of the element's original
+        // base cssText removes it entirely rather than restoring it,
+        // falling back to the browser default (block / fully opaque) and
+        // breaking the button stack's flex layout.
+        function wtRestoreUnreachableUi() {
+            const notice = document.getElementById('wt-unreachable-notice');
+            if (notice) notice.remove();
+            const logo = document.getElementById('wt-ghost-logo');
+            if (logo) { logo.style.transform = ''; logo.style.opacity = '0.85'; logo.style.pointerEvents = 'auto'; }
+            const buttons = document.getElementById('wt-side-buttons');
+            if (buttons) buttons.style.display = 'flex';
+        }
+
+        let wtCompanionStarted = false;
+        let wtReachabilityRetryTimer = null;
+        // 1s, not the 8-10s used elsewhere (and quicker than the 2s this
+        // started at) - this one exists specifically to fail fast.
         //
-        // onload fires for ANY completed HTTP response, including one nginx
-        // generates itself (502/503/504) when the Node backend behind it is
-        // down - onerror/ontimeout only cover actual network-level failures
-        // (connection refused, DNS, true timeout), not "got a response, but
-        // it's an error page." Confirmed live: with the backend stopped but
-        // nginx still running, this fired onload with a non-2xx status and
-        // the original version (missing this check) happily started
-        // everything anyway. Only a real 2xx counts as reachable now.
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: `${WARTORN_HOST}/api/public/companion-version?_=${Date.now()}`,
-            timeout: 2000,
-            onload: (res) => { if (res.status >= 200 && res.status < 300) startCompanionFeatures(); else wtShowUnreachableToast(); },
-            onerror: wtShowUnreachableToast,
-            ontimeout: wtShowUnreachableToast
-        });
+        // onload fires for ANY completed HTTP response, including one
+        // nginx generates itself (502/503/504) when the Node backend
+        // behind it is down - onerror/ontimeout only cover actual
+        // network-level failures (connection refused, DNS, true timeout),
+        // not "got a response, but it's an error page." Confirmed live:
+        // with the backend stopped but nginx still running, this fired
+        // onload with a non-2xx status and an earlier version (missing
+        // this check) happily started everything anyway. Only a real 2xx
+        // counts as reachable.
+        function wtProbeServer(isRetry) {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `${WARTORN_HOST}/api/public/companion-version?_=${Date.now()}`,
+                timeout: 1000,
+                onload: (res) => {
+                    if (res.status >= 200 && res.status < 300) {
+                        if (wtReachabilityRetryTimer) { clearInterval(wtReachabilityRetryTimer); wtReachabilityRetryTimer = null; }
+                        if (!wtCompanionStarted) {
+                            wtCompanionStarted = true;
+                            if (isRetry) wtRestoreUnreachableUi();
+                            startCompanionFeatures();
+                        }
+                    } else {
+                        wtHandleUnreachable();
+                    }
+                },
+                onerror: wtHandleUnreachable,
+                ontimeout: wtHandleUnreachable
+            });
+        }
+        // Only the FIRST detected failure shows the notice/slide-hide and
+        // starts the retry loop - every later retry tick that also fails
+        // just stays quiet and tries again in another minute, rather than
+        // re-showing the notice every time. Once a retry succeeds,
+        // wtProbeServer's onload handles clearing this interval and
+        // restoring the UI.
+        function wtHandleUnreachable() {
+            if (!wtReachabilityRetryTimer) {
+                wtShowUnreachableNotice();
+                wtReachabilityRetryTimer = setInterval(() => wtProbeServer(true), 60000);
+            }
+        }
+        wtProbeServer(false);
     }
 
 })();
