@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.7.1
+// @version      4.7.2
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.7.1';
+    const COMPANION_VERSION_FALLBACK = '4.7.2';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6948,11 +6948,20 @@ setInterval(scanProfileFlightBar, 3000);
         // 2s, not the 8-10s used elsewhere - this one exists specifically to
         // fail fast. If it's back by the next page load/navigation, this
         // probe runs again then.
+        //
+        // onload fires for ANY completed HTTP response, including one nginx
+        // generates itself (502/503/504) when the Node backend behind it is
+        // down - onerror/ontimeout only cover actual network-level failures
+        // (connection refused, DNS, true timeout), not "got a response, but
+        // it's an error page." Confirmed live: with the backend stopped but
+        // nginx still running, this fired onload with a non-2xx status and
+        // the original version (missing this check) happily started
+        // everything anyway. Only a real 2xx counts as reachable now.
         GM_xmlhttpRequest({
             method: 'GET',
             url: `${WARTORN_HOST}/api/public/companion-version?_=${Date.now()}`,
             timeout: 2000,
-            onload: () => startCompanionFeatures(),
+            onload: (res) => { if (res.status >= 200 && res.status < 300) startCompanionFeatures(); else wtShowUnreachableToast(); },
             onerror: wtShowUnreachableToast,
             ontimeout: wtShowUnreachableToast
         });
