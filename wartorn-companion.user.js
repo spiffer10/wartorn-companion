@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.6.2
+// @version      4.7.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.6.2';
+    const COMPANION_VERSION_FALLBACK = '4.7.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1298,6 +1298,20 @@
     // dashboard's own audio alerts so they work while browsing torn.com
     // directly.
     if (window.name !== 'attack_window') {
+        // Everything below (side panels, chat, OC/flight/radio polling, all
+        // of it) is gated behind a fast reachability probe first - reported
+        // live 2026-10-13: while the Wartorn server was down for planned
+        // maintenance (a CPU swap), this module's many recurring polls
+        // (each with its own ~8-10s timeout, across however many Torn tabs
+        // happened to be open) piled up enough pending/timing-out requests
+        // to visibly lock up OTHER, unrelated userscripts too - almost
+        // certainly by saturating whatever shared queue/concurrency limit
+        // the script manager's background process uses for GM_xmlhttpRequest
+        // across every script, not just this one. A short (2s) probe here
+        // means a dead server gets noticed and the whole module quietly
+        // never starts, instead of every individual feature discovering the
+        // outage on its own, slowly, over and over, on every tab.
+        function startCompanionFeatures() {
         function fetchFromWartorn(endpoint, timeoutMs = 10000) {
             return new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
@@ -6911,6 +6925,21 @@ setInterval(scanProfileFlightBar, 3000);
         setInterval(() => {
             if (openWindows.has('timer') && customTimerTargetMs !== null) renderTimerPanel();
         }, 1000);
+        } // end startCompanionFeatures
+
+        // 2s, not the 8-10s used elsewhere - this one exists specifically to
+        // fail fast. onerror/ontimeout both just do nothing: no retry, no
+        // toast, nothing - the server being unreachable is exactly the case
+        // this is meant to stay quiet for. If it's back by the next page
+        // load/navigation, this probe runs again then.
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: `${WARTORN_HOST}/api/public/companion-version?_=${Date.now()}`,
+            timeout: 2000,
+            onload: () => startCompanionFeatures(),
+            onerror: () => {},
+            ontimeout: () => {}
+        });
     }
 
 })();
