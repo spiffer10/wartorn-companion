@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.8.3
+// @version      4.8.4
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.8.3';
+    const COMPANION_VERSION_FALLBACK = '4.8.4';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -7035,7 +7035,7 @@ setInterval(scanProfileFlightBar, 3000);
             // the fallback - this is what switches back the moment main
             // is reachable again, same timer wtHandleUnreachable also uses
             // for the "totally unreachable" case.
-            if (!wtReachabilityRetryTimer) wtReachabilityRetryTimer = setInterval(wtProbeServer, 60000);
+            if (!wtReachabilityRetryTimer) wtReachabilityRetryTimer = setInterval(wtProbeServer, 15000);
         }
         // Only routes to the fallback if IT has independently decided it's
         // ACTIVE (see GET /api/public/fallback-status's own comment
@@ -7106,7 +7106,12 @@ setInterval(scanProfileFlightBar, 3000);
         function wtHandleUnreachable() {
             if (!wtReachabilityRetryTimer) {
                 wtShowUnreachableNotice();
-                wtReachabilityRetryTimer = setInterval(wtProbeServer, 60000);
+                // 15s, not 60s - the fallback server's own health check now
+                // flips ACTIVE in ~21s (tightened 2026-10-15, was ~60s), so a
+                // 60s companion retry on top of that left people staring at
+                // "unreachable" far longer than the fallback actually took
+                // to come up behind the scenes.
+                wtReachabilityRetryTimer = setInterval(wtProbeServer, 15000);
             }
         }
         // A flat upfront delay (tried last) made EVERY load pay the same
