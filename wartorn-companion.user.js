@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.8.6
+// @version      4.8.7
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.8.6';
+    const COMPANION_VERSION_FALLBACK = '4.8.7';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6991,6 +6991,7 @@ setInterval(scanProfileFlightBar, 3000);
         // falling back to the browser default (block / fully opaque) and
         // breaking the button stack's flex layout.
         function wtRestoreUnreachableUi() {
+            wtUnreachableNoticeShown = false;
             const notice = document.getElementById('wt-unreachable-notice');
             if (notice) notice.remove();
             const logo = document.getElementById('wt-ghost-logo');
@@ -7001,23 +7002,28 @@ setInterval(scanProfileFlightBar, 3000);
 
         let wtCompanionStarted = false;
         let wtOnFallback = false;
-        let wtReachabilityRetryTimer = null;
+        // Whether the "server unreachable" slide-out notice is the live one
+        // for the CURRENT outage - distinct from the notice's own DOM
+        // element, which removes itself after ~3.5s regardless of whether
+        // the outage is still ongoing (see wtShowUnreachableNotice), so the
+        // element's presence alone can't be used to mean "already told the
+        // user about this outage."
+        let wtUnreachableNoticeShown = false;
 
         // Chrome (and most browsers) throttle setInterval way down in a
         // background tab to save battery/CPU - often to once a minute or
         // less, sometimes effectively stalling altogether. Confirmed live
-        // 2026-10-15: the 15s reachability retry loop below just sat there
-        // indefinitely while main was down and the tab wasn't focused,
-        // only actually recovering once the page was reloaded (which
-        // restarts everything fresh, including the timer). Same pattern
-        // already used for the radio's now-playing refresh elsewhere in
-        // this file - re-probe immediately the moment the tab regains
-        // focus, rather than trusting a possibly-throttled timer alone to
-        // get there eventually. Harmless to fire with no retry timer
-        // running (the common case, already on main) - wtProbeServer's own
-        // success path just confirms that and does nothing further.
+        // 2026-10-15: the reachability watchdog just sat there indefinitely
+        // while main was down and the tab wasn't focused, only actually
+        // recovering once the page was reloaded (which restarts everything
+        // fresh, including the timer). Same pattern already used for the
+        // radio's now-playing refresh elsewhere in this file - re-probe
+        // immediately the moment the tab regains focus, rather than
+        // trusting a possibly-throttled timer alone to get there
+        // eventually. Harmless to fire while already healthy -
+        // wtProbeServer's own success path just confirms that.
         document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible' && wtReachabilityRetryTimer) wtProbeServer();
+            if (document.visibilityState === 'visible') wtProbeServer();
         });
 
         // startCompanionFeatures() only ever needs to run ONCE, against
@@ -7071,11 +7077,9 @@ setInterval(scanProfileFlightBar, 3000);
             if (logo) { logo.removeAttribute('href'); logo.style.cursor = 'default'; logo.title = 'Running on the fallback server - main server is down'; }
             wtUpdateChatVisibility();
             if (!wtCompanionStarted) { wtCompanionStarted = true; startCompanionFeatures(); }
-            // Keeps checking for main even while successfully running on
-            // the fallback - this is what switches back the moment main
-            // is reachable again, same timer wtHandleUnreachable also uses
-            // for the "totally unreachable" case.
-            if (!wtReachabilityRetryTimer) wtReachabilityRetryTimer = setInterval(wtProbeServer, 15000);
+            // Checking for main's return is handled by the single persistent
+            // watchdog started once at the bottom of this file (see its own
+            // comment) - no separate timer needed here.
         }
         // Only routes to the fallback if IT has independently decided it's
         // ACTIVE (see GET /api/public/fallback-status's own comment
@@ -7122,7 +7126,6 @@ setInterval(scanProfileFlightBar, 3000);
                 timeout: WT_PROBE_TIMEOUT_MS,
                 onload: (res) => {
                     if (res.status >= 200 && res.status < 300) {
-                        if (wtReachabilityRetryTimer) { clearInterval(wtReachabilityRetryTimer); wtReachabilityRetryTimer = null; }
                         wtSwitchToMain();
                     } else {
                         console.warn('[Wartorn] main probe got non-2xx status:', res.status);
@@ -7138,20 +7141,15 @@ setInterval(scanProfileFlightBar, 3000);
             });
         }
         // Only the FIRST detected total failure (main AND fallback both
-        // down/not active) shows the notice/slide-hide and starts the
-        // retry loop - every later retry tick that also fails just stays
-        // quiet and tries again in another minute, rather than re-showing
-        // the notice every time. Once a retry succeeds, wtSwitchToMain
-        // handles clearing this interval and restoring the UI.
+        // down/not active) shows the notice/slide-hide - every later tick
+        // of the persistent watchdog (see the bottom of this file) that
+        // also fails just stays quiet and tries again, rather than
+        // re-showing the notice every time. wtRestoreUnreachableUi resets
+        // the flag once things recover.
         function wtHandleUnreachable() {
-            if (!wtReachabilityRetryTimer) {
+            if (!wtUnreachableNoticeShown) {
+                wtUnreachableNoticeShown = true;
                 wtShowUnreachableNotice();
-                // 15s, not 60s - the fallback server's own health check now
-                // flips ACTIVE in ~21s (tightened 2026-10-15, was ~60s), so a
-                // 60s companion retry on top of that left people staring at
-                // "unreachable" far longer than the fallback actually took
-                // to come up behind the scenes.
-                wtReachabilityRetryTimer = setInterval(wtProbeServer, 15000);
             }
         }
         // A flat upfront delay (tried last) made EVERY load pay the same
@@ -7189,6 +7187,20 @@ setInterval(scanProfileFlightBar, 3000);
             }
         }
         wtProbeServerInitial();
+
+        // The persistent reachability watchdog - runs for the entire life
+        // of this page load, regardless of current state. Previously, a
+        // retry timer only ever got created REACTIVELY, inside
+        // wtHandleUnreachable/wtSwitchToFallback - meaning once the
+        // companion was successfully connected to main (the common case),
+        // NOTHING was left watching for a LATER failure. Confirmed live
+        // 2026-10-15: a companion already running fine against main never
+        // noticed main go down mid-session at all - only a page reload
+        // (which re-runs wtProbeServerInitial from scratch) ever
+        // re-triggered detection. This single timer now covers every case
+        // (healthy, unreachable, and on-fallback-watching-for-main) with
+        // one always-on loop instead of three different on-demand ones.
+        setInterval(wtProbeServer, 15000);
     }
 
 })();
