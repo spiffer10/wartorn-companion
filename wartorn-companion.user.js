@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.8.5
+// @version      4.8.6
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.8.5';
+    const COMPANION_VERSION_FALLBACK = '4.8.6';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -7002,6 +7002,23 @@ setInterval(scanProfileFlightBar, 3000);
         let wtCompanionStarted = false;
         let wtOnFallback = false;
         let wtReachabilityRetryTimer = null;
+
+        // Chrome (and most browsers) throttle setInterval way down in a
+        // background tab to save battery/CPU - often to once a minute or
+        // less, sometimes effectively stalling altogether. Confirmed live
+        // 2026-10-15: the 15s reachability retry loop below just sat there
+        // indefinitely while main was down and the tab wasn't focused,
+        // only actually recovering once the page was reloaded (which
+        // restarts everything fresh, including the timer). Same pattern
+        // already used for the radio's now-playing refresh elsewhere in
+        // this file - re-probe immediately the moment the tab regains
+        // focus, rather than trusting a possibly-throttled timer alone to
+        // get there eventually. Harmless to fire with no retry timer
+        // running (the common case, already on main) - wtProbeServer's own
+        // success path just confirms that and does nothing further.
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && wtReachabilityRetryTimer) wtProbeServer();
+        });
 
         // startCompanionFeatures() only ever needs to run ONCE, against
         // whichever host first succeeds - every fetchFromWartorn/
