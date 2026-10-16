@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.8.4
+// @version      4.8.5
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.8.4';
+    const COMPANION_VERSION_FALLBACK = '4.8.5';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2588,7 +2588,7 @@ function targetRowHtml(t, estRespect) {
                     </div>
 
                     <div style="text-align:center; color:#555; font-size:0.7em; padding-top:4px;">
-                        Wartorn Companion v${(typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || COMPANION_VERSION_FALLBACK}
+                        Wartorn Companion v${(typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || COMPANION_VERSION_FALLBACK}${wtOnFallback ? ' <span style="color:#E91E63; font-weight:bold;">(Fallback)</span>' : ''}
                     </div>
                 </div>
             `;
@@ -4216,6 +4216,7 @@ function targetRowHtml(t, estRespect) {
                 wrap.appendChild(buildSideButton(key));
             });
             wtUpdateOcIssuesBadge(); // hides the button immediately for anyone not Master/Helper/admin, rather than a visible flash until the first OC status check resolves
+            wtUpdateChatVisibility(); // hides chat immediately if this page load already started on the fallback, rather than a visible flash before it's hidden
 
             // Reopen whichever of these synchronous panels were open
             // before this navigation - radio (async, faction-gated) is
@@ -7007,12 +7008,33 @@ setInterval(scanProfileFlightBar, 3000);
         // postToWartorn call it set up reads WARTORN_HOST fresh each time,
         // so later switching between main and fallback is just reassigning
         // that one variable, never re-running this.
+        // Chat has no merge-back path at all (it's in-memory per faction on
+        // whichever server is running, snapshotted to a local JSON file -
+        // never synced to the fallback, and nothing carries fallback-sent
+        // messages back to main once it returns) - confirmed live
+        // 2026-10-15 that leaving it visible on the fallback just showed an
+        // empty history with no indication why. Hidden there entirely for
+        // now rather than half-working; dataset.unread stays untouched so
+        // it starts fresh (not a stale red dot) whenever it reappears.
+        // display:'grid'/'none' only, never '' - see wtUpdateOcIssuesBadge's
+        // own comment on why an empty string silently breaks place-items.
+        function wtUpdateChatVisibility() {
+            const chatBtn = document.querySelector('.wt-side-btn[data-key="chat"]');
+            if (!chatBtn) return;
+            if (wtOnFallback) {
+                chatBtn.style.display = 'none';
+                if (openWindows.has('chat')) closePanelWindow('chat');
+            } else {
+                chatBtn.style.display = 'grid';
+            }
+        }
         function wtSwitchToMain() {
             WARTORN_HOST = WARTORN_MAIN_HOST;
             wtOnFallback = false;
             const logo = document.getElementById('wt-ghost-logo');
             if (logo) { logo.href = WARTORN_MAIN_HOST; logo.style.cursor = 'grab'; logo.title = ''; }
             wtRestoreUnreachableUi();
+            wtUpdateChatVisibility();
             if (!wtCompanionStarted) { wtCompanionStarted = true; startCompanionFeatures(); }
         }
         // Click-through disabled (not just repointed) rather than linking
@@ -7030,6 +7052,7 @@ setInterval(scanProfileFlightBar, 3000);
             wtRestoreUnreachableUi();
             const logo = document.getElementById('wt-ghost-logo');
             if (logo) { logo.removeAttribute('href'); logo.style.cursor = 'default'; logo.title = 'Running on the fallback server - main server is down'; }
+            wtUpdateChatVisibility();
             if (!wtCompanionStarted) { wtCompanionStarted = true; startCompanionFeatures(); }
             // Keeps checking for main even while successfully running on
             // the fallback - this is what switches back the moment main
