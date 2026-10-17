@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.9.9
+// @version      4.9.10
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.9.9';
+    const COMPANION_VERSION_FALLBACK = '4.9.10';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1686,6 +1686,40 @@
         // height is that 129px offset plus however tall the button stack
         // itself renders). Falls back to a sane fixed height if the
         // button stack isn't in the DOM yet for some reason.
+        // Finds whichever of Torn's OWN currently-open chat windows (e.g.
+        // "Tesseract", "Your private chats") sits furthest left, so our own
+        // chat window/button can snap flush against it instead of
+        // overlapping (see getWindowGeometryStyle and wtPositionChatUi,
+        // both of which call this). Walked structurally - from any chat
+        // tab button, up to the tab row, up to that row's parent, then
+        // whichever OTHER child of that parent isn't the tab row is where
+        // Torn renders its open windows - rather than hardcoding one of
+        // Torn's own hashed CSS class names, which would silently stop
+        // matching the next time Torn's front end gets rebuilt. Top-level
+        // (not nested inside injectSidePanels) so both call sites can
+        // reach it without a repeat of the wtUpdateChatVisibility
+        // cross-scope bug from an earlier version of this feature.
+        function wtFindOpenNativeChatWindowRect() {
+            const firstTab = document.querySelector('[id^="chat_panel_button:"]');
+            if (!firstTab) return null;
+            const tabRow = firstTab.parentElement && firstTab.parentElement.parentElement;
+            const outer = tabRow && tabRow.parentElement;
+            if (!outer) return null;
+            let windowsContainer = null;
+            for (const child of outer.children) {
+                if (child !== tabRow) { windowsContainer = child; break; }
+            }
+            if (!windowsContainer) return null;
+            let leftmost = null;
+            for (const child of windowsContainer.children) {
+                const r = child.getBoundingClientRect();
+                // Skips empty/collapsed placeholders - a real open chat
+                // window is always much bigger than this.
+                if (r.width < 50 || r.height < 50) continue;
+                if (!leftmost || r.left < leftmost.left) leftmost = r;
+            }
+            return leftmost;
+        }
         function getWindowGeometryStyle(key) {
             // Chat stacks directly above its own button - which itself
             // floats next to Torn's native chat tab row (see
@@ -1695,6 +1729,18 @@
             // chat (it's never draggable/resizable), so this always runs.
             if (key === 'chat') {
                 const width = 320, height = 420;
+                // Snaps against an already-open native chat window on this
+                // very first open, same as the live wtPositionChatUi loop
+                // does afterward - otherwise it'd briefly open overlapping
+                // one until that loop's next tick (up to 2s) corrects it.
+                const nativeRect = wtFindOpenNativeChatWindowRect();
+                if (nativeRect) {
+                    return {
+                        top: Math.max(0, nativeRect.top),
+                        left: Math.max(0, nativeRect.left - width),
+                        width, height: nativeRect.height
+                    };
+                }
                 const chatBtnEl = document.querySelector('.wt-side-btn[data-key="chat"]');
                 if (chatBtnEl) {
                     const r = chatBtnEl.getBoundingClientRect();
@@ -3850,13 +3896,20 @@ function targetRowHtml(t, estRespect) {
             return key === 'ocIssues' ? '#f44336' : '#4CAF50';
         }
         function buttonRestColor(key, btn) {
-            if (openWindows.has(key)) return key === 'chat' ? 'linear-gradient(#0088b3, #004058)' : 'rgba(10,11,14,0.95)';
+            // Chat uses Torn's own "black theme" tab gradients (its
+            // --tabs-black-*-gradient custom properties, copied from a
+            // live dev-tools inspection) instead of the generic
+            // panel-button fill every other side button uses - gray at
+            // rest/open, green for unread, same as how Torn's own tabs
+            // flag an unread channel.
+            if (key === 'chat') {
+                if (openWindows.has(key)) return 'linear-gradient(180deg, #303840 0%, #4E565E 100%)';
+                if (btn.dataset.unread === '1') return 'linear-gradient(180deg, #46730a 0%, #5c940d 100%)';
+                return 'linear-gradient(0deg, #303840 0%, #4E565E 100%)';
+            }
+            if (openWindows.has(key)) return 'rgba(10,11,14,0.95)';
             if (btn.dataset.unread === '1') return key === 'ocIssues' ? 'rgba(244,67,54,0.3)' : 'rgba(76,175,80,0.25)';
-            // Chat's rest color is Torn's own tab-button teal gradient
-            // (copied from a live dev-tools inspection), not the generic
-            // panel-button fill every other side button uses - see
-            // buildSideButton/injectSidePanels for the rest of that match.
-            return key === 'chat' ? 'linear-gradient(#00698c, #003040)' : 'rgba(21,23,28,0.9)';
+            return 'rgba(21,23,28,0.9)';
         }
         function refreshButtonHighlights() {
             document.querySelectorAll('.wt-side-btn').forEach(b => {
@@ -4252,18 +4305,19 @@ function targetRowHtml(t, estRespect) {
                 // wtPositionChatUi), so instead of the box/border/shadow
                 // chrome every other side button has, its base cssText here
                 // only sets layout (size/centering/cursor) - the actual
-                // teal gradient/bevel/radius matching Torn's real tab
-                // buttons is applied afterward as explicit inline styles
-                // (see injectSidePanels, right after this button is built),
+                // gray bevel/radius matching Torn's real tab buttons is
+                // applied afterward as explicit inline styles (see
+                // injectSidePanels, right after this button is built),
                 // copied from a live dev-tools inspection of Torn's own
-                // .root___zZRe1 tab button rather than guessed.
+                // .root___zZRe1 tab button rather than guessed. Gray at
+                // rest/open, green for unread - see buttonRestColor.
                 btn.style.cssText = key === 'chat'
                     ? 'display:grid; place-items:center; line-height:1; transform-origin:center center; cursor:pointer; transition:0.15s; opacity:0.85;'
                     : 'width:34px; height:34px; display:grid; place-items:center; line-height:1; transform-origin:center center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.35em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
                 btn.addEventListener('mouseenter', () => {
                     btn.style.opacity = '1';
                     btn.style.transform = 'scale(1.05)';
-                    if (!openWindows.has(key)) btn.style.background = key === 'chat' ? 'linear-gradient(#0088b3, #004058)' : 'rgba(10,11,14,0.95)';
+                    if (!openWindows.has(key)) btn.style.background = key === 'chat' ? 'linear-gradient(180deg, #4E565E 0%, #404850 100%)' : 'rgba(10,11,14,0.95)';
                 });
                 btn.addEventListener('mouseleave', () => {
                     btn.style.opacity = openWindows.has(key) ? '1' : '0.85';
@@ -4312,17 +4366,18 @@ function targetRowHtml(t, estRespect) {
             const chatBtn = buildSideButton('chat');
             chatBtn.style.position = 'fixed';
             chatBtn.style.zIndex = '9999999';
-            // Exact copy of Torn's own tab-button styling (.root___zZRe1),
-            // read straight out of a live dev-tools inspection the user
-            // pasted - same teal gradient/bevel/radius as the real
-            // faction/company/global/notes/people/settings tabs, so this
-            // reads as one of them rather than a foreign UI block. Height
-            // 38px is Torn's own value; width matched to it since Torn
-            // doesn't set one explicitly (icon + flex centering decides it
-            // there - a fixed square reads the same visually).
+            // Bevel/radius/shadow is an exact copy of Torn's own tab-button
+            // styling (.root___zZRe1), read straight out of a live
+            // dev-tools inspection the user pasted - height 38px is Torn's
+            // own value, width matched to it since Torn doesn't set one
+            // explicitly there (icon + flex centering decides it). The
+            // fill color itself is gray at rest (Torn's own --tabs-black-*
+            // gradient) rather than that inspected element's teal, which
+            // turned out to be its "currently open" state, not its resting
+            // one - see buttonRestColor, which this starting value matches.
             chatBtn.style.width = '38px';
             chatBtn.style.height = '38px';
-            chatBtn.style.background = 'linear-gradient(#00698c, #003040)';
+            chatBtn.style.background = buttonRestColor('chat', chatBtn);
             chatBtn.style.border = 'none';
             chatBtn.style.borderRadius = '5px 5px 0 0';
             chatBtn.style.boxShadow = 'inset 0 0 4px rgba(255,255,255,0.25), inset 0 -2px 4px rgba(0,0,0,0.5)';
@@ -4346,8 +4401,12 @@ function targetRowHtml(t, estRespect) {
                 const anchor = chatTabs.length ? chatTabs[0] : null;
                 if (anchor) {
                     const rect = anchor.getBoundingClientRect();
+                    // Flush against the first tab - no gap - so it reads as
+                    // part of the same row instead of a separate floating
+                    // block sitting near it (an earlier +8px gap read as
+                    // "odd" sitting right next to Torn's own gap-free tabs).
                     chatBtn.style.top = Math.max(0, Math.round(rect.top + rect.height - 38)) + 'px';
-                    chatBtn.style.left = Math.max(0, Math.round(rect.left - 38 - 8)) + 'px';
+                    chatBtn.style.left = Math.max(0, Math.round(rect.left - 38)) + 'px';
                     chatBtn.style.right = 'auto';
                     chatBtn.style.bottom = 'auto';
                 } else {
@@ -4363,14 +4422,29 @@ function targetRowHtml(t, estRespect) {
                 // The chat window (when open) stacks directly above its
                 // button, same as Torn's own chat windows sit right above
                 // their tab - kept in step with the button here since it's
-                // never draggable itself (see openPanelWindow).
+                // never draggable itself (see openPanelWindow). If Torn
+                // itself has a chat window open too (e.g. "Tesseract" or
+                // "Your private chats"), snap flush against whichever one
+                // sits closest instead of overlapping it - found
+                // structurally (two levels up from any chat tab button,
+                // then whichever sibling of the tab row isn't the tab row
+                // itself) rather than by a hashed class name, so it keeps
+                // working across a Torn front-end redeploy.
                 const chatWin = document.getElementById('wt-window-chat');
                 if (chatWin) {
+                    const DEFAULT_W = 320, DEFAULT_H = 420;
                     const btnRect = chatBtn.getBoundingClientRect();
-                    const w = parseInt(chatWin.style.width, 10) || 320;
-                    const h = parseInt(chatWin.style.height, 10) || 420;
-                    chatWin.style.top = Math.max(0, Math.round(btnRect.top - h - 6)) + 'px';
-                    chatWin.style.left = Math.max(0, Math.round(btnRect.right - w)) + 'px';
+                    const nativeRect = wtFindOpenNativeChatWindowRect();
+                    chatWin.style.width = DEFAULT_W + 'px';
+                    if (nativeRect) {
+                        chatWin.style.top = Math.max(0, Math.round(nativeRect.top)) + 'px';
+                        chatWin.style.height = Math.round(nativeRect.height) + 'px';
+                        chatWin.style.left = Math.max(0, Math.round(nativeRect.left - DEFAULT_W)) + 'px';
+                    } else {
+                        chatWin.style.top = Math.max(0, Math.round(btnRect.top - DEFAULT_H - 6)) + 'px';
+                        chatWin.style.height = DEFAULT_H + 'px';
+                        chatWin.style.left = Math.max(0, Math.round(btnRect.right - DEFAULT_W)) + 'px';
+                    }
                 }
             }
             wtPositionChatUi();
