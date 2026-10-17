@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.8.7
+// @version      4.9.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.8.7';
+    const COMPANION_VERSION_FALLBACK = '4.9.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6357,14 +6357,14 @@ setInterval(scanProfileFlightBar, 3000);
         let wtCanReceiveOcAlerts = false;
         let wtOcCrimesTimer = null;
         let wtOcCrimesCache = [];
-        // Backs the OC Issues panel/button: wtOcIssueDetails is the latest
-        // key->message map (same keys the toast latch uses); wtOcIssuesSeenKeys
-        // is whatever's already been shown to the viewer (cleared/refreshed
-        // only when they actually open the panel) - the button wiggles
-        // whenever there's a key in the first set not yet in the second,
-        // i.e. a genuinely NEW issue, not just "any issue still outstanding."
-        let wtOcIssueDetails = new Map();
-        let wtOcIssuesSeenKeys = new Set();
+        // Backs the OC Issues panel/button - the list itself (already
+        // sorted and ack-merged server-side, see computeOcIssueList in
+        // server.js) rather than computed here. The red dot reflects real,
+        // shared acknowledgment state now (any issue with acked:false),
+        // not a per-device "have I opened this panel" latch - so it stays
+        // in sync with the Staff OC panel's own Issues list and with
+        // whichever other OC Master/Helper last cleared something.
+        let wtOcIssueList = [];
         function wtCheckOcAccessStatus() {
             fetchFromWartorn('oc/status').then(data => {
                 wtHasOcView = !!(data && data.hasOcView);
@@ -6388,55 +6388,24 @@ setInterval(scanProfileFlightBar, 3000);
             fetchFromWartorn('oc/crimes').then(data => {
                 if (!data || !Array.isArray(data.crimes)) return;
                 wtOcCrimesCache = data.crimes;
-                if (wtCanReceiveOcAlerts) wtComputeOcIssues(data.crimes);
+                wtOcIssueList = Array.isArray(data.issues) ? data.issues : [];
                 wtUpdateOcIssuesBadge();
+                // Keep an already-open panel live rather than frozen at
+                // whatever it showed when first opened - same "only redraw
+                // if actually open" guard the other ticking panels use.
+                if (openWindows.has('ocIssues')) renderOcIssuesPanel();
             }).catch(() => {});
-        }
-
-        // Builds the issue list the OC Issues panel/button show - no toast
-        // here (removed per explicit request: the button turning red is the
-        // only notice now, same as it would be noisy/redundant with chat).
-        function wtComputeOcIssues(crimes) {
-            const nowSecs = Math.floor(Date.now() / 1000);
-            const currentKeys = new Map();
-            crimes.forEach(c => {
-                // paidOutUnknown crimes excluded - Torn's own payout log
-                // can't confirm those either way (too old), so nagging to
-                // pay out something that might already be paid would be
-                // actively misleading, not just noisy.
-                if (c.status === 'Successful' && !c.paidOut && !c.paidOutUnknown) {
-                    currentKeys.set(`payment:${c.id}`, `💰 ${c.name} (Lvl ${c.difficulty}) is ready to pay out - $${Math.round(c.effectiveReward).toLocaleString()}`);
-                }
-                if (c.status === 'Planning' && c.readyAt && !c.executedAt && nowSecs >= c.readyAt) {
-                    currentKeys.set(`stalled:${c.id}`, '🛑 Stalled');
-                }
-                (c.slots || []).forEach(s => {
-                    if (!s.filled) return;
-                    if (s.itemId && !s.itemOk) {
-                        currentKeys.set(`item:${c.id}:${s.positionId}`, `🎒 ${s.name} is missing ${s.itemName || 'an item'} for ${c.name}`);
-                    }
-                    if (s.passRate != null && s.meetsPassThreshold === false) {
-                        currentKeys.set(`pass:${c.id}:${s.positionId}`, `⚠️ ${s.name}'s skill (${s.passRate}%) is below the ${c.passThreshold}%+ needed for ${c.name}`);
-                    }
-                });
-            });
-            wtOcIssueDetails = currentKeys; // key -> message, read by renderOcIssuesPanel
-            wtUpdateOcIssuesBadge();
         }
 
         // Button only shows for Master/Helper/admin (a regular member has no
         // action to take on any of this), and turns solid red only while
-        // there's at least one issue the viewer hasn't actually opened the
-        // panel to see yet - via the exact same dataset.unread +
+        // there's at least one UNACKNOWLEDGED issue - real, server-side,
+        // shared state now (see oc_issue_acks), not a per-device "have I
+        // opened this panel" latch, so it stays in sync with whichever
+        // other OC Master/Helper last cleared something, and with the
+        // Staff OC panel's own Issues list. Same dataset.unread +
         // refreshButtonHighlights() mechanism the chat button already uses
-        // successfully (wtChatSetButtonUnread), just red instead of green
-        // (see wtUnreadColor). No custom CSS class, no transform, nothing
-        // bespoke - every animated variant tried before this kept drifting
-        // the icon on the user's device; this path doesn't animate at all.
-        // Opening the panel (renderOcIssuesPanel) marks everything currently
-        // showing as seen, which is what actually clears the red; a still-
-        // unresolved-but-already-seen issue doesn't stay red forever, only
-        // a genuinely new one does.
+        // successfully, just red instead of green (see wtUnreadColor).
         function wtUpdateOcIssuesBadge() {
             const btn = document.querySelector('.wt-side-btn[data-key="ocIssues"]');
             if (!btn) return;
@@ -6447,23 +6416,49 @@ setInterval(scanProfileFlightBar, 3000);
             // icon looked "centered until this ran" - place-items:center
             // does nothing once the box isn't a grid anymore.
             btn.style.display = wtCanReceiveOcAlerts ? 'grid' : 'none';
-            const hasNew = Array.from(wtOcIssueDetails.keys()).some(k => !wtOcIssuesSeenKeys.has(k));
-            btn.dataset.unread = hasNew ? '1' : '0';
+            btn.dataset.unread = wtOcIssueList.some(i => !i.acked) ? '1' : '0';
             refreshButtonHighlights();
+        }
+
+        // Posts the ack, then updates local state optimistically (no need
+        // to wait for the next 90s poll to see it take effect) - a failure
+        // just leaves it as still-unacked, caught on the next real poll.
+        function wtOcAckIssue(key) {
+            postToWartorn('oc/issues/ack', { key }).then(({ data }) => {
+                if (data && data.success) {
+                    const issue = wtOcIssueList.find(i => i.key === key);
+                    if (issue) { issue.acked = true; issue.ackedBy = 'You'; }
+                    wtUpdateOcIssuesBadge();
+                    renderOcIssuesPanel();
+                }
+            }).catch(() => {});
         }
 
         function renderOcIssuesPanel() {
             const body = document.getElementById('wt-panel-body-ocIssues');
             if (!body) return;
             body.dataset.wtLoaded = '1';
-            // Opening the panel is what counts as "seen" - clears the wiggle
-            // until something new shows up on a later poll.
-            wtOcIssuesSeenKeys = new Set(wtOcIssueDetails.keys());
-            wtUpdateOcIssuesBadge();
-            if (!wtOcIssueDetails.size) { body.innerHTML = '<div style="color:#888;">No OC issues right now.</div>'; return; }
-            body.innerHTML = Array.from(wtOcIssueDetails.values())
-                .map(msg => `<div style="padding:6px 0; border-bottom:1px solid #1f2229; font-size:0.85em; color:#ddd;">${wtChatEscapeHtml(msg)}</div>`)
-                .join('');
+            if (!wtOcIssueList.length) { body.innerHTML = '<div style="color:#888;">No OC issues right now.</div>'; return; }
+            // Already sorted server-side (payment, stalled, item, pass) -
+            // just group by type here for the section headers.
+            const TYPE_LABELS = { payment: '💰 Ready to Pay Out', stalled: '🛑 Stalled', item: '🎒 Missing Item', pass: '⚠️ Under Success Rate' };
+            let html = '', lastType = null;
+            wtOcIssueList.forEach(issue => {
+                if (issue.type !== lastType) {
+                    lastType = issue.type;
+                    html += `<div style="color:#888; font-size:0.75em; font-weight:bold; text-transform:uppercase; margin:10px 0 4px; letter-spacing:0.5px;">${TYPE_LABELS[issue.type] || issue.type}</div>`;
+                }
+                html += `<div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #1f2229; font-size:0.85em; color:${issue.acked ? '#666' : '#ddd'}; ${issue.acked ? 'text-decoration:line-through;' : ''}">
+                    <span style="flex:1;">${wtChatEscapeHtml(issue.message)}</span>
+                    ${issue.acked
+                        ? `<span style="font-size:0.8em; color:#4CAF50; white-space:nowrap;" title="Acknowledged by ${wtChatEscapeHtml(issue.ackedBy || '')}">✓ ${wtChatEscapeHtml(issue.ackedBy || '')}</span>`
+                        : `<span data-ack-key="${wtChatEscapeHtml(issue.key)}" class="wt-oc-ack-btn" title="Mark acknowledged" style="cursor:pointer; width:20px; height:20px; flex-shrink:0; border:1px solid #444; border-radius:4px; display:inline-flex; align-items:center; justify-content:center; color:#4CAF50; font-size:0.9em;">✓</span>`}
+                </div>`;
+            });
+            body.innerHTML = html;
+            body.querySelectorAll('.wt-oc-ack-btn').forEach(el => {
+                el.addEventListener('click', () => wtOcAckIssue(el.dataset.ackKey));
+            });
         }
 
         // Torn's OC list (.tt-oc2-list, seen on the faction Crimes tab) is a
