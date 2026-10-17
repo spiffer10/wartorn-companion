@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.9.3
+// @version      4.9.4
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.9.3';
+    const COMPANION_VERSION_FALLBACK = '4.9.4';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6371,13 +6371,17 @@ setInterval(scanProfileFlightBar, 3000);
                 // Master OR Helper OR the site admin (testing) - same
                 // combined flag the dashboard uses now.
                 wtCanReceiveOcAlerts = !!(data && data.canReceiveOcAlerts);
-                if (wtHasOcView && !wtOcCrimesTimer) {
+                // Polling no longer gated on wtHasOcView - the crimes
+                // endpoint itself now redacts money/blame detail for
+                // anyone without it (see ocCrimesHandler server-side), so
+                // every companion user gets at least the stalled/missing-
+                // item status, not just whoever has the configured OC-view
+                // rank. Per explicit request: that's genuinely useful to
+                // anyone who might help - give someone the item, message
+                // them to hurry back from abroad.
+                if (!wtOcCrimesTimer) {
                     wtFetchOcCrimes();
                     wtOcCrimesTimer = setInterval(wtFetchOcCrimes, 90000);
-                } else if (!wtHasOcView && wtOcCrimesTimer) {
-                    clearInterval(wtOcCrimesTimer);
-                    wtOcCrimesTimer = null;
-                    wtOcCrimesCache = [];
                 }
             }).catch(() => {});
         }
@@ -6471,7 +6475,11 @@ setInterval(scanProfileFlightBar, 3000);
         // exact same id oc_crimes.id already keys on, so no translation
         // needed to look a card up in wtOcCrimesCache.
         function wtEnrichOcListPage() {
-            if (!wtHasOcView || !wtOcCrimesCache.length) return;
+            // No longer gated on wtHasOcView - the crimes fetch itself now
+            // works (with redacted detail) for anyone, so this runs for
+            // every companion user; the money-shaped lines further down
+            // stay gated on wtCanReceiveOcAlerts individually.
+            if (!wtOcCrimesCache.length) return;
             const cards = document.querySelectorAll('[data-oc-id]');
             if (!cards.length) return;
             const nowSecs = Math.floor(Date.now() / 1000);
