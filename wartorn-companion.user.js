@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.9.1
+// @version      4.9.2
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.9.1';
+    const COMPANION_VERSION_FALLBACK = '4.9.2';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6503,15 +6503,14 @@ setInterval(scanProfileFlightBar, 3000);
                 // against the crime, not cleared on execution) - this is the
                 // one flag that matters most when someone's about to key a
                 // payment split into Torn's own faction-money screen by
-                // hand: an even split would be WRONG for this crime, since
-                // whoever's named here is getting docked per the penalty %.
+                // hand: an even split would be WRONG for this crime. No
+                // name-dropping here (same philosophy as the plain
+                // "Stalled" badge above) - this is a quick in-game glance,
+                // not the place to read who/by how much; that detail is
+                // what the dashboard's OC panel is for.
                 const delayedSlots = (c.slots || []).filter(s => s.filled && s.delaySeconds > 0);
                 if (delayedSlots.length) {
-                    const who = delayedSlots.map(s => {
-                        const sp = (c.suggestedSplit || []).find(x => x.playerId === s.playerId);
-                        return wtChatEscapeHtml(s.name) + (sp ? ` (-${sp.penaltyPct}%)` : '');
-                    }).join(', ');
-                    lines.push(`<span style="color:#ff9800; font-weight:bold;">⚠️ Delayed on Torn: ${who} - do NOT split evenly</span>`);
+                    lines.push('<span style="color:#ff9800; font-weight:bold;">⚠️ Delayed on Torn - do NOT split evenly, review in dashboard</span>');
                 }
                 // Shown on every crime, not just Successful ones - the
                 // configured split is already known before the crime even
