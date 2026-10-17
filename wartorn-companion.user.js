@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.9.11
+// @version      4.9.12
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.9.11';
+    const COMPANION_VERSION_FALLBACK = '4.9.12';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1686,9 +1686,13 @@
         // height is that 129px offset plus however tall the button stack
         // itself renders). Falls back to a sane fixed height if the
         // button stack isn't in the DOM yet for some reason.
+        // Small visual gap between our chat window and whichever native
+        // chat window it snaps next to - shared by both call sites so they
+        // always agree.
+        const WT_CHAT_WINDOW_GAP = 6;
         // Finds whichever of Torn's OWN currently-open chat windows (e.g.
         // "Tesseract", "Your private chats") sits furthest left, so our own
-        // chat window/button can snap flush against it instead of
+        // chat window/button can snap next to it instead of
         // overlapping (see getWindowGeometryStyle and wtPositionChatUi,
         // both of which call this). Walked structurally - from any chat
         // tab button, up to the tab row, up to that row's parent, then
@@ -1729,24 +1733,32 @@
             // chat (it's never draggable/resizable), so this always runs.
             if (key === 'chat') {
                 const width = 320, height = 420;
-                // Snaps against an already-open native chat window on this
-                // very first open, same as the live wtPositionChatUi loop
-                // does afterward - otherwise it'd briefly open overlapping
-                // one until that loop's next tick (up to 2s) corrects it.
+                // Snaps near (not flush against - small gap, see
+                // WT_CHAT_WINDOW_GAP) an already-open native chat window on
+                // this very first open, same as the live wtPositionChatUi
+                // loop does afterward - otherwise it'd briefly open
+                // overlapping one until that loop's next tick (up to 2s)
+                // corrects it.
                 const nativeRect = wtFindOpenNativeChatWindowRect();
                 if (nativeRect) {
                     return {
                         top: Math.max(0, nativeRect.top),
-                        left: Math.max(0, nativeRect.left - width),
+                        left: Math.max(0, nativeRect.left - width - WT_CHAT_WINDOW_GAP),
                         width, height: nativeRect.height
                     };
                 }
+                // No native window open to snap against - docks at the
+                // viewport's right edge instead (where a lone native
+                // window would itself sit, since that row is right-
+                // anchored), rather than wherever our own button happens
+                // to be (which sits to the left of the row - see
+                // wtPositionChatUi).
                 const chatBtnEl = document.querySelector('.wt-side-btn[data-key="chat"]');
                 if (chatBtnEl) {
                     const r = chatBtnEl.getBoundingClientRect();
                     return {
                         top: Math.max(0, r.top - height - 6),
-                        left: Math.max(0, r.right - width),
+                        left: Math.max(0, window.innerWidth - width - 5),
                         width, height
                     };
                 }
@@ -3094,12 +3106,20 @@ function targetRowHtml(t, estRespect) {
                 </div>
             </div>`;
         }
-        // The actual button-coloring call - see buttonRestColor below for
-        // where dataset.unread gets read back out.
-        function wtChatSetButtonUnread(unread) {
+        // Takes an unread MESSAGE COUNT (not just a boolean) - drives the
+        // small corner badge (see buildSideButton) the same way Torn's own
+        // tabs show a count rather than just recoloring. dataset.unread
+        // stays a plain '0'/'1' for refreshButtonHighlights/wtUnreadColor,
+        // which only care whether there's anything unread at all.
+        function wtChatSetButtonUnread(count) {
             const btn = document.querySelector('.wt-side-btn[data-key="chat"]');
             if (!btn) return;
-            btn.dataset.unread = unread ? '1' : '0';
+            btn.dataset.unread = count > 0 ? '1' : '0';
+            const badge = document.getElementById('wt-chat-unread-badge');
+            if (badge) {
+                badge.style.display = count > 0 ? 'block' : 'none';
+                badge.textContent = count > 99 ? '99+' : String(count);
+            }
             refreshButtonHighlights();
         }
         // Handles both the panel's first render (full list + input,
@@ -3179,7 +3199,7 @@ function targetRowHtml(t, estRespect) {
                     wtChatLastSeenId = messages[messages.length - 1].id;
                     safeGmSet('wt_chat_last_seen_id', wtChatLastSeenId);
                 }
-                wtChatSetButtonUnread(false);
+                wtChatSetButtonUnread(0);
             } catch (e) {
                 if (freshOpen) body.innerHTML = `<div style="color:#f44336;">Failed to load chat.</div>`;
             }
@@ -3363,7 +3383,7 @@ function targetRowHtml(t, estRespect) {
                 const data = await fetchFromWartorn('chat-history');
                 const messages = (data && Array.isArray(data.messages)) ? data.messages : [];
                 if (!messages.length) return;
-                wtChatSetButtonUnread(messages[messages.length - 1].id > wtChatLastSeenId);
+                wtChatSetButtonUnread(messages.filter(m => m.id > wtChatLastSeenId).length);
             } catch (e) {}
         }
 
@@ -3900,12 +3920,14 @@ function targetRowHtml(t, estRespect) {
             // --tabs-black-*-gradient custom properties, copied from a
             // live dev-tools inspection) instead of the generic
             // panel-button fill every other side button uses - gray at
-            // rest/open, green for unread, same as how Torn's own tabs
-            // flag an unread channel.
+            // rest and open alike. Unread doesn't recolor the button at
+            // all - see the wt-chat-unread-badge span instead, matching
+            // how Torn's own tabs flag an unread channel with a small
+            // count badge rather than a full background change.
             if (key === 'chat') {
-                if (openWindows.has(key)) return 'linear-gradient(180deg, #303840 0%, #4E565E 100%)';
-                if (btn.dataset.unread === '1') return 'linear-gradient(180deg, #46730a 0%, #5c940d 100%)';
-                return 'linear-gradient(0deg, #303840 0%, #4E565E 100%)';
+                return openWindows.has(key)
+                    ? 'linear-gradient(180deg, #303840 0%, #4E565E 100%)'
+                    : 'linear-gradient(0deg, #303840 0%, #4E565E 100%)';
             }
             if (openWindows.has(key)) return 'rgba(10,11,14,0.95)';
             if (btn.dataset.unread === '1') return key === 'ocIssues' ? 'rgba(244,67,54,0.3)' : 'rgba(76,175,80,0.25)';
@@ -4285,14 +4307,23 @@ function targetRowHtml(t, estRespect) {
                     img.style.cssText = 'width:24px; height:24px; object-fit:contain;';
                     img.onerror = () => { btn.innerText = def.icon; };
                     btn.appendChild(img);
+                    // Unread is a small green count badge in the corner -
+                    // matching how Torn flags an unread tab (confirmed live
+                    // via screenshot) - rather than recoloring the whole
+                    // button, which isn't how Torn's own tabs do it. See
+                    // wtChatSetButtonUnread for where this gets filled in.
+                    const badge = document.createElement('span');
+                    badge.id = 'wt-chat-unread-badge';
+                    badge.style.cssText = 'position:absolute; top:-4px; right:-4px; min-width:15px; height:15px; padding:0 3px; border-radius:8px; background:#5c940d; color:#fff; font-size:10px; font-weight:bold; line-height:15px; text-align:center; display:none; pointer-events:none; box-shadow:0 1px 3px rgba(0,0,0,0.6);';
+                    btn.appendChild(badge);
                 } else {
                     btn.innerText = def.icon;
                 }
                 // Same opacity scheme as the ghost logo (0.85 base, 1 on
                 // hover) for visual consistency across the whole left-edge
                 // UI - background color separately signals which panel (if
-                // any) is currently open, or (chat only, so far) whether
-                // there's something unread - see buttonRestColor above.
+                // any) is currently open; chat's unread signal is the
+                // badge above instead - see buttonRestColor.
                 // line-height:1 keeps the emoji glyph's own font metrics
                 // from pushing it off-center vertically inside the flex box
                 // (seen live on some emoji/webviews without it).
@@ -4401,11 +4432,12 @@ function targetRowHtml(t, estRespect) {
                 const anchor = chatTabs.length ? chatTabs[0] : null;
                 if (anchor) {
                     const rect = anchor.getBoundingClientRect();
-                    // A small gap (not flush, not the earlier 8px) reads
-                    // as "sitting next to" the row rather than jammed
-                    // against it or merged into it.
+                    // A small gap (not flush) reads as "sitting next to"
+                    // the row rather than jammed against it or merged into
+                    // it - 2px, trimmed down from an earlier 4px that read
+                    // as a hair too wide.
                     chatBtn.style.top = Math.max(0, Math.round(rect.top + rect.height - 38)) + 'px';
-                    chatBtn.style.left = Math.max(0, Math.round(rect.left - 38 - 4)) + 'px';
+                    chatBtn.style.left = Math.max(0, Math.round(rect.left - 38 - 2)) + 'px';
                     chatBtn.style.right = 'auto';
                     chatBtn.style.bottom = 'auto';
                 } else {
@@ -4418,17 +4450,21 @@ function targetRowHtml(t, estRespect) {
                     chatBtn.style.right = '12px';
                     chatBtn.style.bottom = '12px';
                 }
-                // The chat window (when open) stacks directly above its
-                // button, same as Torn's own chat windows sit right above
-                // their tab - kept in step with the button here since it's
-                // never draggable itself (see openPanelWindow). If Torn
-                // itself has a chat window open too (e.g. "Tesseract" or
-                // "Your private chats"), snap flush against whichever one
-                // sits closest instead of overlapping it - found
+                // The chat window (when open) stacks near its button, same
+                // as Torn's own chat windows sit right above their tab -
+                // kept in step with the button here since it's never
+                // draggable itself (see openPanelWindow). If Torn itself
+                // has a chat window open too (e.g. "Tesseract" or "Your
+                // private chats"), snap next to whichever one sits closest
+                // (small gap, not flush) instead of overlapping it - found
                 // structurally (two levels up from any chat tab button,
                 // then whichever sibling of the tab row isn't the tab row
                 // itself) rather than by a hashed class name, so it keeps
-                // working across a Torn front-end redeploy.
+                // working across a Torn front-end redeploy. With nothing
+                // native open to snap against, it docks at the viewport's
+                // own right edge instead of wherever our left-anchored
+                // button happens to be - where a lone native window would
+                // itself sit, since that row is right-anchored.
                 const chatWin = document.getElementById('wt-window-chat');
                 if (chatWin) {
                     const DEFAULT_W = 320, DEFAULT_H = 420;
@@ -4438,11 +4474,11 @@ function targetRowHtml(t, estRespect) {
                     if (nativeRect) {
                         chatWin.style.top = Math.max(0, Math.round(nativeRect.top)) + 'px';
                         chatWin.style.height = Math.round(nativeRect.height) + 'px';
-                        chatWin.style.left = Math.max(0, Math.round(nativeRect.left - DEFAULT_W)) + 'px';
+                        chatWin.style.left = Math.max(0, Math.round(nativeRect.left - DEFAULT_W - WT_CHAT_WINDOW_GAP)) + 'px';
                     } else {
                         chatWin.style.top = Math.max(0, Math.round(btnRect.top - DEFAULT_H - 6)) + 'px';
                         chatWin.style.height = DEFAULT_H + 'px';
-                        chatWin.style.left = Math.max(0, Math.round(btnRect.right - DEFAULT_W)) + 'px';
+                        chatWin.style.left = Math.max(0, Math.round(window.innerWidth - DEFAULT_W - 5)) + 'px';
                     }
                 }
             }
