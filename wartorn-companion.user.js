@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.9.5
+// @version      4.9.6
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.9.5';
+    const COMPANION_VERSION_FALLBACK = '4.9.6';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1686,7 +1686,23 @@
         // height is that 129px offset plus however tall the button stack
         // itself renders). Falls back to a sane fixed height if the
         // button stack isn't in the DOM yet for some reason.
-        function getWindowGeometryStyle() {
+        function getWindowGeometryStyle(key) {
+            // Chat defaults to the bottom-right corner instead of
+            // cascading off the side buttons - the common spot a chat
+            // widget sits in, closer to where Torn's own in-game chat box
+            // lives, as a first step toward it reading as "the same chat"
+            // rather than just another floating panel. Only affects the
+            // DEFAULT on a first-ever open; anyone with an already-saved
+            // position for it (openPanelWindow checks that first) keeps
+            // exactly where they left it.
+            if (key === 'chat') {
+                const width = 320, height = 420;
+                return {
+                    top: Math.max(0, window.innerHeight - height - 20),
+                    left: Math.max(0, window.innerWidth - width - 20),
+                    width, height
+                };
+            }
             const cascade = openWindows.size * 30;
             const maxTop = Math.max(0, window.innerHeight - 150);
             const maxLeft = Math.max(0, window.innerWidth - 150);
@@ -3983,7 +3999,7 @@ function targetRowHtml(t, estRespect) {
             // falling back to the fresh-open default.
             const savedGeo = safeGmGet('wt_window_' + key, null);
             const hasSavedGeo = savedGeo && typeof savedGeo.top === 'number' && typeof savedGeo.left === 'number';
-            const defaultGeo = getWindowGeometryStyle();
+            const defaultGeo = getWindowGeometryStyle(key);
             const geo = {
                 top: hasSavedGeo ? savedGeo.top : defaultGeo.top,
                 left: hasSavedGeo ? savedGeo.left : defaultGeo.left,
@@ -4172,7 +4188,21 @@ function targetRowHtml(t, estRespect) {
                 btn.style.pointerEvents = 'auto';
                 btn.dataset.unread = '0';
                 btn.title = def.title;
-                btn.innerText = def.icon;
+                // Chat's icon is the actual Wartorn logo image, not an emoji
+                // - part of making it read as "the same chat, styled to
+                // match," not just another generic floating panel. Falls
+                // back to the plain emoji glyph on a load error (fallback
+                // host unreachable, etc.) rather than showing a broken-
+                // image icon.
+                if (key === 'chat') {
+                    const img = document.createElement('img');
+                    img.src = `${WARTORN_HOST}/wartornlogo.png`;
+                    img.style.cssText = 'width:22px; height:22px; object-fit:contain;';
+                    img.onerror = () => { btn.innerText = def.icon; };
+                    btn.appendChild(img);
+                } else {
+                    btn.innerText = def.icon;
+                }
                 // Same opacity scheme as the ghost logo (0.85 base, 1 on
                 // hover) for visual consistency across the whole left-edge
                 // UI - background color separately signals which panel (if
