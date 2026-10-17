@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.9.4
+// @version      4.9.5
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.9.4';
+    const COMPANION_VERSION_FALLBACK = '4.9.5';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6507,47 +6507,39 @@ setInterval(scanProfileFlightBar, 3000);
                 if (stuck) lines.push('<span style="color:#ff5252;">🛑 Stalled</span>');
                 const missingSlot = (c.slots || []).find(s => s.filled && s.itemId && !s.itemOk);
                 if (missingSlot) lines.push(`<span style="color:#ff5252;">🎒 ${wtChatEscapeHtml(missingSlot.name)} missing ${wtChatEscapeHtml(missingSlot.itemName || 'item')}</span>`);
-                // Everything from here down is money/split info - gated to
-                // OC Master/Helper/admin (wtCanReceiveOcAlerts, same circle
-                // the OC Issues panel/badge already use), not shown to a
-                // regular crew member with plain OC view. Per explicit
-                // request: who's getting docked and the payout split aren't
-                // public info, even to everyone who can see the OC panel at
-                // all. "Stalled"/"missing item" above stay visible to
-                // everyone with OC view regardless - those are crew
-                // coordination, not money.
+                // Plain payout split - visible to everyone with OC view
+                // (not gated), per explicit request: some crimes pay poorly
+                // and the crew should see that upfront, not just whoever's
+                // Master/Helper. Shown on every crime, not just Successful
+                // ones - the configured split is already known before the
+                // crime even executes, and seeing it in advance is the
+                // point.
+                const splitLabel = `${c.factionCutPct}% faction / ${100 - c.factionCutPct}% player`;
+                if (c.status === 'Successful') {
+                    // Torn's own payout news only covers the last ~25
+                    // recent entries (~a day) - older than that can never
+                    // be confirmed either way, so say so rather than
+                    // implying it's simply sitting unactioned.
+                    lines.push(c.paidOut
+                        ? `<span style="color:#4CAF50;">💰 ${splitLabel} - Paid</span>`
+                        : c.paidOutUnknown
+                            ? `<span style="color:#888;">💰 ${splitLabel} - Payout unknown (too old to confirm)</span>`
+                            : `<span style="color:#FFD700;">💰 ${splitLabel} - Awaiting payment</span>`);
+                } else if (c.status === 'Recruiting' || c.status === 'Planning') {
+                    lines.push(`<span style="color:#888;">💰 Expected split: ${splitLabel}</span>`);
+                }
+                // BLAME specifically (who's getting docked, not just the
+                // plain split above) stays restricted to OC Master/Helper/
+                // admin (wtCanReceiveOcAlerts) - the server doesn't even
+                // send delaySeconds to anyone else, so this naturally comes
+                // back empty for them regardless, but the explicit check
+                // stays here too as the real enforcement for anyone who DID
+                // get the full response (hasOcView without also being
+                // Master/Helper/admin).
                 if (wtCanReceiveOcAlerts) {
-                    // Shown regardless of current status (delay is recorded
-                    // against the crime, not cleared on execution) - this is
-                    // the one flag that matters most when someone's about to
-                    // key a payment split into Torn's own faction-money
-                    // screen by hand: an even split would be WRONG for this
-                    // crime. No name-dropping here (same philosophy as the
-                    // plain "Stalled" badge above) - this is a quick in-game
-                    // glance, not the place to read who/by how much; that
-                    // detail is what the dashboard's OC panel is for.
                     const delayedSlots = (c.slots || []).filter(s => s.filled && s.delaySeconds > 0);
                     if (delayedSlots.length) {
                         lines.push('<span style="color:#ff9800; font-weight:bold;">⚠️ Delayed on Torn - do NOT split evenly, review in dashboard</span>');
-                    }
-                    // Shown on every crime, not just Successful ones - the
-                    // configured split is already known before the crime
-                    // even executes, and seeing it in advance (not just
-                    // after the fact) is exactly the point per explicit
-                    // request.
-                    const splitLabel = `${c.factionCutPct}% faction / ${100 - c.factionCutPct}% player`;
-                    if (c.status === 'Successful') {
-                        // Torn's own payout news only covers the last ~25
-                        // recent entries (~a day) - older than that can
-                        // never be confirmed either way, so say so rather
-                        // than implying it's simply sitting unactioned.
-                        lines.push(c.paidOut
-                            ? `<span style="color:#4CAF50;">💰 ${splitLabel} - Paid</span>`
-                            : c.paidOutUnknown
-                                ? `<span style="color:#888;">💰 ${splitLabel} - Payout unknown (too old to confirm)</span>`
-                                : `<span style="color:#FFD700;">💰 ${splitLabel} - Awaiting payment</span>`);
-                    } else if (c.status === 'Recruiting' || c.status === 'Planning') {
-                        lines.push(`<span style="color:#888;">💰 Expected split: ${splitLabel}</span>`);
                     }
                 }
                 badge.innerHTML = lines.join(' &middot; ');
