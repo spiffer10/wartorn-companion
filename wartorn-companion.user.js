@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.9.13
+// @version      4.9.14
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.9.13';
+    const COMPANION_VERSION_FALLBACK = '4.9.14';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4482,9 +4482,17 @@ function targetRowHtml(t, estRespect) {
                     }
                 }
             }
-            wtPositionChatUi();
-            setInterval(wtPositionChatUi, 2000);
-            window.addEventListener('resize', wtPositionChatUi);
+            // requestAnimationFrame, not a slower setInterval - tracks
+            // Torn's own tab/window position in real time (e.g. while its
+            // open/close animation is still running), rather than lagging
+            // behind by up to a full interval tick before snapping into
+            // place. Cheap enough per frame (a handful of
+            // getBoundingClientRect calls) to run continuously.
+            function wtChatUiLoop() {
+                wtPositionChatUi();
+                requestAnimationFrame(wtChatUiLoop);
+            }
+            wtChatUiLoop();
 
             wtUpdateOcIssuesBadge(); // hides the button immediately for anyone not Master/Helper/admin, rather than a visible flash until the first OC status check resolves
             wtUpdateChatVisibility(); // hides chat immediately if this page load already started on the fallback, rather than a visible flash before it's hidden
