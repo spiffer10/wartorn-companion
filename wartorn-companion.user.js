@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.9.8
+// @version      4.9.9
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.9.8';
+    const COMPANION_VERSION_FALLBACK = '4.9.9';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4304,9 +4304,11 @@ function targetRowHtml(t, estRespect) {
             // Injecting a real node into that list would risk Torn's own
             // re-render wiping it out, or breaking drag reordering - so
             // instead this button lives in our own DOM, independently
-            // fixed-positioned flush against the right edge of that whole
-            // row's live bounding rect every couple seconds, so it reads as
-            // "one more tab" without ever touching Torn's actual tab list.
+            // fixed-positioned flush against the left edge of that row's
+            // live bounding rect every couple seconds (see
+            // wtPositionChatUi for why the left side, not the right), so
+            // it reads as "one more tab" without ever touching Torn's
+            // actual tab list.
             const chatBtn = buildSideButton('chat');
             chatBtn.style.position = 'fixed';
             chatBtn.style.zIndex = '9999999';
@@ -4327,28 +4329,25 @@ function targetRowHtml(t, estRespect) {
             document.body.appendChild(chatBtn);
             function wtPositionChatUi() {
                 if (chatBtn.style.display === 'none') return;
-                // Torn's row is packed tight with no gap between tabs - an
-                // earlier version anchored right after the last chat tab
-                // (faction/company/global) and landed directly on top of
-                // the very next real icon (notes/people/settings), since
-                // there's no actual empty space there. Anchoring past the
-                // WHOLE row instead - whichever of these known icons
-                // extends furthest right - lands in genuinely empty space
-                // beside it instead of covering anything.
-                const rowEls = [
-                    ...document.querySelectorAll('[id^="chat_panel_button:"]'),
-                    document.getElementById('notes_panel_button'),
-                    document.getElementById('people_panel_button'),
-                    document.getElementById('notes_settings_button')
-                ].filter(Boolean);
-                let anchor = null;
-                for (const el of rowEls) {
-                    if (!anchor || el.getBoundingClientRect().right > anchor.getBoundingClientRect().right) anchor = el;
-                }
+                // Torn's whole row (.root___cqpqn) is right-anchored flush
+                // against the browser's own right edge (confirmed via
+                // dev-tools - only ~5px from the viewport edge) and grows
+                // LEFTWARD as more tabs exist. Two earlier versions both
+                // anchored to the right of something in that row - one
+                // landed on top of the very next real icon (no gap
+                // between tabs), the other pushed past the whole row's
+                // right edge straight off the visible viewport (no room
+                // there at all - it's already flush against the edge).
+                // Anchoring to the LEFT of the first chat tab instead is
+                // the only side of this row with actual open space, since
+                // the row only ever grows away from the viewport edge, not
+                // into it.
+                const chatTabs = document.querySelectorAll('[id^="chat_panel_button:"]');
+                const anchor = chatTabs.length ? chatTabs[0] : null;
                 if (anchor) {
                     const rect = anchor.getBoundingClientRect();
-                    chatBtn.style.top = Math.round(rect.top + rect.height - 38) + 'px';
-                    chatBtn.style.left = Math.round(rect.right + 8) + 'px';
+                    chatBtn.style.top = Math.max(0, Math.round(rect.top + rect.height - 38)) + 'px';
+                    chatBtn.style.left = Math.max(0, Math.round(rect.left - 38 - 8)) + 'px';
                     chatBtn.style.right = 'auto';
                     chatBtn.style.bottom = 'auto';
                 } else {
