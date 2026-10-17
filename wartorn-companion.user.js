@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.9.6
+// @version      4.9.7
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.9.6';
+    const COMPANION_VERSION_FALLBACK = '4.9.7';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4235,6 +4235,11 @@ function targetRowHtml(t, estRespect) {
                 // below instead of here, so it lands directly below Flights
                 // regardless of where it sits in PANEL_DEFS itself.
                 if (key === 'ocIssues') return;
+                // chat is pulled out of the left-edge stack entirely and
+                // anchored to Torn's own native chat tab row instead - see
+                // wtPositionChatButton below. Built and placed separately,
+                // right after this loop.
+                if (key === 'chat') return;
                 // Not a togglable panel - a live status widget - so it's
                 // inserted here rather than added to PANEL_DEFS, right
                 // before Settings specifically (an explicit ask, and
@@ -4245,6 +4250,49 @@ function targetRowHtml(t, estRespect) {
                 }
                 wrap.appendChild(buildSideButton(key));
             });
+
+            // --- Chat button: docked next to Torn's own chat tabs ---
+            // Torn's native chat row (the little icon strip fixed at the
+            // bottom-right of every page - faction/company/global tabs,
+            // then notes/people/settings) is built by Torn's own React app
+            // and reorderable via drag-and-drop (confirmed live via dev
+            // tools - its tabs sit inside a react-beautiful-dnd-managed
+            // list, id="DndDescribedBy-*"/"DndLiveRegion-*" siblings).
+            // Injecting a real node into that list would risk Torn's own
+            // re-render wiping it out, or breaking drag reordering - so
+            // instead this button lives in our own DOM, independently
+            // fixed-positioned flush against the last chat tab's live
+            // bounding rect every couple seconds, so it reads as "one more
+            // tab" without ever touching Torn's actual tab list.
+            const chatBtn = buildSideButton('chat');
+            chatBtn.style.position = 'fixed';
+            chatBtn.style.zIndex = '9999999';
+            document.body.appendChild(chatBtn);
+            function wtPositionChatButton() {
+                if (chatBtn.style.display === 'none') return;
+                const tabs = document.querySelectorAll('[id^="chat_panel_button:"]');
+                const anchor = tabs.length ? tabs[tabs.length - 1] : null;
+                if (anchor) {
+                    const rect = anchor.getBoundingClientRect();
+                    chatBtn.style.top = Math.round(rect.top + (rect.height - 34) / 2) + 'px';
+                    chatBtn.style.left = Math.round(rect.right + 6) + 'px';
+                    chatBtn.style.right = 'auto';
+                    chatBtn.style.bottom = 'auto';
+                } else {
+                    // Torn's own chat row isn't found (not rendered yet, or
+                    // this page doesn't have one) - fall back to a fixed
+                    // bottom-right spot so the button stays reachable
+                    // instead of sitting at (0,0).
+                    chatBtn.style.top = 'auto';
+                    chatBtn.style.left = 'auto';
+                    chatBtn.style.right = '12px';
+                    chatBtn.style.bottom = '12px';
+                }
+            }
+            wtPositionChatButton();
+            setInterval(wtPositionChatButton, 2000);
+            window.addEventListener('resize', wtPositionChatButton);
+
             wtUpdateOcIssuesBadge(); // hides the button immediately for anyone not Master/Helper/admin, rather than a visible flash until the first OC status check resolves
             wtUpdateChatVisibility(); // hides chat immediately if this page load already started on the fallback, rather than a visible flash before it's hidden
 
