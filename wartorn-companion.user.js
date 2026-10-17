@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.9.12
+// @version      4.9.13
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.9.12';
+    const COMPANION_VERSION_FALLBACK = '4.9.13';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3920,14 +3920,13 @@ function targetRowHtml(t, estRespect) {
             // --tabs-black-*-gradient custom properties, copied from a
             // live dev-tools inspection) instead of the generic
             // panel-button fill every other side button uses - gray at
-            // rest and open alike. Unread doesn't recolor the button at
-            // all - see the wt-chat-unread-badge span instead, matching
-            // how Torn's own tabs flag an unread channel with a small
-            // count badge rather than a full background change.
+            // rest/open. Confirmed live via screenshot that Torn's own
+            // tabs turn a darkish green AND show the count badge when
+            // unread (not just the badge alone) - matches that here too.
             if (key === 'chat') {
-                return openWindows.has(key)
-                    ? 'linear-gradient(180deg, #303840 0%, #4E565E 100%)'
-                    : 'linear-gradient(0deg, #303840 0%, #4E565E 100%)';
+                if (openWindows.has(key)) return 'linear-gradient(180deg, #303840 0%, #4E565E 100%)';
+                if (btn.dataset.unread === '1') return 'linear-gradient(180deg, #2f4a08 0%, #4e7d0a 100%)';
+                return 'linear-gradient(0deg, #303840 0%, #4E565E 100%)';
             }
             if (openWindows.has(key)) return 'rgba(10,11,14,0.95)';
             if (btn.dataset.unread === '1') return key === 'ocIssues' ? 'rgba(244,67,54,0.3)' : 'rgba(76,175,80,0.25)';
@@ -4307,11 +4306,12 @@ function targetRowHtml(t, estRespect) {
                     img.style.cssText = 'width:24px; height:24px; object-fit:contain;';
                     img.onerror = () => { btn.innerText = def.icon; };
                     btn.appendChild(img);
-                    // Unread is a small green count badge in the corner -
-                    // matching how Torn flags an unread tab (confirmed live
-                    // via screenshot) - rather than recoloring the whole
-                    // button, which isn't how Torn's own tabs do it. See
-                    // wtChatSetButtonUnread for where this gets filled in.
+                    // Unread shows a small count badge in the corner, on
+                    // top of the darkish-green background buttonRestColor
+                    // switches to - matching how Torn flags an unread tab
+                    // (confirmed live via screenshot, both together, not
+                    // just one or the other). See wtChatSetButtonUnread
+                    // for where the badge itself gets filled in.
                     const badge = document.createElement('span');
                     badge.id = 'wt-chat-unread-badge';
                     badge.style.cssText = 'position:absolute; top:-4px; right:-4px; min-width:15px; height:15px; padding:0 3px; border-radius:8px; background:#5c940d; color:#fff; font-size:10px; font-weight:bold; line-height:15px; text-align:center; display:none; pointer-events:none; box-shadow:0 1px 3px rgba(0,0,0,0.6);';
@@ -4322,8 +4322,8 @@ function targetRowHtml(t, estRespect) {
                 // Same opacity scheme as the ghost logo (0.85 base, 1 on
                 // hover) for visual consistency across the whole left-edge
                 // UI - background color separately signals which panel (if
-                // any) is currently open; chat's unread signal is the
-                // badge above instead - see buttonRestColor.
+                // any) is currently open, or (chat) unread - see
+                // buttonRestColor.
                 // line-height:1 keeps the emoji glyph's own font metrics
                 // from pushing it off-center vertically inside the flex box
                 // (seen live on some emoji/webviews without it).
