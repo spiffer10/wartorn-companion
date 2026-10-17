@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.9.0
+// @version      4.9.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.9.0';
+    const COMPANION_VERSION_FALLBACK = '4.9.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -7036,15 +7036,31 @@ setInterval(scanProfileFlightBar, 3000);
         // it starts fresh (not a stale red dot) whenever it reappears.
         // display:'grid'/'none' only, never '' - see wtUpdateOcIssuesBadge's
         // own comment on why an empty string silently breaks place-items.
+        // BUG FIXED 2026-10-16: this used to also reach into openWindows/
+        // closePanelWindow to auto-close an already-open chat panel on
+        // switchover - both of those (and everything THEY depend on, like
+        // stopWindowTick/refreshButtonHighlights) are local to
+        // startCompanionFeatures()'s own function body, which ends around
+        // line 6945 - this function sits well outside that, in the
+        // reachability-handling code that has to exist BEFORE deciding
+        // whether to ever call startCompanionFeatures() at all. Referencing
+        // openWindows here was a ReferenceError waiting to happen -
+        // confirmed live: it only actually threw on the specific case where
+        // a page load's FIRST successful connection landed on the fallback
+        // rather than main (the only path where this ran with the chat
+        // button already built AND wtOnFallback already true), which
+        // silently aborted the rest of startCompanionFeatures() mid-setup -
+        // every panel/button past whatever ran before this point just never
+        // got created, read as "companion randomly stalls out, shows the
+        // logo but no buttons." Simplified to only touch the button itself,
+        // which is all this ever actually needed to do reliably - if the
+        // chat panel happens to already be open at the moment of switching,
+        // it's left as whatever it was showing; its own '×' still closes it
+        // manually.
         function wtUpdateChatVisibility() {
             const chatBtn = document.querySelector('.wt-side-btn[data-key="chat"]');
             if (!chatBtn) return;
-            if (wtOnFallback) {
-                chatBtn.style.display = 'none';
-                if (openWindows.has('chat')) closePanelWindow('chat');
-            } else {
-                chatBtn.style.display = 'grid';
-            }
+            chatBtn.style.display = wtOnFallback ? 'none' : 'grid';
         }
         function wtSwitchToMain() {
             WARTORN_HOST = WARTORN_MAIN_HOST;
