@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.9.7
+// @version      4.9.8
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.9.7';
+    const COMPANION_VERSION_FALLBACK = '4.9.8';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1687,16 +1687,23 @@
         // itself renders). Falls back to a sane fixed height if the
         // button stack isn't in the DOM yet for some reason.
         function getWindowGeometryStyle(key) {
-            // Chat defaults to the bottom-right corner instead of
-            // cascading off the side buttons - the common spot a chat
-            // widget sits in, closer to where Torn's own in-game chat box
-            // lives, as a first step toward it reading as "the same chat"
-            // rather than just another floating panel. Only affects the
-            // DEFAULT on a first-ever open; anyone with an already-saved
-            // position for it (openPanelWindow checks that first) keeps
-            // exactly where they left it.
+            // Chat stacks directly above its own button - which itself
+            // floats next to Torn's native chat tab row (see
+            // wtPositionChatUi) - rather than cascading off the side
+            // buttons, exactly like Torn's own chat windows stack above
+            // their tabs. openPanelWindow ignores any saved geometry for
+            // chat (it's never draggable/resizable), so this always runs.
             if (key === 'chat') {
                 const width = 320, height = 420;
+                const chatBtnEl = document.querySelector('.wt-side-btn[data-key="chat"]');
+                if (chatBtnEl) {
+                    const r = chatBtnEl.getBoundingClientRect();
+                    return {
+                        top: Math.max(0, r.top - height - 6),
+                        left: Math.max(0, r.right - width),
+                        width, height
+                    };
+                }
                 return {
                     top: Math.max(0, window.innerHeight - height - 20),
                     left: Math.max(0, window.innerWidth - width - 20),
@@ -3843,9 +3850,13 @@ function targetRowHtml(t, estRespect) {
             return key === 'ocIssues' ? '#f44336' : '#4CAF50';
         }
         function buttonRestColor(key, btn) {
-            if (openWindows.has(key)) return 'rgba(10,11,14,0.95)';
+            if (openWindows.has(key)) return key === 'chat' ? 'linear-gradient(#0088b3, #004058)' : 'rgba(10,11,14,0.95)';
             if (btn.dataset.unread === '1') return key === 'ocIssues' ? 'rgba(244,67,54,0.3)' : 'rgba(76,175,80,0.25)';
-            return 'rgba(21,23,28,0.9)';
+            // Chat's rest color is Torn's own tab-button teal gradient
+            // (copied from a live dev-tools inspection), not the generic
+            // panel-button fill every other side button uses - see
+            // buildSideButton/injectSidePanels for the rest of that match.
+            return key === 'chat' ? 'linear-gradient(#00698c, #003040)' : 'rgba(21,23,28,0.9)';
         }
         function refreshButtonHighlights() {
             document.querySelectorAll('.wt-side-btn').forEach(b => {
@@ -3997,7 +4008,12 @@ function targetRowHtml(t, estRespect) {
             // once a window's been dragged and/or resized even once, it
             // keeps that exact geometry on every future reopen instead of
             // falling back to the fresh-open default.
-            const savedGeo = safeGmGet('wt_window_' + key, null);
+            // Chat is fixed/non-draggable/non-resizable (see below) and
+            // always stacks fresh above wherever its button currently sits -
+            // any geometry saved from before this behavior shipped (or from
+            // a window resize/move that's no longer possible) is ignored
+            // rather than pinning it to a stale spot.
+            const savedGeo = key === 'chat' ? null : safeGmGet('wt_window_' + key, null);
             const hasSavedGeo = savedGeo && typeof savedGeo.top === 'number' && typeof savedGeo.left === 'number';
             const defaultGeo = getWindowGeometryStyle(key);
             const geo = {
@@ -4010,21 +4026,29 @@ function targetRowHtml(t, estRespect) {
             const maxLeft = Math.max(0, window.innerWidth - 60);
             const locked = safeGmGet('wt_window_locked_' + key, false);
 
+            // Chat is pinned above its button (not draggable) and never
+            // resized, per the user's explicit ask that it "open exactly
+            // like" Torn's own chat windows - no lock icon (nothing to
+            // lock), no resize handle, and a minimize dash instead of a
+            // close ×, matching Torn's own chat window chrome (its
+            // minimize just collapses it back to the tab, same as our
+            // close already does functionally).
+            const isChat = key === 'chat';
             const win = document.createElement('div');
             win.id = 'wt-window-' + key;
             win.className = 'wt-window';
             topZIndex += 1;
             win.style.cssText = `position:fixed; display:flex; flex-direction:column; top:${Math.min(Math.max(0, geo.top), maxTop)}px; left:${Math.min(Math.max(0, geo.left), maxLeft)}px; width:${geo.width}px; height:${geo.height}px; z-index:${topZIndex}; background:rgba(21,23,28,${opacitySetting}); font-size:${fontSizeSetting}px; ${getWindowChromeStyle()}`;
             win.innerHTML = `
-                <div id="wt-window-titlebar-${key}" style="cursor:move; flex:0 0 auto; display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:#0b0c10; border-bottom:1px solid #333;">
+                <div id="wt-window-titlebar-${key}" style="cursor:${isChat ? 'default' : 'move'}; flex:0 0 auto; display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:#0b0c10; border-bottom:1px solid #333;">
                     <span style="color:#00e5ff; font-weight:bold; font-size:0.9em;">${def.icon} ${def.title}</span>
                     <span style="display:flex; align-items:center; gap:8px;">
-                        <span id="wt-window-lock-${key}" title="Lock this window in place" style="cursor:pointer; color:#888; font-size:1em; line-height:1;">${locked ? '🔒' : '🔓'}</span>
-                        <span id="wt-window-close-${key}" style="cursor:pointer; color:#888; font-size:1.2em; line-height:1; padding:0 4px;">&times;</span>
+                        ${isChat ? '' : `<span id="wt-window-lock-${key}" title="Lock this window in place" style="cursor:pointer; color:#888; font-size:1em; line-height:1;">${locked ? '🔒' : '🔓'}</span>`}
+                        <span id="wt-window-close-${key}" title="${isChat ? 'Minimize' : 'Close'}" style="cursor:pointer; color:#888; font-size:1.2em; line-height:1; padding:0 4px;">${isChat ? '&minus;' : '&times;'}</span>
                     </span>
                 </div>
                 <div id="wt-panel-body-${key}" class="wt-window-body" style="flex:1 1 auto; overflow-y:auto; padding:10px 12px; font-size:0.85em;">Loading...</div>
-                <div id="wt-window-resize-${key}" title="Drag to resize" style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 50%, #3a3f4b 50%); border-radius:0 0 6px 0;"></div>
+                ${isChat ? '' : `<div id="wt-window-resize-${key}" title="Drag to resize" style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 50%, #3a3f4b 50%); border-radius:0 0 6px 0;"></div>`}
             `;
             document.body.appendChild(win);
             openWindows.set(key, { el: win, tickTimer: null, refreshTimer: null, locked });
@@ -4083,18 +4107,25 @@ function targetRowHtml(t, estRespect) {
             closeBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
             closeBtn.addEventListener('click', () => closePanelWindow(key));
 
-            const lockBtn = document.getElementById('wt-window-lock-' + key);
-            lockBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
-            lockBtn.addEventListener('click', () => {
-                const w = openWindows.get(key);
-                if (!w) return;
-                w.locked = !w.locked;
-                lockBtn.innerText = w.locked ? '🔒' : '🔓';
-                safeGmSet('wt_window_locked_' + key, w.locked);
-            });
+            if (!isChat) {
+                const lockBtn = document.getElementById('wt-window-lock-' + key);
+                lockBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+                lockBtn.addEventListener('click', () => {
+                    const w = openWindows.get(key);
+                    if (!w) return;
+                    w.locked = !w.locked;
+                    lockBtn.innerText = w.locked ? '🔒' : '🔓';
+                    safeGmSet('wt_window_locked_' + key, w.locked);
+                });
+            }
 
             win.addEventListener('pointerdown', () => bringWindowToFront(key));
-            makeWindowDraggable(key, win, document.getElementById('wt-window-titlebar-' + key), document.getElementById('wt-window-resize-' + key));
+            // Chat has no titlebar drag or resize handle (see markup above) -
+            // wiring makeWindowDraggable to it anyway would throw reaching
+            // into a resize handle that doesn't exist.
+            if (!isChat) {
+                makeWindowDraggable(key, win, document.getElementById('wt-window-titlebar-' + key), document.getElementById('wt-window-resize-' + key));
+            }
 
             refreshButtonHighlights();
             def.render();
@@ -4188,16 +4219,17 @@ function targetRowHtml(t, estRespect) {
                 btn.style.pointerEvents = 'auto';
                 btn.dataset.unread = '0';
                 btn.title = def.title;
-                // Chat's icon is the actual Wartorn logo image, not an emoji
-                // - part of making it read as "the same chat, styled to
-                // match," not just another generic floating panel. Falls
-                // back to the plain emoji glyph on a load error (fallback
-                // host unreachable, etc.) rather than showing a broken-
-                // image icon.
+                // Chat's icon is the Wartorn favicon (not the big logo image
+                // used for the ghost logo elsewhere - that one's sized for a
+                // 130px avatar, not a 24px tab icon) - part of making it
+                // read as "the same chat, styled to match," not just another
+                // generic floating panel. Falls back to the plain emoji
+                // glyph on a load error (fallback host unreachable, etc.)
+                // rather than showing a broken-image icon.
                 if (key === 'chat') {
                     const img = document.createElement('img');
-                    img.src = `${WARTORN_HOST}/wartornlogo.png`;
-                    img.style.cssText = 'width:22px; height:22px; object-fit:contain;';
+                    img.src = `${WARTORN_HOST}/favicon-32x32.png`;
+                    img.style.cssText = 'width:24px; height:24px; object-fit:contain;';
                     img.onerror = () => { btn.innerText = def.icon; };
                     btn.appendChild(img);
                 } else {
@@ -4216,11 +4248,22 @@ function targetRowHtml(t, estRespect) {
                 // left some color-emoji glyphs (money bag in particular) sitting
                 // low-left in testing, since their intrinsic baseline metrics
                 // don't match plain text.
-                btn.style.cssText = 'width:34px; height:34px; display:grid; place-items:center; line-height:1; transform-origin:center center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.35em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
+                // Chat sits in Torn's own chat-tab row (see
+                // wtPositionChatUi), so instead of the box/border/shadow
+                // chrome every other side button has, its base cssText here
+                // only sets layout (size/centering/cursor) - the actual
+                // teal gradient/bevel/radius matching Torn's real tab
+                // buttons is applied afterward as explicit inline styles
+                // (see injectSidePanels, right after this button is built),
+                // copied from a live dev-tools inspection of Torn's own
+                // .root___zZRe1 tab button rather than guessed.
+                btn.style.cssText = key === 'chat'
+                    ? 'display:grid; place-items:center; line-height:1; transform-origin:center center; cursor:pointer; transition:0.15s; opacity:0.85;'
+                    : 'width:34px; height:34px; display:grid; place-items:center; line-height:1; transform-origin:center center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.35em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
                 btn.addEventListener('mouseenter', () => {
                     btn.style.opacity = '1';
                     btn.style.transform = 'scale(1.05)';
-                    if (!openWindows.has(key)) btn.style.background = 'rgba(10,11,14,0.95)';
+                    if (!openWindows.has(key)) btn.style.background = key === 'chat' ? 'linear-gradient(#0088b3, #004058)' : 'rgba(10,11,14,0.95)';
                 });
                 btn.addEventListener('mouseleave', () => {
                     btn.style.opacity = openWindows.has(key) ? '1' : '0.85';
@@ -4261,21 +4304,51 @@ function targetRowHtml(t, estRespect) {
             // Injecting a real node into that list would risk Torn's own
             // re-render wiping it out, or breaking drag reordering - so
             // instead this button lives in our own DOM, independently
-            // fixed-positioned flush against the last chat tab's live
-            // bounding rect every couple seconds, so it reads as "one more
-            // tab" without ever touching Torn's actual tab list.
+            // fixed-positioned flush against the right edge of that whole
+            // row's live bounding rect every couple seconds, so it reads as
+            // "one more tab" without ever touching Torn's actual tab list.
             const chatBtn = buildSideButton('chat');
             chatBtn.style.position = 'fixed';
             chatBtn.style.zIndex = '9999999';
+            // Exact copy of Torn's own tab-button styling (.root___zZRe1),
+            // read straight out of a live dev-tools inspection the user
+            // pasted - same teal gradient/bevel/radius as the real
+            // faction/company/global/notes/people/settings tabs, so this
+            // reads as one of them rather than a foreign UI block. Height
+            // 38px is Torn's own value; width matched to it since Torn
+            // doesn't set one explicitly (icon + flex centering decides it
+            // there - a fixed square reads the same visually).
+            chatBtn.style.width = '38px';
+            chatBtn.style.height = '38px';
+            chatBtn.style.background = 'linear-gradient(#00698c, #003040)';
+            chatBtn.style.border = 'none';
+            chatBtn.style.borderRadius = '5px 5px 0 0';
+            chatBtn.style.boxShadow = 'inset 0 0 4px rgba(255,255,255,0.25), inset 0 -2px 4px rgba(0,0,0,0.5)';
             document.body.appendChild(chatBtn);
-            function wtPositionChatButton() {
+            function wtPositionChatUi() {
                 if (chatBtn.style.display === 'none') return;
-                const tabs = document.querySelectorAll('[id^="chat_panel_button:"]');
-                const anchor = tabs.length ? tabs[tabs.length - 1] : null;
+                // Torn's row is packed tight with no gap between tabs - an
+                // earlier version anchored right after the last chat tab
+                // (faction/company/global) and landed directly on top of
+                // the very next real icon (notes/people/settings), since
+                // there's no actual empty space there. Anchoring past the
+                // WHOLE row instead - whichever of these known icons
+                // extends furthest right - lands in genuinely empty space
+                // beside it instead of covering anything.
+                const rowEls = [
+                    ...document.querySelectorAll('[id^="chat_panel_button:"]'),
+                    document.getElementById('notes_panel_button'),
+                    document.getElementById('people_panel_button'),
+                    document.getElementById('notes_settings_button')
+                ].filter(Boolean);
+                let anchor = null;
+                for (const el of rowEls) {
+                    if (!anchor || el.getBoundingClientRect().right > anchor.getBoundingClientRect().right) anchor = el;
+                }
                 if (anchor) {
                     const rect = anchor.getBoundingClientRect();
-                    chatBtn.style.top = Math.round(rect.top + (rect.height - 34) / 2) + 'px';
-                    chatBtn.style.left = Math.round(rect.right + 6) + 'px';
+                    chatBtn.style.top = Math.round(rect.top + rect.height - 38) + 'px';
+                    chatBtn.style.left = Math.round(rect.right + 8) + 'px';
                     chatBtn.style.right = 'auto';
                     chatBtn.style.bottom = 'auto';
                 } else {
@@ -4288,10 +4361,22 @@ function targetRowHtml(t, estRespect) {
                     chatBtn.style.right = '12px';
                     chatBtn.style.bottom = '12px';
                 }
+                // The chat window (when open) stacks directly above its
+                // button, same as Torn's own chat windows sit right above
+                // their tab - kept in step with the button here since it's
+                // never draggable itself (see openPanelWindow).
+                const chatWin = document.getElementById('wt-window-chat');
+                if (chatWin) {
+                    const btnRect = chatBtn.getBoundingClientRect();
+                    const w = parseInt(chatWin.style.width, 10) || 320;
+                    const h = parseInt(chatWin.style.height, 10) || 420;
+                    chatWin.style.top = Math.max(0, Math.round(btnRect.top - h - 6)) + 'px';
+                    chatWin.style.left = Math.max(0, Math.round(btnRect.right - w)) + 'px';
+                }
             }
-            wtPositionChatButton();
-            setInterval(wtPositionChatButton, 2000);
-            window.addEventListener('resize', wtPositionChatButton);
+            wtPositionChatUi();
+            setInterval(wtPositionChatUi, 2000);
+            window.addEventListener('resize', wtPositionChatUi);
 
             wtUpdateOcIssuesBadge(); // hides the button immediately for anyone not Master/Helper/admin, rather than a visible flash until the first OC status check resolves
             wtUpdateChatVisibility(); // hides chat immediately if this page load already started on the fallback, rather than a visible flash before it's hidden
