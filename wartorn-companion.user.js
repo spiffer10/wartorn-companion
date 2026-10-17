@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.9.10
+// @version      4.9.11
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.9.10';
+    const COMPANION_VERSION_FALLBACK = '4.9.11';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4401,12 +4401,11 @@ function targetRowHtml(t, estRespect) {
                 const anchor = chatTabs.length ? chatTabs[0] : null;
                 if (anchor) {
                     const rect = anchor.getBoundingClientRect();
-                    // Flush against the first tab - no gap - so it reads as
-                    // part of the same row instead of a separate floating
-                    // block sitting near it (an earlier +8px gap read as
-                    // "odd" sitting right next to Torn's own gap-free tabs).
+                    // A small gap (not flush, not the earlier 8px) reads
+                    // as "sitting next to" the row rather than jammed
+                    // against it or merged into it.
                     chatBtn.style.top = Math.max(0, Math.round(rect.top + rect.height - 38)) + 'px';
-                    chatBtn.style.left = Math.max(0, Math.round(rect.left - 38)) + 'px';
+                    chatBtn.style.left = Math.max(0, Math.round(rect.left - 38 - 4)) + 'px';
                     chatBtn.style.right = 'auto';
                     chatBtn.style.bottom = 'auto';
                 } else {
