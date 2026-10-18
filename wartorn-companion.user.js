@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.10.0
+// @version      4.10.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.10.0';
+    const COMPANION_VERSION_FALLBACK = '4.10.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3073,8 +3073,19 @@ function targetRowHtml(t, estRespect) {
         // casual faction chat; it just isn't real-time the way the
         // dashboard's own chat bubble is.
         const CHAT_POLL_MS = 20000;
-        let wtChatLastSeenId = safeGmGet('wt_chat_last_seen_id', 0);
-        let wtChatRenderedMaxId = 0; // resets to 0 each time the panel is freshly (re)opened
+        // Tracked by ts (a real millisecond timestamp), NOT id - chat moved
+        // onto MySQL with id now a server-generated UUID (so two
+        // independently-writable databases can never collide one - see
+        // routes/chat.js), which has no meaningful > ordering. Comparing
+        // UUID strings with > here used to silently drop "new" messages
+        // (and any image sent as one) within the first poll or two after
+        // they arrived - confirmed live via screenshot, the companion
+        // panel was missing images and recent messages the dashboard's own
+        // chat bubble showed fine (it never did this id-based comparison
+        // in the first place, only the companion's poll-based unread/
+        // incremental-append logic did).
+        let wtChatLastSeenTs = safeGmGet('wt_chat_last_seen_ts', 0);
+        let wtChatRenderedMaxTs = 0; // resets to 0 each time the panel is freshly (re)opened
         let wtChatCurrentChannel = null; // null = this faction's own default channel
         let wtChatMyPlayerId = null;
         // Typing status has no SSE here (see the file comment above
@@ -3146,8 +3157,8 @@ function targetRowHtml(t, estRespect) {
         // "not live" rather than snappy. Only the most recent
         // CHAT_PANEL_INITIAL_LIMIT are actually drawn on open - a casual
         // side-panel chat has no real use for scrolling back through a
-        // 200-message backlog anyway. wtChatRenderedMaxId still tracks
-        // the TRUE latest id off the full (unsliced) list, so later polls
+        // 200-message backlog anyway. wtChatRenderedMaxTs still tracks
+        // the TRUE latest ts off the full (unsliced) list, so later polls
         // correctly append only what's genuinely new from there.
         const CHAT_PANEL_INITIAL_LIMIT = 40;
         function wtChatChannelParam() {
@@ -3192,7 +3203,7 @@ function targetRowHtml(t, estRespect) {
                 const messages = (data && Array.isArray(data.messages)) ? data.messages : [];
                 if (!openWindows.has('chat') || !document.getElementById('wt-panel-body-chat')) return;
                 if (freshOpen) {
-                    wtChatRenderedMaxId = messages.length ? messages[messages.length - 1].id : 0;
+                    wtChatRenderedMaxTs = messages.length ? messages[messages.length - 1].ts : 0;
                     const shown = messages.slice(-CHAT_PANEL_INITIAL_LIMIT);
                     body.innerHTML = `
                         <select id="wt-chat-channel-select" style="display:none; margin-bottom:6px; width:100%; background:#0b0c10; border:1px solid #444; color:#ccc; border-radius:4px; padding:4px 6px; font-size:0.78em;"></select>
@@ -3249,7 +3260,7 @@ function targetRowHtml(t, estRespect) {
                     }).catch(() => {});
                     wtChatStartTypingPoll();
                 } else {
-                    const newOnes = messages.filter(m => m.id > wtChatRenderedMaxId);
+                    const newOnes = messages.filter(m => m.ts > wtChatRenderedMaxTs);
                     if (newOnes.length) {
                         const list = document.getElementById('wt-chat-list');
                         if (list) {
@@ -3257,7 +3268,7 @@ function targetRowHtml(t, estRespect) {
                             list.insertAdjacentHTML('beforeend', newOnes.map(wtChatMsgRowHtml).join(''));
                             wtChatScrollToBottom(body);
                         }
-                        wtChatRenderedMaxId = messages[messages.length - 1].id;
+                        wtChatRenderedMaxTs = messages[messages.length - 1].ts;
                     }
                 }
                 // Viewing the panel marks everything currently loaded as
@@ -3265,8 +3276,8 @@ function targetRowHtml(t, estRespect) {
                 // flags messages newer than this once the panel's closed
                 // again.
                 if (messages.length) {
-                    wtChatLastSeenId = messages[messages.length - 1].id;
-                    safeGmSet('wt_chat_last_seen_id', wtChatLastSeenId);
+                    wtChatLastSeenTs = messages[messages.length - 1].ts;
+                    safeGmSet('wt_chat_last_seen_ts', wtChatLastSeenTs);
                 }
                 wtChatSetButtonUnread(0);
             } catch (e) {
@@ -3452,7 +3463,7 @@ function targetRowHtml(t, estRespect) {
                 const data = await fetchFromWartorn('chat-history' + wtChatChannelParam());
                 const messages = (data && Array.isArray(data.messages)) ? data.messages : [];
                 if (!messages.length) return;
-                wtChatSetButtonUnread(messages.filter(m => m.id > wtChatLastSeenId).length);
+                wtChatSetButtonUnread(messages.filter(m => m.ts > wtChatLastSeenTs).length);
             } catch (e) {}
         }
 
@@ -4036,7 +4047,7 @@ function targetRowHtml(t, estRespect) {
             // openWindows.has('chat') and self-stops, but closing it here
             // too means there's no gap between the window closing and
             // that check next firing.
-            if (key === 'chat') { wtChatRenderedMaxId = 0; wtChatStopTypingPoll(); }
+            if (key === 'chat') { wtChatRenderedMaxTs = 0; wtChatStopTypingPoll(); }
         }
         // Used by the edge-cluster collapse toggle below, which used to
         // close the one single panel - now needs to close every open
