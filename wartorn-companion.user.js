@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.9.14
+// @version      4.10.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.9.14';
+    const COMPANION_VERSION_FALLBACK = '4.10.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3075,6 +3075,16 @@ function targetRowHtml(t, estRespect) {
         const CHAT_POLL_MS = 20000;
         let wtChatLastSeenId = safeGmGet('wt_chat_last_seen_id', 0);
         let wtChatRenderedMaxId = 0; // resets to 0 each time the panel is freshly (re)opened
+        let wtChatCurrentChannel = null; // null = this faction's own default channel
+        let wtChatMyPlayerId = null;
+        // Typing status has no SSE here (see the file comment above
+        // CHAT_POLL_MS) - a much faster poll than the general 20s one,
+        // but only ever running while the chat panel is actually open
+        // (started/stopped alongside it, see renderChatPanel/
+        // closePanelWindow) so it costs nothing while the panel's closed.
+        const CHAT_TYPING_POLL_MS = 2500;
+        let wtChatTypingPollTimer = null;
+        let wtChatLastTypingPingAt = 0;
         function wtChatEscapeHtml(s) {
             return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         }
@@ -3140,21 +3150,56 @@ function targetRowHtml(t, estRespect) {
         // the TRUE latest id off the full (unsliced) list, so later polls
         // correctly append only what's genuinely new from there.
         const CHAT_PANEL_INITIAL_LIMIT = 40;
+        function wtChatChannelParam() {
+            return wtChatCurrentChannel ? '?channel=' + encodeURIComponent(wtChatCurrentChannel) : '';
+        }
+        function wtChatStopTypingPoll() {
+            if (wtChatTypingPollTimer) { clearInterval(wtChatTypingPollTimer); wtChatTypingPollTimer = null; }
+        }
+        function wtChatRenderTyping(typers) {
+            const el = document.getElementById('wt-chat-typing');
+            if (!el) return;
+            const names = (typers || []).map(t => t.name);
+            if (!names.length) { el.style.display = 'none'; return; }
+            el.style.display = 'block';
+            el.innerText = names.length === 1 ? `${names[0]} is typing...` : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} are typing...`;
+        }
+        function wtChatStartTypingPoll() {
+            wtChatStopTypingPoll();
+            const tick = () => {
+                if (!openWindows.has('chat')) { wtChatStopTypingPoll(); return; }
+                fetchFromWartorn('chat-typing' + wtChatChannelParam()).then(data => {
+                    wtChatRenderTyping(data && Array.isArray(data.typing) ? data.typing : []);
+                }).catch(() => {});
+            };
+            tick();
+            wtChatTypingPollTimer = setInterval(tick, CHAT_TYPING_POLL_MS);
+        }
+        // Throttled to once per ~2.5s while actively typing, not every keystroke.
+        function wtChatPingTyping() {
+            const now = Date.now();
+            if (now - wtChatLastTypingPingAt < 2500) return;
+            wtChatLastTypingPingAt = now;
+            postToWartorn('chat-typing', { channel: wtChatCurrentChannel || undefined }).catch(() => {});
+        }
         async function renderChatPanel() {
             const body = document.getElementById('wt-panel-body-chat');
             if (!body) return;
             const freshOpen = !document.getElementById('wt-chat-list');
             try {
-                const data = await fetchFromWartorn('chat-history');
+                const data = await fetchFromWartorn('chat-history' + wtChatChannelParam());
+                wtChatMyPlayerId = (data && data.myPlayerId) || null;
                 const messages = (data && Array.isArray(data.messages)) ? data.messages : [];
                 if (!openWindows.has('chat') || !document.getElementById('wt-panel-body-chat')) return;
                 if (freshOpen) {
                     wtChatRenderedMaxId = messages.length ? messages[messages.length - 1].id : 0;
                     const shown = messages.slice(-CHAT_PANEL_INITIAL_LIMIT);
                     body.innerHTML = `
+                        <select id="wt-chat-channel-select" style="display:none; margin-bottom:6px; width:100%; background:#0b0c10; border:1px solid #444; color:#ccc; border-radius:4px; padding:4px 6px; font-size:0.78em;"></select>
                         <div id="wt-chat-list" style="display:flex; flex-direction:column; gap:8px;">
                             ${shown.length ? shown.map(wtChatMsgRowHtml).join('') : '<div style="color:#888;">No messages yet - say hello.</div>'}
                         </div>
+                        <div id="wt-chat-typing" style="display:none; color:#888; font-size:0.72em; font-style:italic; padding:4px 2px 0;"></div>
                         <div style="position:sticky; bottom:-10px; margin:8px -12px -10px -12px; padding:8px 12px; background:#15171c; border-top:1px solid #333; display:flex; gap:6px; align-items:center;">
                             <span id="wt-chat-emoji-btn" title="Emoji" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.9em; flex-shrink:0;">😀</span>
                             <span id="wt-chat-img-btn" title="Send an image (or paste one)" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.8em; flex-shrink:0;">🖼️</span>
@@ -3169,6 +3214,7 @@ function targetRowHtml(t, estRespect) {
                     wtChatScrollToBottom(body);
                     document.getElementById('wt-chat-send-btn').addEventListener('click', wtChatSend);
                     document.getElementById('wt-chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') wtChatSend(); });
+                    document.getElementById('wt-chat-input').addEventListener('input', wtChatPingTyping);
                     document.getElementById('wt-chat-emoji-btn').addEventListener('click', wtChatToggleEmojiPicker);
                     document.getElementById('wt-chat-gif-btn').addEventListener('click', wtChatToggleGifPicker);
                     document.getElementById('wt-chat-img-btn').addEventListener('click', () => document.getElementById('wt-chat-img-input').click());
@@ -3179,6 +3225,29 @@ function targetRowHtml(t, estRespect) {
                             if (it.kind === 'file' && /^image\//.test(it.type)) { e.preventDefault(); wtChatSendImageFile(it.getAsFile()); return; }
                         }
                     });
+                    // Only shown once this faction has access to more than
+                    // one channel (its own + any shared cross-faction one
+                    // an admin created) - most members never see this.
+                    fetchFromWartorn('chat-channels').then(chData => {
+                        const channels = (chData && Array.isArray(chData.channels)) ? chData.channels : [];
+                        const sel = document.getElementById('wt-chat-channel-select');
+                        if (!sel || channels.length <= 1) return;
+                        sel.innerHTML = channels.map(c => `<option value="${wtChatEscapeHtml(c.channelKey)}">${wtChatEscapeHtml(c.name)}</option>`).join('');
+                        sel.value = wtChatCurrentChannel || channels[0].channelKey;
+                        sel.style.display = 'block';
+                        sel.addEventListener('change', () => {
+                            wtChatCurrentChannel = sel.value;
+                            wtChatStopTypingPoll();
+                            // Forces renderChatPanel's freshOpen branch to
+                            // run again (it checks for #wt-chat-list) - a
+                            // channel switch needs the whole panel rebuilt
+                            // against the new channel's history, not an
+                            // incremental append onto the old one's.
+                            body.innerHTML = '';
+                            renderChatPanel();
+                        });
+                    }).catch(() => {});
+                    wtChatStartTypingPoll();
                 } else {
                     const newOnes = messages.filter(m => m.id > wtChatRenderedMaxId);
                     if (newOnes.length) {
@@ -3242,7 +3311,7 @@ function targetRowHtml(t, estRespect) {
                         let d = {};
                         try { d = JSON.parse(res.responseText); } catch (e) {}
                         if (res.status === 200 && d.success && d.url) {
-                            postToWartorn('chat-send', { message: '', imageUrl: d.url }).then(() => renderChatPanel()).catch(() => flash('Could not send image'));
+                            postToWartorn('chat-send', { message: '', imageUrl: d.url, channel: wtChatCurrentChannel || undefined }).then(() => renderChatPanel()).catch(() => flash('Could not send image'));
                         } else {
                             flash(d.error || 'Upload failed');
                         }
@@ -3259,7 +3328,7 @@ function targetRowHtml(t, estRespect) {
             const message = input.value.trim();
             if (!message) return;
             input.value = '';
-            postToWartorn('chat-send', { message, imageUrl: '' }).then(() => renderChatPanel()).catch(() => {});
+            postToWartorn('chat-send', { message, imageUrl: '', channel: wtChatCurrentChannel || undefined }).then(() => renderChatPanel()).catch(() => {});
         }
         // Curated fixed grid, no external service - same list the
         // dashboard's own emoji picker uses.
@@ -3344,7 +3413,7 @@ function targetRowHtml(t, estRespect) {
         function wtChatSendGif(url) {
             const picker = document.getElementById('wt-chat-gif-picker');
             if (picker) picker.style.display = 'none';
-            postToWartorn('chat-send', { message: '', imageUrl: url }).then(() => renderChatPanel()).catch(() => {});
+            postToWartorn('chat-send', { message: '', imageUrl: url, channel: wtChatCurrentChannel || undefined }).then(() => renderChatPanel()).catch(() => {});
         }
         // Closes either picker on an outside click - registered once,
         // unconditionally, rather than inside renderChatPanel's freshOpen
@@ -3380,7 +3449,7 @@ function targetRowHtml(t, estRespect) {
         async function pollChat() {
             if (openWindows.has('chat')) { renderChatPanel(); return; }
             try {
-                const data = await fetchFromWartorn('chat-history');
+                const data = await fetchFromWartorn('chat-history' + wtChatChannelParam());
                 const messages = (data && Array.isArray(data.messages)) ? data.messages : [];
                 if (!messages.length) return;
                 wtChatSetButtonUnread(messages.filter(m => m.id > wtChatLastSeenId).length);
@@ -3962,7 +4031,12 @@ function targetRowHtml(t, estRespect) {
             // the instant w.el.remove() above runs), so this isn't load-
             // bearing - but resetting explicitly here means there's no
             // way a stale id could ever survive into a future reopen.
-            if (key === 'chat') wtChatRenderedMaxId = 0;
+            // The typing poll (see wtChatStartTypingPoll) only runs while
+            // the panel is open - its own tick already checks
+            // openWindows.has('chat') and self-stops, but closing it here
+            // too means there's no gap between the window closing and
+            // that check next firing.
+            if (key === 'chat') { wtChatRenderedMaxId = 0; wtChatStopTypingPoll(); }
         }
         // Used by the edge-cluster collapse toggle below, which used to
         // close the one single panel - now needs to close every open
