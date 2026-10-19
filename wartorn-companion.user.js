@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.10.1
+// @version      4.10.2
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.10.1';
+    const COMPANION_VERSION_FALLBACK = '4.10.2';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1333,6 +1333,29 @@
         // never starts, instead of every individual feature discovering the
         // outage on its own, slowly, over and over, on every tab.
         function startCompanionFeatures() {
+        // OC Master/Issues state - declared here, well before
+        // injectSidePanels() (which unconditionally calls
+        // wtUpdateOcIssuesBadge() on every page load, and reopens any
+        // panel - including OC Issues - that was left open before this
+        // navigation) rather than down near wtCheckOcAccessStatus/
+        // wtFetchOcCrimes where they're actually assigned. Those are plain
+        // `let`s, not hoisted the way a function declaration is - having
+        // them declared AFTER injectSidePanels()'s call site meant every
+        // page load hit a "Cannot access before initialization" TDZ
+        // ReferenceError the instant wtUpdateOcIssuesBadge() (or a reopened
+        // OC Issues panel's renderOcIssuesPanel()) touched them, which
+        // silently aborted everything else in injectSidePanels() (and
+        // startCompanionFeatures() after it) for that page load - exactly
+        // why a panel left open showed stuck on "Loading..." after
+        // navigating, not just OC Issues specifically. Same class of bug as
+        // the wtUpdateChatVisibility cross-scope fix earlier (v4.9.1) -
+        // the fix there was narrowing a dependency; here it's hoisting one
+        // above where it's first needed.
+        let wtHasOcView = false;
+        let wtCanReceiveOcAlerts = false;
+        let wtOcCrimesTimer = null;
+        let wtOcCrimesCache = [];
+        let wtOcIssueList = [];
         function fetchFromWartorn(endpoint, timeoutMs = 10000) {
             return new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
@@ -6717,18 +6740,9 @@ setInterval(scanProfileFlightBar, 3000);
         // different target page. hasOcView/isOcMaster are re-checked
         // occasionally rather than once, since both can change (Faction
         // Options) without a companion reload.
-        let wtHasOcView = false;
-        let wtCanReceiveOcAlerts = false;
-        let wtOcCrimesTimer = null;
-        let wtOcCrimesCache = [];
-        // Backs the OC Issues panel/button - the list itself (already
-        // sorted and ack-merged server-side, see computeOcIssueList in
-        // server.js) rather than computed here. The red dot reflects real,
-        // shared acknowledgment state now (any issue with acked:false),
-        // not a per-device "have I opened this panel" latch - so it stays
-        // in sync with the Staff OC panel's own Issues list and with
-        // whichever other OC Master/Helper last cleared something.
-        let wtOcIssueList = [];
+        // wtHasOcView/wtCanReceiveOcAlerts/wtOcCrimesTimer/wtOcCrimesCache/
+        // wtOcIssueList are declared up near the top of startCompanionFeatures
+        // now, not here - see that comment for why.
         function wtCheckOcAccessStatus() {
             fetchFromWartorn('oc/status').then(data => {
                 wtHasOcView = !!(data && data.hasOcView);
