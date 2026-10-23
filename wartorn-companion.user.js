@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.10.2
+// @version      4.10.3
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.10.2';
+    const COMPANION_VERSION_FALLBACK = '4.10.3';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3122,6 +3122,35 @@ function targetRowHtml(t, estRespect) {
         function wtChatEscapeHtml(s) {
             return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         }
+        // Same approach as the dashboard's window.wfLinkifyChat - escape
+        // first, then wrap URL substrings in an anchor, so escaped text is
+        // never re-parsed as HTML. Trailing sentence punctuation is peeled
+        // off the link; a closing )/] is only peeled when unbalanced within
+        // the URL itself.
+        function wtChatLinkify(s) {
+            const text = s == null ? '' : String(s);
+            const urlRe = /https?:\/\/[^\s<>"']+/g;
+            let out = '', last = 0, m;
+            while ((m = urlRe.exec(text)) !== null) {
+                out += wtChatEscapeHtml(text.slice(last, m.index));
+                let url = m[0], trail = '';
+                while (url.length) {
+                    const c = url[url.length - 1];
+                    if ('.,!?\'":;'.includes(c)) { trail = c + trail; url = url.slice(0, -1); continue; }
+                    if (c === ')' && (url.split('(').length - 1) < (url.split(')').length - 1)) { trail = c + trail; url = url.slice(0, -1); continue; }
+                    if (c === ']' && (url.split('[').length - 1) < (url.split(']').length - 1)) { trail = c + trail; url = url.slice(0, -1); continue; }
+                    break;
+                }
+                if (url) {
+                    const safe = wtChatEscapeHtml(url);
+                    out += `<a href="${safe}" target="_blank" rel="noopener noreferrer">${safe}</a>`;
+                }
+                out += wtChatEscapeHtml(trail);
+                last = m.index + m[0].length;
+            }
+            out += wtChatEscapeHtml(text.slice(last));
+            return out;
+        }
         // Both avatarUrl and a /chat-uploads/... imageUrl come back from
         // the server as ORIGIN-RELATIVE paths (e.g. /api/avatar/123) -
         // correct as-is on the dashboard, which IS wartorn.spiffer10.com,
@@ -3135,7 +3164,7 @@ function targetRowHtml(t, estRespect) {
             return u.startsWith('/') ? (WARTORN_HOST + u) : u;
         }
         function wtChatMsgRowHtml(m) {
-            const textHtml = m.message ? `<div style="color:#ddd; font-size:0.85em; white-space:pre-wrap; word-break:break-word;">${wtChatEscapeHtml(m.message)}</div>` : '';
+            const textHtml = m.message ? `<div style="color:#ddd; font-size:0.85em; white-space:pre-wrap; word-break:break-word;">${wtChatLinkify(m.message)}</div>` : '';
             // imageUrl only ever comes from the server's own history
             // (already validated server-side when it was posted - see
             // isAllowedChatImageUrl in server.js), not something this
