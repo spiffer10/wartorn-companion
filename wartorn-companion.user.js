@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.10.4
+// @version      4.10.5
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.10.4';
+    const COMPANION_VERSION_FALLBACK = '4.10.5';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4422,6 +4422,18 @@ function targetRowHtml(t, estRespect) {
             // the logo, which is 130px tall (see injectGhostLogo() above).
             const WRAP_TRANSITION = 'opacity 0.3s ease, transform 0.3s ease';
             wrap.style.cssText = `position:fixed; z-index:9999999; display:flex; flex-direction:column; gap:6px; pointer-events:none; transform-origin:top center; transition:${WRAP_TRANSITION};`;
+            // These three only make sense conditionally (war: only during an
+            // active war; milestone/Chain Hits: only during a 20-hits-out
+            // buildup; ocIssues: Master/Helper/admin only) and each has its
+            // own async check (updateWarButtonVisibility/checkChainHitsActive/
+            // wtUpdateOcIssuesBadge) that runs immediately on load and flips
+            // display on or off once it resolves. Previously the button was
+            // built visible by default and only hidden once that check came
+            // back negative - a visible flash on every page load for anyone
+            // it doesn't apply to. Starting hidden here and letting the check
+            // reveal it instead means it only ever appears once confirmed,
+            // never flashes and disappears.
+            const GATED_BUTTON_KEYS = new Set(['war', 'milestone', 'ocIssues']);
             function buildSideButton(key) {
                 const def = PANEL_DEFS[key];
                 const btn = document.createElement('div');
@@ -4482,6 +4494,7 @@ function targetRowHtml(t, estRespect) {
                 btn.style.cssText = key === 'chat'
                     ? 'display:grid; place-items:center; line-height:1; transform-origin:center center; cursor:pointer; transition:0.15s; opacity:0.85;'
                     : 'width:34px; height:34px; display:grid; place-items:center; line-height:1; transform-origin:center center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.35em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
+                if (GATED_BUTTON_KEYS.has(key)) btn.style.display = 'none';
                 btn.addEventListener('mouseenter', () => {
                     btn.style.opacity = '1';
                     btn.style.transform = 'scale(1.05)';
@@ -7275,7 +7288,12 @@ setInterval(scanProfileFlightBar, 3000);
         function updateWarButtonVisibility(warIsActive) {
             const btn = document.querySelector('.wt-side-btn[data-key="war"]');
             if (!btn) return;
-            btn.style.display = warIsActive ? 'flex' : 'none';
+            // 'grid', not 'flex' - buildSideButton sets display:grid inline
+            // for place-items:center; 'flex' still centers vertically
+            // (align-items carries over) but drops horizontal centering
+            // (justify-items has no effect outside grid), same bug class as
+            // wtUpdateOcIssuesBadge/checkChainHitsActive above.
+            btn.style.display = warIsActive ? 'grid' : 'none';
         }
 
         // Chain Hits button pulses + wiggles while a chain-hit coordination
@@ -7294,7 +7312,10 @@ setInterval(scanProfileFlightBar, 3000);
                 const isActive = !!(data && data.active);
                 btn.classList.toggle('wt-chain-active', isActive);
                 // Only shown while a coordination window is open (20 hits out from a milestone).
-                btn.style.display = isActive ? '' : 'none';
+                // 'grid', not '' - same reasoning as wtUpdateOcIssuesBadge:
+                // clearing it with '' falls back to a plain <div>'s default
+                // display:block, losing buildSideButton's place-items:center.
+                btn.style.display = isActive ? 'grid' : 'none';
                 if (!isActive && openWindows.has('milestone')) closePanelWindow('milestone');
                 // Repeats on this same 5s cadence for as long as it stays
                 // active - same "keep alerting while the condition holds"
