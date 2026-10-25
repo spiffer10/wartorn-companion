@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.13.0
+// @version      4.13.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.13.0';
+    const COMPANION_VERSION_FALLBACK = '4.13.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -7660,31 +7660,45 @@ setInterval(scanProfileFlightBar, 3000);
         // fav is a full {name, icon, variant, askQty} entry, not just a
         // name - variant picks the right option out of a multi-option
         // dialog (Game Console etc), askQty repeats the whole click-trigger
-        // -> wait-for-dialog -> click-confirm cycle N times for a stackable
-        // item (candy, medical) instead of trying to find a native
-        // quantity stepper in Torn's own UI, which isn't confirmed to
-        // exist - repeating the single-use cycle only relies on mechanics
-        // already verified to work.
+        // -> wait-for-dialog -> click-confirm cycle N times for an item
+        // that can genuinely be used back-to-back (Game Console, candy)
+        // instead of trying to find a native quantity stepper in Torn's
+        // own UI (none confirmed to exist). NOT assumed to always succeed
+        // N times, though - a drug fills a real Torn cooldown after just
+        // ONE use, which makes its own trigger disappear/deactivate same
+        // as running out of stock would. Rather than hardcode "drugs are
+        // different" (no DOM signal confirms what's a drug vs. candy vs.
+        // anything else), the loop just checks live after every single use
+        // whether it can go again, and stops the moment it can't -
+        // correctly limits a drug to 1 even if a qty >1 was requested,
+        // while a real multi-use item like Game Console runs the full
+        // count.
         async function wtClickItemFavorite(fav) {
             const name = fav.name;
-            if (wtItemHotbarInFlight.has(name + '|' + (fav.variant || ''))) return;
+            const lockKey = name + '|' + (fav.variant || '');
+            if (wtItemHotbarInFlight.has(lockKey)) return;
             let qty = 1;
             if (fav.askQty) {
                 qty = await wtShowQuantityPrompt(name);
                 if (!qty) return;
             }
-            const lockKey = name + '|' + (fav.variant || '');
             wtItemHotbarInFlight.add(lockKey);
+            let used = 0;
             for (let i = 0; i < qty; i++) {
                 const el = wtFindUseElementForName(name);
-                if (!el) {
-                    if (i === 0) showCompanionToast(`⚠️ "${name}" not available here`);
-                    break;
-                }
+                if (!el) break; // gone/disabled - cooldown, out of stock, etc.
                 el.click();
                 const ok = await wtWaitAndClickConfirm(fav.variant);
-                if (!ok) { showCompanionToast(`⚠️ Couldn't confirm use of "${name}"`); break; }
-                if (i < qty - 1) await wtSleep(700); // let Torn's own row/count re-render before reopening
+                if (!ok) break;
+                used++;
+                if (used < qty) await wtSleep(700); // let Torn's own row/count re-render before reopening
+            }
+            if (used === 0) {
+                showCompanionToast(`⚠️ "${name}" not available here`);
+            } else if (used < qty) {
+                showCompanionToast(`Used ${used} of ${qty} "${name}" - then became unavailable (cooldown or out of stock?)`);
+            } else if (qty > 1) {
+                showCompanionToast(`✅ Used ${used}x "${name}"`);
             }
             wtItemHotbarInFlight.delete(lockKey);
         }
@@ -7700,15 +7714,27 @@ setInterval(scanProfileFlightBar, 3000);
             const p = document.getElementById('wt-item-hotbar-picker');
             if (p) p.remove();
         }
-        // Step 2 of adding a single-option item (ordinary candy/medical/
-        // etc, no variant) - just asks once whether this favorite should
-        // prompt for a quantity every time it's used, rather than guessing
-        // from the item's name which items are "stackable".
-        function wtShowAskQtyPicker(name, icon, source) {
+        // Step 2 of adding any single-pinned favorite - plain item or one
+        // specific variant of a multi-option one (Game Console's "Quick
+        // Game" etc, which has no cooldown and can be replayed back-to-
+        // back just like candy/medical can) - asks once whether this
+        // favorite should prompt for a quantity every time it's used,
+        // rather than guessing from the item's name/type which ones are
+        // actually repeatable (wtClickItemFavorite's own live check at use
+        // time is what actually protects a cooldown item like a drug from
+        // this, regardless of what's answered here).
+        function wtShowAskQtyPicker(name, icon, source, variant, onDone) {
+            const existingSub = document.getElementById('wt-item-hotbar-askqty');
+            if (existingSub) existingSub.remove();
             const box = document.createElement('div');
-            box.id = 'wt-item-hotbar-picker';
-            box.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); bottom:46px; z-index:999991; background:#15171c; border:1px solid #2a2d34; border-radius:8px; padding:10px; box-shadow:0 4px 15px rgba(0,0,0,0.6); min-width:220px; text-align:center;';
-            box.innerHTML = `<div style="color:#ddd; font-size:12px; margin-bottom:8px;">Pin "${wtChatEscapeHtml(name)}" - ask how many each time?</div>
+            // Its own id, distinct from #wt-item-hotbar-picker - this can
+            // render STACKED on top of an still-open variant picker (see
+            // wtShowVariantPicker), so sharing that id would mean two
+            // elements with the same id existing at once.
+            box.id = 'wt-item-hotbar-askqty';
+            box.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); bottom:46px; z-index:999992; background:#15171c; border:1px solid #2a2d34; border-radius:8px; padding:10px; box-shadow:0 4px 15px rgba(0,0,0,0.6); min-width:220px; text-align:center;';
+            const label = variant ? `${name} — ${variant}` : name;
+            box.innerHTML = `<div style="color:#ddd; font-size:12px; margin-bottom:8px;">Pin "${wtChatEscapeHtml(label)}" - ask how many each time?</div>
                 <div style="display:flex; gap:8px; justify-content:center;">
                     <span class="wt-item-askqty-opt" data-ask="0" style="background:#333; color:#ccc; padding:5px 10px; border-radius:4px; font-size:12px; cursor:pointer;">Always use 1</span>
                     <span class="wt-item-askqty-opt" data-ask="1" style="background:#4CAF50; color:#fff; padding:5px 10px; border-radius:4px; font-size:12px; cursor:pointer;">Ask each time</span>
@@ -7716,16 +7742,19 @@ setInterval(scanProfileFlightBar, 3000);
             document.body.appendChild(box);
             box.querySelectorAll('.wt-item-askqty-opt').forEach(btn => {
                 btn.addEventListener('click', async () => {
-                    await wtToggleItemFavorite(name, true, icon, '', btn.dataset.ask === '1', source);
+                    await wtToggleItemFavorite(name, true, icon, variant || '', btn.dataset.ask === '1', source);
                     box.remove();
                     wtRenderItemHotbar();
+                    if (onDone) onDone();
                 });
             });
         }
         // Step 2 of adding a multi-option item (Game Console etc) - each
-        // option becomes its own separate favorite (own variant), so you
-        // can pin "Quick Game" and "Hardcore Game" side by side. Stays open
-        // after each add so more than one can be picked without reopening.
+        // option becomes its own separate favorite (own variant, each with
+        // its own ask-quantity choice via wtShowAskQtyPicker), so you can
+        // pin "Quick Game" and "Hardcore Game" side by side, each playable
+        // once or N times. Stays open after each add so more than one can
+        // be picked without reopening.
         function wtShowVariantPicker(name, icon, options, source) {
             const box = document.createElement('div');
             box.id = 'wt-item-hotbar-picker';
@@ -7736,14 +7765,14 @@ setInterval(scanProfileFlightBar, 3000);
             box.querySelectorAll('.wt-item-variant-row').forEach(row => {
                 row.addEventListener('mouseenter', () => row.style.background = '#1f2229');
                 row.addEventListener('mouseleave', () => { if (row.dataset.added !== '1') row.style.background = ''; });
-                row.addEventListener('click', async () => {
+                row.addEventListener('click', () => {
                     if (row.dataset.added === '1') return;
                     const opt = options[parseInt(row.dataset.idx, 10)];
-                    await wtToggleItemFavorite(name, true, icon, opt, false, source);
-                    row.dataset.added = '1';
-                    row.style.background = '#1f3d24';
-                    row.innerHTML = '✓ ' + wtChatEscapeHtml(opt);
-                    wtRenderItemHotbar();
+                    wtShowAskQtyPicker(name, icon, source, opt, () => {
+                        row.dataset.added = '1';
+                        row.style.background = '#1f3d24';
+                        row.innerHTML = '✓ ' + wtChatEscapeHtml(opt);
+                    });
                 });
             });
             const doneBtn = document.createElement('div');
