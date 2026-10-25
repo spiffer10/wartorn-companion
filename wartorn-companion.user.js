@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.13.1
+// @version      4.14.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.13.1';
+    const COMPANION_VERSION_FALLBACK = '4.14.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1677,14 +1677,15 @@
                 wtItemFavoritesFetchedAt = Date.now();
             } catch (e) {}
         }
-        async function wtToggleItemFavorite(name, favorite, icon, variant, askQty, source) {
+        async function wtToggleItemFavorite(name, favorite, icon, variant, askQty, source, category) {
             const v = variant || '';
             const src = source || '';
+            const cat = category || null;
             try {
-                await postToWartorn('item-favorites', { name, favorite, icon: icon || '', variant: v, askQty: !!askQty, source: src });
+                await postToWartorn('item-favorites', { name, favorite, icon: icon || '', variant: v, askQty: !!askQty, source: src, category: cat });
                 const matches = it => it.name === name && (it.variant || '') === v && (it.source || '') === src;
                 wtItemFavorites = favorite
-                    ? wtItemFavorites.filter(it => !matches(it)).concat([{ name, icon: icon || '', variant: v, askQty: !!askQty, source: src }])
+                    ? wtItemFavorites.filter(it => !matches(it)).concat([{ name, icon: icon || '', variant: v, askQty: !!askQty, source: src, category: cat }])
                     : wtItemFavorites.filter(it => !matches(it));
                 wtItemFavoritesFetchedAt = Date.now();
             } catch (e) {}
@@ -7599,6 +7600,51 @@ setInterval(scanProfileFlightBar, 3000);
             if (/factions\.php/.test(location.pathname)) return 'armory';
             return null;
         }
+        // Both pages gate which items actually RENDER behind a jQuery-UI
+        // tabs widget - Items' own left-hand category list (#categoriesList,
+        // li[data-type="Drug"/"Candy"/etc]) and Armory's top tab bar
+        // (.armory-main-tab, <a href="#tab=armoury&sub=drugs">) - confirmed
+        // via real page markup. A favorited item only exists in the DOM at
+        // all while ITS category/sub-tab is the one currently selected
+        // (aria-selected="true" in both widgets), which is exactly what
+        // PDA doesn't require - this captures which one an item belongs to
+        // at add time, so wtEnsureCategorySelected can click the right tab
+        // automatically before looking for it at use time, matching PDA's
+        // behavior instead of requiring the right tab already be open.
+        function wtCurrentCategoryInfo() {
+            const itemsActive = document.querySelector('#categoriesList > li[aria-selected="true"]');
+            if (itemsActive && itemsActive.dataset.type) {
+                return { kind: 'items-category', value: itemsActive.dataset.type };
+            }
+            const armoryActiveA = document.querySelector('.armory-main-tab li[aria-selected="true"] a');
+            if (armoryActiveA) {
+                const m = (armoryActiveA.getAttribute('href') || '').match(/sub=([a-zA-Z]+)/);
+                if (m) return { kind: 'armory-sub', value: m[1] };
+            }
+            return null;
+        }
+        // Clicks the real tab <a> (jQuery UI tabs - a real click is enough
+        // to trigger Torn's own switch, same reasoning as the Use/confirm
+        // automation) only if it isn't already the active one, then gives
+        // it a moment to render its content before the caller looks for
+        // anything. No-ops entirely for a favorite with no recorded
+        // category (added before this existed, or neither widget matched).
+        async function wtEnsureCategorySelected(category) {
+            if (!category) return;
+            if (category.kind === 'items-category') {
+                const li = document.querySelector(`#categoriesList > li[data-type="${category.value}"]`);
+                if (!li || li.getAttribute('aria-selected') === 'true') return;
+                const a = li.querySelector('a');
+                if (a) { a.click(); await wtSleep(500); }
+            } else if (category.kind === 'armory-sub') {
+                const a = document.querySelector(`.armory-main-tab a[href$="sub=${category.value}"]`);
+                if (!a) return;
+                const li = a.closest('li');
+                if (li && li.getAttribute('aria-selected') === 'true') return;
+                a.click();
+                await wtSleep(500);
+            }
+        }
         function wtWaitForDialog(maxTries) {
             return new Promise(resolve => {
                 let tries = 0;
@@ -7683,6 +7729,12 @@ setInterval(scanProfileFlightBar, 3000);
                 if (!qty) return;
             }
             wtItemHotbarInFlight.add(lockKey);
+            // Switches to the item's own category/sub-tab if it isn't
+            // already active - a favorite doesn't require the right tab
+            // be open first, matching PDA. Only needs doing once, before
+            // the loop - category doesn't change between repeat uses of
+            // the same item.
+            await wtEnsureCategorySelected(fav.category);
             let used = 0;
             for (let i = 0; i < qty; i++) {
                 const el = wtFindUseElementForName(name);
@@ -7723,7 +7775,7 @@ setInterval(scanProfileFlightBar, 3000);
         // actually repeatable (wtClickItemFavorite's own live check at use
         // time is what actually protects a cooldown item like a drug from
         // this, regardless of what's answered here).
-        function wtShowAskQtyPicker(name, icon, source, variant, onDone) {
+        function wtShowAskQtyPicker(name, icon, source, variant, onDone, category) {
             const existingSub = document.getElementById('wt-item-hotbar-askqty');
             if (existingSub) existingSub.remove();
             const box = document.createElement('div');
@@ -7742,7 +7794,7 @@ setInterval(scanProfileFlightBar, 3000);
             document.body.appendChild(box);
             box.querySelectorAll('.wt-item-askqty-opt').forEach(btn => {
                 btn.addEventListener('click', async () => {
-                    await wtToggleItemFavorite(name, true, icon, variant || '', btn.dataset.ask === '1', source);
+                    await wtToggleItemFavorite(name, true, icon, variant || '', btn.dataset.ask === '1', source, category);
                     box.remove();
                     wtRenderItemHotbar();
                     if (onDone) onDone();
@@ -7755,7 +7807,7 @@ setInterval(scanProfileFlightBar, 3000);
         // pin "Quick Game" and "Hardcore Game" side by side, each playable
         // once or N times. Stays open after each add so more than one can
         // be picked without reopening.
-        function wtShowVariantPicker(name, icon, options, source) {
+        function wtShowVariantPicker(name, icon, options, source, category) {
             const box = document.createElement('div');
             box.id = 'wt-item-hotbar-picker';
             box.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); bottom:46px; z-index:999991; background:#15171c; border:1px solid #2a2d34; border-radius:8px; padding:8px; max-height:260px; overflow-y:auto; box-shadow:0 4px 15px rgba(0,0,0,0.6); min-width:220px;';
@@ -7772,7 +7824,7 @@ setInterval(scanProfileFlightBar, 3000);
                         row.dataset.added = '1';
                         row.style.background = '#1f3d24';
                         row.innerHTML = '✓ ' + wtChatEscapeHtml(opt);
-                    });
+                    }, category);
                 });
             });
             const doneBtn = document.createElement('div');
@@ -7790,6 +7842,10 @@ setInterval(scanProfileFlightBar, 3000);
             if (existing) { existing.remove(); return; }
             const pageType = wtCurrentItemPageType();
             const favKeys = new Set(wtItemFavorites.filter(it => !pageType || !it.source || it.source === pageType).map(it => it.name + '|' + (it.variant || '')));
+            // Captured once for this whole picker-open, not per candidate -
+            // every use-trigger currently on screen belongs to whichever
+            // category/sub-tab is active right now, so they all share it.
+            const category = wtCurrentCategoryInfo();
             const seen = new Set();
             const candidates = [];
             useEls.forEach(el => {
@@ -7822,8 +7878,8 @@ setInterval(scanProfileFlightBar, 3000);
                     if (dlg && dlg.closeEl) dlg.closeEl.click();
                     wtClosePicker();
                     if (!dlg) { showCompanionToast(`⚠️ Couldn't read options for "${c.name}"`); return; }
-                    if (dlg.options.length > 1) wtShowVariantPicker(c.name, c.icon, dlg.options, dlg.source);
-                    else wtShowAskQtyPicker(c.name, c.icon, dlg.source);
+                    if (dlg.options.length > 1) wtShowVariantPicker(c.name, c.icon, dlg.options, dlg.source, category);
+                    else wtShowAskQtyPicker(c.name, c.icon, dlg.source, undefined, undefined, category);
                 });
             });
             setTimeout(() => document.addEventListener('click', wtItemHotbarPickerOutsideClick), 0);
@@ -7881,7 +7937,15 @@ setInterval(scanProfileFlightBar, 3000);
             wtPositionItemHotbar(bar);
             const foundNames = new Set(useEls.map(wtItemNameFromEl));
             let html = visible.map(({ fav, realIdx }) => {
-                const available = foundNames.has(fav.name);
+                // "Available" here just means clicking it will work, not
+                // that it's literally rendered on screen right now - a
+                // favorite with a recorded category can always get there
+                // itself (wtEnsureCategorySelected switches tabs on click),
+                // so it's shown as usable even while a different tab is
+                // currently open. Only a legacy favorite with no recorded
+                // category (added before tab-switching existed) still
+                // depends on already being on the right tab.
+                const available = foundNames.has(fav.name) || !!fav.category;
                 // height-only sizing (no forced width) so a wide Torn item
                 // icon keeps its real aspect ratio instead of being
                 // squished into a square - matches how Torn itself shows
@@ -7899,7 +7963,7 @@ setInterval(scanProfileFlightBar, 3000);
                     e.stopPropagation();
                     const fav = wtItemFavorites[parseInt(el.dataset.idx, 10)];
                     if (!fav) return;
-                    wtToggleItemFavorite(fav.name, false, fav.icon, fav.variant, fav.askQty, fav.source).then(() => wtRenderItemHotbar());
+                    wtToggleItemFavorite(fav.name, false, fav.icon, fav.variant, fav.askQty, fav.source, fav.category).then(() => wtRenderItemHotbar());
                 });
             });
             // Click-and-drag reorder (native HTML5 DnD) - reorders the real
