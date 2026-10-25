@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.11.1
+// @version      4.12.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.11.1';
+    const COMPANION_VERSION_FALLBACK = '4.12.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1677,12 +1677,14 @@
                 wtItemFavoritesFetchedAt = Date.now();
             } catch (e) {}
         }
-        async function wtToggleItemFavorite(name, favorite, icon) {
+        async function wtToggleItemFavorite(name, favorite, icon, variant, askQty) {
+            const v = variant || '';
             try {
-                await postToWartorn('item-favorites', { name, favorite, icon: icon || '' });
+                await postToWartorn('item-favorites', { name, favorite, icon: icon || '', variant: v, askQty: !!askQty });
+                const matches = it => it.name === name && (it.variant || '') === v;
                 wtItemFavorites = favorite
-                    ? wtItemFavorites.filter(it => it.name !== name).concat([{ name, icon: icon || '' }])
-                    : wtItemFavorites.filter(it => it.name !== name);
+                    ? wtItemFavorites.filter(it => !matches(it)).concat([{ name, icon: icon || '', variant: v, askQty: !!askQty }])
+                    : wtItemFavorites.filter(it => !matches(it));
                 wtItemFavoritesFetchedAt = Date.now();
             } catch (e) {}
         }
@@ -7551,26 +7553,118 @@ setInterval(scanProfileFlightBar, 3000);
             }
             return null;
         }
+        function wtSleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+        // Reads whichever real Torn confirm dialog is CURRENTLY open and
+        // visible (.use-act-wrap for personal items, including the Game
+        // Console's own .multiple-act variant; .use-cont.action-cont for
+        // Armory) - every option inside is a .next-act, differentiated
+        // only by its own visible text (Game Console: "Quick Game (1
+        // energy)" etc; ordinary items: a single "Okay"/"Yes"). Used both
+        // to drive a real use (pick the right option, see
+        // wtWaitAndClickConfirm) and, during ADD, to safely inspect what
+        // an item offers without using it (see wtWaitForDialog - the add
+        // flow always backs out via closeEl instead of confirming).
+        function wtReadOpenUseDialog() {
+            const wraps = document.querySelectorAll('.use-act-wrap, .use-cont.action-cont');
+            for (const wrap of wraps) {
+                if (wrap.offsetParent === null) continue;
+                const nextActs = Array.from(wrap.querySelectorAll('.next-act')).filter(el => el.offsetParent !== null);
+                if (!nextActs.length) continue;
+                return {
+                    options: nextActs.map(el => (el.textContent || '').trim()).filter(Boolean),
+                    closeEl: wrap.querySelector('.close-act, .wai-support')
+                };
+            }
+            return null;
+        }
+        function wtWaitForDialog(maxTries) {
+            return new Promise(resolve => {
+                let tries = 0;
+                const poll = setInterval(() => {
+                    tries++;
+                    const dlg = wtReadOpenUseDialog();
+                    if (dlg) { clearInterval(poll); resolve(dlg); }
+                    else if (tries >= maxTries) { clearInterval(poll); resolve(null); }
+                }, 100);
+            });
+        }
+        // Drives an ALREADY-OPEN dialog to completion for a real use -
+        // picks the .next-act matching `variant` by its visible text (a
+        // multi-option item like Game Console), or just the first/only one
+        // when there's no variant to disambiguate.
+        function wtWaitAndClickConfirm(variant) {
+            return new Promise(resolve => {
+                let tries = 0;
+                const poll = setInterval(() => {
+                    tries++;
+                    const nextActs = Array.from(document.querySelectorAll('.use-act-wrap .next-act, .use-cont.action-cont .next-act')).filter(el => el.offsetParent !== null);
+                    if (nextActs.length) {
+                        const target = variant ? nextActs.find(el => (el.textContent || '').trim() === variant) : nextActs[0];
+                        if (target) { target.click(); clearInterval(poll); resolve(true); return; }
+                    }
+                    if (tries >= 20) { clearInterval(poll); resolve(false); } // ~2s, never showed up
+                }, 100);
+            });
+        }
+        // Small custom popup instead of window.prompt() - prompt() is
+        // exactly the kind of native dialog that can render oddly or get
+        // silently blocked inside an embedded webview like TornPDA's (see
+        // showManualLinkPanel's own comment on this near the top of the
+        // file), so every other "ask the user something" surface in this
+        // script already avoids it the same way.
+        function wtShowQuantityPrompt(name) {
+            return new Promise(resolve => {
+                const existing = document.getElementById('wt-item-qty-prompt');
+                if (existing) existing.remove();
+                const box = document.createElement('div');
+                box.id = 'wt-item-qty-prompt';
+                box.style.cssText = 'position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); z-index:999995; background:#15171c; border:1px solid #2a2d34; border-radius:8px; padding:14px; box-shadow:0 4px 20px rgba(0,0,0,0.7); text-align:center; min-width:180px;';
+                box.innerHTML = `<div style="color:#ddd; font-size:13px; margin-bottom:8px;">Use how many ${wtChatEscapeHtml(name)}?</div>
+                    <input id="wt-item-qty-input" type="number" min="1" max="50" value="1" style="width:60px; text-align:center; background:#0d0e11; border:1px solid #444; color:#fff; border-radius:4px; padding:4px; font-size:14px;">
+                    <div style="margin-top:10px; display:flex; gap:8px; justify-content:center;">
+                        <span id="wt-item-qty-ok" style="background:#4CAF50; color:#fff; padding:5px 14px; border-radius:4px; font-size:12px; cursor:pointer;">Use</span>
+                        <span id="wt-item-qty-cancel" style="background:#333; color:#ccc; padding:5px 14px; border-radius:4px; font-size:12px; cursor:pointer;">Cancel</span>
+                    </div>`;
+                document.body.appendChild(box);
+                const input = box.querySelector('#wt-item-qty-input');
+                input.focus(); input.select();
+                const finish = (val) => { box.remove(); resolve(val); };
+                box.querySelector('#wt-item-qty-ok').addEventListener('click', () => finish(Math.max(1, Math.min(50, parseInt(input.value, 10) || 1))));
+                box.querySelector('#wt-item-qty-cancel').addEventListener('click', () => finish(null));
+                input.addEventListener('keydown', e => { if (e.key === 'Enter') box.querySelector('#wt-item-qty-ok').click(); });
+            });
+        }
         let wtItemHotbarInFlight = new Set();
-        function wtClickItemFavorite(name) {
-            if (wtItemHotbarInFlight.has(name)) return;
-            const el = wtFindUseElementForName(name);
-            if (!el) { showCompanionToast(`⚠️ "${name}" not available here`); return; }
-            wtItemHotbarInFlight.add(name);
-            el.click();
-            let tries = 0;
-            const poll = setInterval(() => {
-                tries++;
-                const confirmBtn = document.querySelector('.use-act-wrap .next-act, .use-cont.action-cont .next-act');
-                if (confirmBtn && confirmBtn.offsetParent !== null) {
-                    confirmBtn.click();
-                    clearInterval(poll);
-                    wtItemHotbarInFlight.delete(name);
-                } else if (tries >= 20) { // ~2s, Torn's confirm dialog never showed up
-                    clearInterval(poll);
-                    wtItemHotbarInFlight.delete(name);
+        // fav is a full {name, icon, variant, askQty} entry, not just a
+        // name - variant picks the right option out of a multi-option
+        // dialog (Game Console etc), askQty repeats the whole click-trigger
+        // -> wait-for-dialog -> click-confirm cycle N times for a stackable
+        // item (candy, medical) instead of trying to find a native
+        // quantity stepper in Torn's own UI, which isn't confirmed to
+        // exist - repeating the single-use cycle only relies on mechanics
+        // already verified to work.
+        async function wtClickItemFavorite(fav) {
+            const name = fav.name;
+            if (wtItemHotbarInFlight.has(name + '|' + (fav.variant || ''))) return;
+            let qty = 1;
+            if (fav.askQty) {
+                qty = await wtShowQuantityPrompt(name);
+                if (!qty) return;
+            }
+            const lockKey = name + '|' + (fav.variant || '');
+            wtItemHotbarInFlight.add(lockKey);
+            for (let i = 0; i < qty; i++) {
+                const el = wtFindUseElementForName(name);
+                if (!el) {
+                    if (i === 0) showCompanionToast(`⚠️ "${name}" not available here`);
+                    break;
                 }
-            }, 100);
+                el.click();
+                const ok = await wtWaitAndClickConfirm(fav.variant);
+                if (!ok) { showCompanionToast(`⚠️ Couldn't confirm use of "${name}"`); break; }
+                if (i < qty - 1) await wtSleep(700); // let Torn's own row/count re-render before reopening
+            }
+            wtItemHotbarInFlight.delete(lockKey);
         }
         function wtItemHotbarPickerOutsideClick(e) {
             const picker = document.getElementById('wt-item-hotbar-picker');
@@ -7580,15 +7674,79 @@ setInterval(scanProfileFlightBar, 3000);
                 document.removeEventListener('click', wtItemHotbarPickerOutsideClick);
             }
         }
-        function wtShowItemHotbarAddPicker(useEls) {
+        function wtClosePicker() {
+            const p = document.getElementById('wt-item-hotbar-picker');
+            if (p) p.remove();
+        }
+        // Step 2 of adding a single-option item (ordinary candy/medical/
+        // etc, no variant) - just asks once whether this favorite should
+        // prompt for a quantity every time it's used, rather than guessing
+        // from the item's name which items are "stackable".
+        function wtShowAskQtyPicker(name, icon) {
+            const box = document.createElement('div');
+            box.id = 'wt-item-hotbar-picker';
+            box.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); bottom:46px; z-index:999991; background:#15171c; border:1px solid #2a2d34; border-radius:8px; padding:10px; box-shadow:0 4px 15px rgba(0,0,0,0.6); min-width:220px; text-align:center;';
+            box.innerHTML = `<div style="color:#ddd; font-size:12px; margin-bottom:8px;">Pin "${wtChatEscapeHtml(name)}" - ask how many each time?</div>
+                <div style="display:flex; gap:8px; justify-content:center;">
+                    <span class="wt-item-askqty-opt" data-ask="0" style="background:#333; color:#ccc; padding:5px 10px; border-radius:4px; font-size:12px; cursor:pointer;">Always use 1</span>
+                    <span class="wt-item-askqty-opt" data-ask="1" style="background:#4CAF50; color:#fff; padding:5px 10px; border-radius:4px; font-size:12px; cursor:pointer;">Ask each time</span>
+                </div>`;
+            document.body.appendChild(box);
+            box.querySelectorAll('.wt-item-askqty-opt').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    await wtToggleItemFavorite(name, true, icon, '', btn.dataset.ask === '1');
+                    box.remove();
+                    wtRenderItemHotbar();
+                });
+            });
+        }
+        // Step 2 of adding a multi-option item (Game Console etc) - each
+        // option becomes its own separate favorite (own variant), so you
+        // can pin "Quick Game" and "Hardcore Game" side by side. Stays open
+        // after each add so more than one can be picked without reopening.
+        function wtShowVariantPicker(name, icon, options) {
+            const box = document.createElement('div');
+            box.id = 'wt-item-hotbar-picker';
+            box.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); bottom:46px; z-index:999991; background:#15171c; border:1px solid #2a2d34; border-radius:8px; padding:8px; max-height:260px; overflow-y:auto; box-shadow:0 4px 15px rgba(0,0,0,0.6); min-width:220px;';
+            box.innerHTML = `<div style="color:#888; font-size:11px; padding:2px 6px 6px;">Pin which option(s)?</div>` +
+                options.map((opt, i) => `<div class="wt-item-variant-row" data-idx="${i}" style="padding:6px 8px; font-size:12px; color:#ddd; cursor:pointer; border-radius:4px;">${wtChatEscapeHtml(opt)}</div>`).join('');
+            document.body.appendChild(box);
+            box.querySelectorAll('.wt-item-variant-row').forEach(row => {
+                row.addEventListener('mouseenter', () => row.style.background = '#1f2229');
+                row.addEventListener('mouseleave', () => { if (row.dataset.added !== '1') row.style.background = ''; });
+                row.addEventListener('click', async () => {
+                    if (row.dataset.added === '1') return;
+                    const opt = options[parseInt(row.dataset.idx, 10)];
+                    await wtToggleItemFavorite(name, true, icon, opt, false);
+                    row.dataset.added = '1';
+                    row.style.background = '#1f3d24';
+                    row.innerHTML = '✓ ' + wtChatEscapeHtml(opt);
+                    wtRenderItemHotbar();
+                });
+            });
+            const doneBtn = document.createElement('div');
+            doneBtn.style.cssText = 'margin-top:4px; text-align:center; padding:5px; font-size:11px; color:#888; cursor:pointer; border-top:1px solid #2a2d34;';
+            doneBtn.textContent = 'Done';
+            doneBtn.addEventListener('click', () => box.remove());
+            box.appendChild(doneBtn);
+        }
+        // Clicking a candidate here OPENS the real dialog (to see if it's
+        // single or multi-option) then always backs out via its own
+        // Cancel/No link - never confirms anything during add, so simply
+        // browsing what's addable can never actually use an item.
+        async function wtShowItemHotbarAddPicker(useEls) {
             const existing = document.getElementById('wt-item-hotbar-picker');
             if (existing) { existing.remove(); return; }
-            const favNames = new Set(wtItemFavorites.map(it => it.name));
+            const favKeys = new Set(wtItemFavorites.map(it => it.name + '|' + (it.variant || '')));
             const seen = new Set();
             const candidates = [];
             useEls.forEach(el => {
                 const n = wtItemNameFromEl(el);
-                if (!n || seen.has(n) || favNames.has(n)) return;
+                // An item with ANY variant already pinned still shows up
+                // here, since Game Console-style items can have several
+                // separately-pinned options - only skip a plain item that
+                // has no variant at all and is already pinned as-is.
+                if (!n || seen.has(n) || favKeys.has(n + '|')) return;
                 seen.add(n);
                 candidates.push({ name: n, icon: wtFindIconNear(el) || '' });
             });
@@ -7605,9 +7763,15 @@ setInterval(scanProfileFlightBar, 3000);
                 row.addEventListener('click', async () => {
                     const c = candidates[parseInt(row.dataset.idx, 10)];
                     if (!c) return;
-                    await wtToggleItemFavorite(c.name, true, c.icon);
-                    picker.remove();
-                    wtRenderItemHotbar();
+                    const el = wtFindUseElementForName(c.name);
+                    if (!el) return;
+                    el.click();
+                    const dlg = await wtWaitForDialog(20);
+                    if (dlg && dlg.closeEl) dlg.closeEl.click();
+                    wtClosePicker();
+                    if (!dlg) { showCompanionToast(`⚠️ Couldn't read options for "${c.name}"`); return; }
+                    if (dlg.options.length > 1) wtShowVariantPicker(c.name, c.icon, dlg.options);
+                    else wtShowAskQtyPicker(c.name, c.icon);
                 });
             });
             setTimeout(() => document.addEventListener('click', wtItemHotbarPickerOutsideClick), 0);
@@ -7623,21 +7787,22 @@ setInterval(scanProfileFlightBar, 3000);
             const anchor = document.querySelector('.content-title.m-bottom10');
             if (anchor) {
                 if (anchor.previousElementSibling !== bar) anchor.insertAdjacentElement('beforebegin', bar);
-                bar.style.cssText = 'position:static; margin:0 0 10px 0; background:rgba(21,23,28,0.95); border:1px solid #2a2d34; border-radius:8px; padding:6px 8px; display:flex; align-items:center; gap:6px; flex-wrap:wrap; box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+                bar.style.cssText = 'position:static; margin:0 0 10px 0; background:rgba(21,23,28,0.95); border:1px solid #2a2d34; border-radius:8px; padding:8px 10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; box-shadow:0 2px 8px rgba(0,0,0,0.3);';
             } else {
                 if (bar.parentElement !== document.body) document.body.appendChild(bar);
-                bar.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); bottom:10px; z-index:999990; background:rgba(21,23,28,0.95); border:1px solid #2a2d34; border-radius:8px; padding:6px 8px; display:flex; align-items:center; gap:6px; flex-wrap:wrap; max-width:90vw; box-shadow:0 4px 15px rgba(0,0,0,0.5);';
+                bar.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); bottom:10px; z-index:999990; background:rgba(21,23,28,0.95); border:1px solid #2a2d34; border-radius:8px; padding:8px 10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; max-width:90vw; box-shadow:0 4px 15px rgba(0,0,0,0.5);';
             }
         }
         function wtItemMonogramHtml(name, available) {
             const letter = (name.trim()[0] || '?').toUpperCase();
-            return `<span style="display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:3px; background:#333; color:${available ? '#fff' : '#777'}; font-size:11px; font-weight:bold;">${wtChatEscapeHtml(letter)}</span>`;
+            return `<span style="display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:4px; background:#333; color:${available ? '#fff' : '#777'}; font-size:14px; font-weight:bold;">${wtChatEscapeHtml(letter)}</span>`;
         }
         function wtRenderItemHotbar() {
-            // Never touch the bar while the add-picker is open - it's a
-            // separate top-level element, but re-deriving useEls here is
-            // still cheap and keeps the picker's own "not already favorited"
-            // list implicitly correct next time it's opened.
+            // Never touch the bar while the add-picker/variant/qty-ask
+            // popups are open - all separate top-level elements, but
+            // re-deriving useEls here is still cheap and keeps whichever
+            // one's "not already favorited" list implicitly correct next
+            // time it's opened.
             const useEls = wtFindUseElements();
             let bar = document.getElementById('wt-item-hotbar');
             if (!useEls.length && !wtItemFavorites.length) {
@@ -7650,25 +7815,29 @@ setInterval(scanProfileFlightBar, 3000);
             }
             wtPositionItemHotbar(bar);
             const foundNames = new Set(useEls.map(wtItemNameFromEl));
-            let html = wtItemFavorites.map(fav => {
+            let html = wtItemFavorites.map((fav, idx) => {
                 const available = foundNames.has(fav.name);
                 const icon = fav.icon
-                    ? `<img src="${wtChatEscapeHtml(fav.icon)}" width="20" height="20" style="border-radius:3px; ${available ? '' : 'opacity:0.4;'}">`
+                    ? `<img src="${wtChatEscapeHtml(fav.icon)}" width="32" height="32" style="border-radius:4px; ${available ? '' : 'opacity:0.4;'}">`
                     : wtItemMonogramHtml(fav.name, available);
-                return `<span class="wt-item-fav-btn" data-name="${wtChatEscapeHtml(fav.name)}" title="${available ? 'Use ' + wtChatEscapeHtml(fav.name) : wtChatEscapeHtml(fav.name) + ' not available here'}" style="position:relative; display:inline-flex; align-items:center; justify-content:center; background:${available ? '#1f3d24' : '#2a2a2a'}; border:1px solid ${available ? '#4CAF50' : '#444'}; border-radius:5px; padding:3px; cursor:pointer;">${icon}<span class="wt-item-fav-remove" data-name="${wtChatEscapeHtml(fav.name)}" title="Remove from hotbar" style="position:absolute; top:-6px; right:-6px; width:14px; height:14px; line-height:14px; text-align:center; font-size:9px; background:#15171c; border:1px solid #444; border-radius:50%; opacity:0.8;">✕</span></span>`;
+                const label = fav.variant ? `${fav.name} — ${fav.variant}` : fav.name;
+                return `<span class="wt-item-fav-btn" data-idx="${idx}" title="${available ? 'Use ' + wtChatEscapeHtml(label) : wtChatEscapeHtml(label) + ' not available here'}" style="position:relative; display:inline-flex; align-items:center; justify-content:center; background:${available ? '#1f3d24' : '#2a2a2a'}; border:1px solid ${available ? '#4CAF50' : '#444'}; border-radius:6px; padding:4px; cursor:pointer;">${icon}<span class="wt-item-fav-remove" data-idx="${idx}" title="Remove from hotbar" style="position:absolute; top:-7px; right:-7px; width:15px; height:15px; line-height:15px; text-align:center; font-size:10px; background:#15171c; border:1px solid #444; border-radius:50%; opacity:0.8;">✕</span></span>`;
             }).join('');
-            html += `<span id="wt-item-hotbar-add" title="Add an item to the hotbar" style="display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border:1px solid #444; border-radius:5px; color:#888; cursor:pointer; font-size:14px;">+</span>`;
+            html += `<span id="wt-item-hotbar-add" title="Add an item to the hotbar" style="display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:1px solid #444; border-radius:6px; color:#888; cursor:pointer; font-size:16px;">+</span>`;
             bar.innerHTML = html;
             bar.querySelectorAll('.wt-item-fav-remove').forEach(el => {
                 el.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    wtToggleItemFavorite(el.dataset.name, false).then(() => wtRenderItemHotbar());
+                    const fav = wtItemFavorites[parseInt(el.dataset.idx, 10)];
+                    if (!fav) return;
+                    wtToggleItemFavorite(fav.name, false, fav.icon, fav.variant).then(() => wtRenderItemHotbar());
                 });
             });
             bar.querySelectorAll('.wt-item-fav-btn').forEach(el => {
                 el.addEventListener('click', (e) => {
                     if (e.target.classList.contains('wt-item-fav-remove')) return;
-                    wtClickItemFavorite(el.dataset.name);
+                    const fav = wtItemFavorites[parseInt(el.dataset.idx, 10)];
+                    if (fav) wtClickItemFavorite(fav);
                 });
             });
             const addBtn = bar.querySelector('#wt-item-hotbar-add');
