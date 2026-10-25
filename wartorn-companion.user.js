@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.10.6
+// @version      4.10.7
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.10.6';
+    const COMPANION_VERSION_FALLBACK = '4.10.7';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2121,7 +2121,7 @@ function targetRowHtml(t, estRespect) {
             const bar = document.createElement('div');
             bar.id = 'wt-targets-toolbar';
             bar.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:4px 8px; border-bottom:1px solid #333;';
-            bar.innerHTML = '<span style="display:flex; align-items:center; gap:4px;"><button id="wt-ff-minus" style="background:#252525; border:1px solid #555; color:#ccc; border-radius:3px; padding:0 6px; cursor:pointer;">−</button><span id="wt-targets-ff" style="color:#ccc; font-size:0.8em; min-width:84px; text-align:center;"></span><button id="wt-ff-plus" style="background:#252525; border:1px solid #555; color:#ccc; border-radius:3px; padding:0 6px; cursor:pointer;">+</button></span><span id="wt-targets-gear" title="Target options" style="cursor:pointer; color:#ccc; font-size:0.85em;">⚙️ Options</span>';
+            bar.innerHTML = '<span style="display:flex; align-items:center; gap:4px;"><button id="wt-ff-minus" style="background:#252525; border:1px solid #555; color:#ccc; border-radius:3px; padding:0 6px; cursor:pointer;">−</button><span id="wt-targets-ff" style="color:#ccc; font-size:0.8em; min-width:84px; text-align:center;"></span><button id="wt-ff-plus" style="background:#252525; border:1px solid #555; color:#ccc; border-radius:3px; padding:0 6px; cursor:pointer;">+</button></span><span style="display:flex; align-items:center; gap:10px;"><span id="wt-targets-refresh" title="Refresh" style="cursor:pointer; color:#ccc; font-size:0.9em;">🔄</span><span id="wt-targets-gear" title="Target options" style="cursor:pointer; color:#ccc; font-size:0.85em;">⚙️ Options</span></span>';
             const form = document.createElement('div');
             form.id = 'wt-targets-settings';
             form.style.cssText = 'display:none; padding:8px; border-bottom:1px solid #333; font-size:0.8em; color:#ccc;';
@@ -2158,6 +2158,15 @@ function targetRowHtml(t, estRespect) {
             });
             bar.querySelector('#wt-ff-minus').addEventListener('click', () => adjustTargetFf(-0.05));
             bar.querySelector('#wt-ff-plus').addEventListener('click', () => adjustTargetFf(0.05));
+            // Manual retry - clears this panel's cache (client AND the
+            // persisted copy, same as changing FF/settings already does) so a
+            // failed scout (FFScouter down, a 502, a dropped connection) can
+            // be retried without needing to touch the FF value first.
+            bar.querySelector('#wt-targets-refresh').addEventListener('click', () => {
+                Object.keys(panelCache).filter(k => k.startsWith('targets_')).forEach(k => { delete panelCache[k]; forgetPersistedPanel(k); });
+                body.dataset.wtKey = '';
+                renderTargetsPanel();
+            });
         }
         function loadTargetsSettingsForm(form) {
             const cts = companionChainSettings.chainTargetSettings || {};
@@ -2251,6 +2260,13 @@ function targetRowHtml(t, estRespect) {
                 body.dataset.wtRetried = '';
                 await refreshCompanionFavorites();
                 if (!openWindows.has('targets') || !document.getElementById('wt-panel-body-targets')) return;
+                // Built unconditionally, BEFORE the error/empty checks below - this
+                // used to only run on a successful load, which meant a failed first
+                // scout (FFScouter down, a 502) left no way to change the FF value
+                // or retry at all, ever, until something else happened to succeed.
+                ensureTargetsSettingsUI(body);
+                const ffLabel = document.getElementById('wt-targets-ff');
+                if (ffLabel) ffLabel.textContent = (cts.custom ? 'Custom · ' : '') + (parseFloat(chainFfSetting) || 3.0).toFixed(2);
                 if (data.error || !data.targets || !data.targets.length) {
                     body.innerHTML = `<div style="color:#888;">${data.error || 'No targets found.'}</div>`;
                     return;
@@ -2260,9 +2276,6 @@ function targetRowHtml(t, estRespect) {
                 // now matched here too instead of showing FFScouter's raw
                 // match order, which often buried whichever targets the
                 // dashboard puts first further down this much smaller panel.
-                ensureTargetsSettingsUI(body);
-                const ffLabel = document.getElementById('wt-targets-ff');
-                if (ffLabel) ffLabel.textContent = (cts.custom ? 'Custom · ' : '') + (parseFloat(chainFfSetting) || 3.0).toFixed(2);
                 const visibleTargets = data.targets.filter(t => !(companionChainSettings.hideFaction && t.has_faction) && !(companionChainSettings.hideAbroad && (t.state === 'Traveling' || t.state === 'Abroad')));
                 if (!visibleTargets.length) { body.innerHTML = '<div style="color:#888;">No targets match your filters.</div>'; return; }
                 const sortedTargets = [...visibleTargets].sort((a, b) => {
@@ -2299,6 +2312,7 @@ function targetRowHtml(t, estRespect) {
                 if (body.dataset.wtLoaded === '1') { console.warn('[Wartorn] Chain Targets refresh failed:', e); return; }
                 if (openWindows.has('targets') && document.getElementById('wt-panel-body-targets')) {
                     const el = document.getElementById('wt-panel-body-targets');
+                    ensureTargetsSettingsUI(el);
                     const slow = e && (e.message === 'timeout' || e.message === 'network error');
                     if (slow && !body.dataset.wtRetried) {
                         body.dataset.wtRetried = '1';
