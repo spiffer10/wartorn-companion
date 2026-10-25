@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.16.0
+// @version      4.16.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.16.0';
+    const COMPANION_VERSION_FALLBACK = '4.16.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6436,6 +6436,12 @@ function targetRowHtml(t, estRespect) {
         // selections=travel response names this "destination" directly
         // (a plain country name like "Mexico"), no guessing needed.
         let travelDestination = null;
+        // True while actually airborne (outbound OR return leg) - set from
+        // checkTravelStatus's own stillTraveling check below. The item
+        // hotbar reads this to hide itself entirely mid-flight (Torn blocks
+        // using items while traveling, so a bar that still looks clickable
+        // there would just be misleading).
+        let wtIsFlying = false;
         const TRAVEL_NEW_TRIP_JUMP_SECS = 60;
 
         function fetchTornTravel() {
@@ -6478,6 +6484,10 @@ function targetRowHtml(t, estRespect) {
             if (!userApiKey) { travelLandAtMs = null; travelDestination = null; updateFlightWidgetForTravel(); return; }
             const travel = await fetchTornTravel();
             const stillTraveling = !!(travel && typeof travel.time_left === 'number' && travel.time_left > 0);
+            if (stillTraveling !== wtIsFlying) {
+                wtIsFlying = stillTraveling;
+                wtRenderItemHotbar();
+            }
             // travel.destination is populated both mid-flight and while
             // genuinely Abroad in a foreign country - but it ALSO reads
             // "Torn" for a return trip (mid-flight back) and once you've
@@ -7918,7 +7928,7 @@ setInterval(scanProfileFlightBar, 3000);
         }
         let wtDragFavIdx = null;
         function wtRenderItemHotbar() {
-            if (wtItemHotbarMode === 'hide') {
+            if (wtItemHotbarMode === 'hide' || wtIsFlying) {
                 const existingBar = document.getElementById('wt-item-hotbar');
                 if (existingBar) existingBar.remove();
                 return;
