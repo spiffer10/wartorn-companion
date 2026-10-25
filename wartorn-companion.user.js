@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.15.0
+// @version      4.15.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.15.0';
+    const COMPANION_VERSION_FALLBACK = '4.15.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -7581,6 +7581,27 @@ setInterval(scanProfileFlightBar, 3000);
             }
             return null;
         }
+        // Live personal-inventory quantity (confirmed markup:
+        // <span class="name-wrap"><span class="qty ...">x197</span>
+        // <span class="name">Box of Sweet Hearts</span>...) - read fresh on
+        // every render, never stored, since it changes every time the item
+        // is used. Not meaningful for Armory (shared faction stock a
+        // regular user has no control over), so only ever called for an
+        // inventory-sourced favorite.
+        function wtFindQtyNear(el) {
+            if (!el) return null;
+            let node = el;
+            for (let i = 0; i < 6 && node; i++) {
+                node = node.parentElement;
+                if (!node) break;
+                const qtyEl = node.querySelector('.name-wrap .qty, .qty.bold');
+                if (qtyEl) {
+                    const m = (qtyEl.textContent || '').trim().match(/(\d[\d,]*)/);
+                    if (m) return parseInt(m[1].replace(/,/g, ''), 10);
+                }
+            }
+            return null;
+        }
         function wtSleep(ms) { return new Promise(r => setTimeout(r, ms)); }
         // Reads whichever real Torn confirm dialog is CURRENTLY open and
         // visible (.use-act-wrap for personal items, including the Game
@@ -8027,6 +8048,8 @@ setInterval(scanProfileFlightBar, 3000);
             }
             wtPositionItemHotbar(bar);
             const foundNames = new Set(useEls.map(wtItemNameFromEl));
+            const useElByName = new Map();
+            useEls.forEach(el => useElByName.set(wtItemNameFromEl(el), el));
             let html = visible.map(({ fav, realIdx }) => {
                 // "Available" here just means clicking it will work, not
                 // that it's literally rendered on screen right now - a
@@ -8037,6 +8060,7 @@ setInterval(scanProfileFlightBar, 3000);
                 // category (added before tab-switching existed) still
                 // depends on already being on the right tab.
                 const available = foundNames.has(fav.name) || !!fav.category;
+                const isArmory = fav.source === 'armory';
                 // height-only sizing (no forced width) so a wide Torn item
                 // icon keeps its real aspect ratio instead of being
                 // squished into a square - matches how Torn itself shows
@@ -8045,7 +8069,15 @@ setInterval(scanProfileFlightBar, 3000);
                     ? `<img src="${wtChatEscapeHtml(fav.icon)}" style="height:28px; width:auto; max-width:60px; border-radius:4px; ${available ? '' : 'opacity:0.4;'}">`
                     : wtItemMonogramHtml(fav.name, available);
                 const label = fav.variant ? `${fav.name} — ${fav.variant}` : fav.name;
-                return `<span class="wt-item-fav-btn" draggable="true" data-idx="${realIdx}" title="${available ? 'Use ' + wtChatEscapeHtml(label) : wtChatEscapeHtml(label) + ' not available here'}" style="position:relative; display:inline-flex; align-items:center; justify-content:center; background:${available ? '#1f3d24' : '#2a2a2a'}; border:1px solid ${available ? '#4CAF50' : '#444'}; border-radius:6px; padding:4px; cursor:grab;">${icon}<span class="wt-item-fav-remove" data-idx="${realIdx}" title="Remove from hotbar" style="position:absolute; top:-7px; right:-7px; width:15px; height:15px; line-height:15px; text-align:center; font-size:10px; background:#15171c; border:1px solid #444; border-radius:50%; opacity:0.8;">✕</span></span>`;
+                // Quantity is read live, every render - never stored, since
+                // it changes every time the item is used. Only shown for a
+                // personal item that's actually on screen right now; not
+                // meaningful for Armory (shared faction stock, not the
+                // viewer's own to track) per explicit request.
+                const qty = (!isArmory && foundNames.has(fav.name)) ? wtFindQtyNear(useElByName.get(fav.name)) : null;
+                const qtyBadge = (qty !== null) ? `<span style="position:absolute; bottom:-6px; right:-2px; font-size:9px; font-weight:bold; color:#fff; background:#15171c; border:1px solid #444; padding:0 3px; border-radius:3px; line-height:1.3;">x${qty}</span>` : '';
+                const facBadge = isArmory ? `<span style="position:absolute; bottom:-6px; left:-2px; font-size:8px; font-weight:bold; color:#15171c; background:#FFC107; padding:1px 3px; border-radius:3px; line-height:1;">FAC</span>` : '';
+                return `<span class="wt-item-fav-btn" draggable="true" data-idx="${realIdx}" title="${available ? 'Use ' + wtChatEscapeHtml(label) : wtChatEscapeHtml(label) + ' not available here'}" style="position:relative; display:inline-flex; align-items:center; justify-content:center; background:${isArmory ? (available ? '#332b14' : '#2a2a2a') : (available ? '#1f3d24' : '#2a2a2a')}; border:1px solid ${isArmory ? (available ? '#FFC107' : '#444') : (available ? '#4CAF50' : '#444')}; border-radius:6px; padding:4px; cursor:grab;">${icon}${facBadge}${qtyBadge}<span class="wt-item-fav-remove" data-idx="${realIdx}" title="Remove from hotbar" style="position:absolute; top:-7px; right:-7px; width:15px; height:15px; line-height:15px; text-align:center; font-size:10px; background:#15171c; border:1px solid #444; border-radius:50%; opacity:0.8;">✕</span></span>`;
             }).join('');
             html += `<span id="wt-item-hotbar-add" title="Add an item to the hotbar" style="display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:1px solid #444; border-radius:6px; color:#888; cursor:pointer; font-size:16px;">+</span>`;
             bar.innerHTML = html;
