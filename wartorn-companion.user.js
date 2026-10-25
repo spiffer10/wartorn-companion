@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.10.9
+// @version      4.11.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.10.9';
+    const COMPANION_VERSION_FALLBACK = '4.11.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1663,6 +1663,28 @@
         }
         function isFavorited(id) {
             return companionFavorites.includes(Number(id));
+        }
+
+        // Item hotbar favorites (Inventory/Armory quick-use bar) - separate
+        // list from the player-id favorites above. Same 10s cache gate.
+        let wtItemFavorites = [];
+        let wtItemFavoritesFetchedAt = 0;
+        async function refreshItemFavorites(force) {
+            if (!force && Date.now() - wtItemFavoritesFetchedAt < 10000) return;
+            try {
+                const data = await fetchFromWartorn('item-favorites');
+                wtItemFavorites = (data && Array.isArray(data.items)) ? data.items : [];
+                wtItemFavoritesFetchedAt = Date.now();
+            } catch (e) {}
+        }
+        async function wtToggleItemFavorite(name, favorite) {
+            try {
+                await postToWartorn('item-favorites', { name, favorite });
+                wtItemFavorites = favorite
+                    ? wtItemFavorites.filter(n => n !== name).concat([name])
+                    : wtItemFavorites.filter(n => n !== name);
+                wtItemFavoritesFetchedAt = Date.now();
+            } catch (e) {}
         }
 
         // War Targets panel view mode - persisted via GM_setValue so the
@@ -7478,6 +7500,138 @@ setInterval(scanProfileFlightBar, 3000);
         setInterval(() => {
             if (openWindows.has('timer') && customTimerTargetMs !== null) renderTimerPanel();
         }, 1000);
+
+        // --- MODULE: ITEM HOTBAR (Inventory/Armory quick-use favorites) ---
+        // Torn has no sitewide quick-items dropdown (confirmed) - items can
+        // only actually be used from the real Inventory (item.php) or
+        // Faction Armory page, each of which renders a real "Use" trigger
+        // per row: either an <a data-role="use" aria-label="ItemName. Action: Use">
+        // (ordinary items, both personal and armory - same markup, armory
+        // context is scoped by its own list container) or a
+        // <button class="option-use" aria-label="Eat ItemName"> (event/
+        // temporary items with a custom verb). Clicking it opens one of two
+        // real Torn confirm dialogs (.use-act-wrap or .use-cont.action-cont,
+        // both with a .next-act "Okay"/"Yes" button) - rather than reverse-
+        // engineer the AJAX call those fire, this just drives Torn's own
+        // real UI with two simulated clicks, so it keeps working through
+        // any internal request/endpoint change on Torn's side.
+        // No URL/page gating at all - the bar only ever renders when a
+        // matching "use" element actually exists on the current page, which
+        // already limits it to Inventory/Armory (and auto-hides itself
+        // anywhere else) without hardcoding either page's URL shape, which
+        // matters for Armory since it's a hash-routed SPA tab under
+        // factions.php, not a real navigation.
+        function wtFindUseElements() {
+            return Array.from(document.querySelectorAll('[data-role="use"].use.active[aria-label], button.option-use[aria-label]'));
+        }
+        function wtItemNameFromEl(el) {
+            const label = el.getAttribute('aria-label') || '';
+            if (el.matches('[data-role="use"]')) return label.split(/\.\s*Action:/i)[0].trim();
+            // button.option-use: "Eat Bag of Bon Bons" -> "Bag of Bon Bons" -
+            // verb is always one word, so dropping the first token is enough.
+            return label.replace(/^\s*\S+\s+/, '').trim();
+        }
+        function wtFindUseElementForName(name) {
+            const target = name.trim().toLowerCase();
+            return wtFindUseElements().find(el => wtItemNameFromEl(el).toLowerCase() === target) || null;
+        }
+        let wtItemHotbarInFlight = new Set();
+        function wtClickItemFavorite(name) {
+            if (wtItemHotbarInFlight.has(name)) return;
+            const el = wtFindUseElementForName(name);
+            if (!el) { showCompanionToast(`⚠️ "${name}" not available here`); return; }
+            wtItemHotbarInFlight.add(name);
+            el.click();
+            let tries = 0;
+            const poll = setInterval(() => {
+                tries++;
+                const confirmBtn = document.querySelector('.use-act-wrap .next-act, .use-cont.action-cont .next-act');
+                if (confirmBtn && confirmBtn.offsetParent !== null) {
+                    confirmBtn.click();
+                    clearInterval(poll);
+                    wtItemHotbarInFlight.delete(name);
+                } else if (tries >= 20) { // ~2s, Torn's confirm dialog never showed up
+                    clearInterval(poll);
+                    wtItemHotbarInFlight.delete(name);
+                }
+            }, 100);
+        }
+        function wtItemHotbarPickerOutsideClick(e) {
+            const picker = document.getElementById('wt-item-hotbar-picker');
+            if (!picker) { document.removeEventListener('click', wtItemHotbarPickerOutsideClick); return; }
+            if (!picker.contains(e.target) && e.target.id !== 'wt-item-hotbar-add') {
+                picker.remove();
+                document.removeEventListener('click', wtItemHotbarPickerOutsideClick);
+            }
+        }
+        function wtShowItemHotbarAddPicker(useEls) {
+            const existing = document.getElementById('wt-item-hotbar-picker');
+            if (existing) { existing.remove(); return; }
+            const names = Array.from(new Set(useEls.map(wtItemNameFromEl))).filter(n => n && !wtItemFavorites.includes(n));
+            const picker = document.createElement('div');
+            picker.id = 'wt-item-hotbar-picker';
+            picker.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); bottom:46px; z-index:999991; background:#15171c; border:1px solid #2a2d34; border-radius:8px; padding:8px; max-height:220px; overflow-y:auto; box-shadow:0 4px 15px rgba(0,0,0,0.6); min-width:200px;';
+            picker.innerHTML = names.length
+                ? names.map(n => `<div class="wt-item-add-row" data-name="${wtChatEscapeHtml(n)}" style="padding:5px 8px; font-size:12px; color:#ddd; cursor:pointer; border-radius:4px;">+ ${wtChatEscapeHtml(n)}</div>`).join('')
+                : '<div style="color:#888; font-size:12px; padding:4px;">No use-able items found on this page.</div>';
+            document.body.appendChild(picker);
+            picker.querySelectorAll('.wt-item-add-row').forEach(row => {
+                row.addEventListener('mouseenter', () => row.style.background = '#1f2229');
+                row.addEventListener('mouseleave', () => row.style.background = '');
+                row.addEventListener('click', async () => {
+                    await wtToggleItemFavorite(row.dataset.name, true);
+                    picker.remove();
+                    wtRenderItemHotbar();
+                });
+            });
+            setTimeout(() => document.addEventListener('click', wtItemHotbarPickerOutsideClick), 0);
+        }
+        function wtRenderItemHotbar() {
+            // Never touch the bar while the add-picker is open - it's a
+            // separate top-level element, but re-deriving useEls here is
+            // still cheap and keeps the picker's own "not already favorited"
+            // list implicitly correct next time it's opened.
+            const useEls = wtFindUseElements();
+            let bar = document.getElementById('wt-item-hotbar');
+            if (!useEls.length && !wtItemFavorites.length) {
+                if (bar) bar.remove();
+                return;
+            }
+            if (!bar) {
+                bar = document.createElement('div');
+                bar.id = 'wt-item-hotbar';
+                bar.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); bottom:10px; z-index:999990; background:rgba(21,23,28,0.95); border:1px solid #2a2d34; border-radius:8px; padding:6px 8px; display:flex; align-items:center; gap:6px; flex-wrap:wrap; max-width:90vw; box-shadow:0 4px 15px rgba(0,0,0,0.5);';
+                document.body.appendChild(bar);
+            }
+            const foundNames = new Set(useEls.map(wtItemNameFromEl));
+            let html = wtItemFavorites.map(name => {
+                const available = foundNames.has(name);
+                return `<span class="wt-item-fav-btn" data-name="${wtChatEscapeHtml(name)}" title="${available ? 'Use ' + wtChatEscapeHtml(name) : wtChatEscapeHtml(name) + ' not available here'}" style="display:inline-flex; align-items:center; gap:4px; background:${available ? '#1f3d24' : '#2a2a2a'}; border:1px solid ${available ? '#4CAF50' : '#444'}; border-radius:5px; padding:4px 8px; font-size:12px; color:${available ? '#fff' : '#777'}; cursor:pointer; white-space:nowrap;">${wtChatEscapeHtml(name)}<span class="wt-item-fav-remove" data-name="${wtChatEscapeHtml(name)}" title="Remove from hotbar" style="opacity:0.6; margin-left:2px;">✕</span></span>`;
+            }).join('');
+            html += `<span id="wt-item-hotbar-add" title="Add an item to the hotbar" style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border:1px solid #444; border-radius:5px; color:#888; cursor:pointer; font-size:14px;">+</span>`;
+            bar.innerHTML = html;
+            bar.querySelectorAll('.wt-item-fav-remove').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    wtToggleItemFavorite(el.dataset.name, false).then(() => wtRenderItemHotbar());
+                });
+            });
+            bar.querySelectorAll('.wt-item-fav-btn').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    if (e.target.classList.contains('wt-item-fav-remove')) return;
+                    wtClickItemFavorite(el.dataset.name);
+                });
+            });
+            const addBtn = bar.querySelector('#wt-item-hotbar-add');
+            if (addBtn) addBtn.addEventListener('click', () => wtShowItemHotbarAddPicker(useEls));
+        }
+        function wtScanItemHotbarPage() {
+            refreshItemFavorites();
+            wtRenderItemHotbar();
+        }
+        setInterval(wtScanItemHotbarPage, 3000);
+        wtScanItemHotbarPage();
+
         } // end startCompanionFeatures
 
         // Slide-out notice from the logo, same visual pattern as
