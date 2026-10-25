@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.14.0
+// @version      4.15.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.14.0';
+    const COMPANION_VERSION_FALLBACK = '4.15.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1736,6 +1736,13 @@
         let flightSoundEnabled = safeGmGet('wt_flight_sound', false);
         let chainSoundEnabled = safeGmGet('wt_chain_sound', false);
         let chainHitsSirenEnabled = safeGmGet('wt_chain_hits_siren', false);
+        // Per-device display preference (not synced server-side, unlike the
+        // favorites/order themselves) - 'item-armory-only' (default) only
+        // shows the bar on the matching real page, 'everywhere' shows it on
+        // any page (clicking one elsewhere navigates to the right page
+        // first, see wtItemFavoriteTargetUrl), 'hide' turns the whole
+        // feature off without having to unpin everything.
+        let wtItemHotbarMode = safeGmGet('wt_item_hotbar_mode', 'item-armory-only');
         // Set from the milestone panel's own data and from checkChainHitsActive's
         // background check - whichever last saw real data - so both the open
         // panel's refresh cadence and the background active-check can speed up
@@ -2771,6 +2778,13 @@ function targetRowHtml(t, estRespect) {
                             🔔 Chain Hits alert sound
                             <span id="wt-set-chainhitssiren-test" style="cursor:pointer; color:#00e5ff; font-size:0.85em; margin-left:auto; text-decoration:underline;">Test</span>
                         </label>
+                        <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em;">
+                            🎒 Item Hotbar <select id="wt-set-item-hotbar-mode" style="background:#0b0c10; border:1px solid #444; color:#fff; padding:3px 6px; border-radius:3px; margin-left:auto;">
+                                <option value="item-armory-only"${wtItemHotbarMode === 'item-armory-only' ? ' selected' : ''}>Show on Items/Armory only</option>
+                                <option value="everywhere"${wtItemHotbarMode === 'everywhere' ? ' selected' : ''}>Show everywhere</option>
+                                <option value="hide"${wtItemHotbarMode === 'hide' ? ' selected' : ''}>Hide</option>
+                            </select>
+                        </label>
                     </div>
 
                     <div style="display:flex; flex-direction:column; gap:6px; border-top:1px solid #333; padding-top:10px;">
@@ -2853,6 +2867,11 @@ function targetRowHtml(t, estRespect) {
                 chainHitsSirenEnabled = e.target.checked;
                 safeGmSet('wt_chain_hits_siren', chainHitsSirenEnabled);
                 if (chainHitsSirenEnabled) unlockAudioContext();
+            });
+            document.getElementById('wt-set-item-hotbar-mode').addEventListener('change', (e) => {
+                wtItemHotbarMode = e.target.value;
+                safeGmSet('wt_item_hotbar_mode', wtItemHotbarMode);
+                wtRenderItemHotbar();
             });
             document.getElementById('wt-set-chainhitssiren-test').addEventListener('click', (e) => {
                 // Sits inside the checkbox's own <label> for layout, which
@@ -7719,6 +7738,45 @@ setInterval(scanProfileFlightBar, 3000);
         // correctly limits a drug to 1 even if a qty >1 was requested,
         // while a real multi-use item like Game Console runs the full
         // count.
+        // Repeats the real click-trigger -> wait-for-dialog -> click-confirm
+        // cycle up to `qty` times, stopping the moment it can't go again
+        // (cooldown, out of stock, etc - see wtClickItemFavorite's own
+        // comment). Shared by wtClickItemFavorite and
+        // wtCheckPendingItemHotbarAction (the cross-page-navigation
+        // continuation below) so both report results identically.
+        async function wtRunUseLoop(name, variant, qty) {
+            let used = 0;
+            for (let i = 0; i < qty; i++) {
+                const el = wtFindUseElementForName(name);
+                if (!el) break;
+                el.click();
+                const ok = await wtWaitAndClickConfirm(variant);
+                if (!ok) break;
+                used++;
+                if (used < qty) await wtSleep(700); // let Torn's own row/count re-render before reopening
+            }
+            return used;
+        }
+        function wtReportUseResult(name, used, qty) {
+            if (used === 0) showCompanionToast(`⚠️ "${name}" not available here`);
+            else if (used < qty) showCompanionToast(`Used ${used} of ${qty} "${name}" - then became unavailable (cooldown or out of stock?)`);
+            else if (qty > 1) showCompanionToast(`✅ Used ${used}x "${name}"`);
+        }
+        // Where a favorite's OWN real page is, for navigating there when
+        // it's shown outside Items/Armory ('everywhere' mode) or clicked
+        // from the wrong one of the two. Armory deep-links straight to the
+        // right sub-tab via the same #tab=armoury&sub=X hash confirmed in
+        // its own tab markup; Items doesn't support deep-linking a
+        // category by URL, so it just lands on item.php and
+        // wtEnsureCategorySelected takes it from there once loaded.
+        function wtItemFavoriteTargetUrl(fav) {
+            if (fav.source === 'inventory') return 'https://www.torn.com/item.php';
+            if (fav.source === 'armory') {
+                const sub = (fav.category && fav.category.kind === 'armory-sub') ? fav.category.value : '';
+                return 'https://www.torn.com/factions.php?step=your&type=1#/tab=armoury' + (sub ? '&sub=' + sub : '');
+            }
+            return null;
+        }
         async function wtClickItemFavorite(fav) {
             const name = fav.name;
             const lockKey = name + '|' + (fav.variant || '');
@@ -7728,6 +7786,21 @@ setInterval(scanProfileFlightBar, 3000);
                 qty = await wtShowQuantityPrompt(name);
                 if (!qty) return;
             }
+            // Not on the right real page at all (e.g. clicked from the
+            // 'everywhere' bar while on an unrelated page, or an Armory
+            // favorite clicked while on Items) - no amount of category-tab
+            // switching helps from here. Navigate there and remember what
+            // to finish once it's actually loaded (wtCheckPendingItemHotbarAction,
+            // run on every page load) - lets a favorite work from
+            // literally anywhere, matching PDA, instead of just failing.
+            const pageType = wtCurrentItemPageType();
+            if (fav.source && pageType !== fav.source) {
+                const url = wtItemFavoriteTargetUrl(fav);
+                if (!url) { showCompanionToast(`⚠️ "${name}" not available here`); return; }
+                safeGmSet('wt_item_hotbar_pending', { name, variant: fav.variant || '', qty, source: fav.source, category: fav.category || null, ts: Date.now() });
+                window.location.href = url;
+                return;
+            }
             wtItemHotbarInFlight.add(lockKey);
             // Switches to the item's own category/sub-tab if it isn't
             // already active - a favorite doesn't require the right tab
@@ -7735,23 +7808,28 @@ setInterval(scanProfileFlightBar, 3000);
             // the loop - category doesn't change between repeat uses of
             // the same item.
             await wtEnsureCategorySelected(fav.category);
-            let used = 0;
-            for (let i = 0; i < qty; i++) {
-                const el = wtFindUseElementForName(name);
-                if (!el) break; // gone/disabled - cooldown, out of stock, etc.
-                el.click();
-                const ok = await wtWaitAndClickConfirm(fav.variant);
-                if (!ok) break;
-                used++;
-                if (used < qty) await wtSleep(700); // let Torn's own row/count re-render before reopening
-            }
-            if (used === 0) {
-                showCompanionToast(`⚠️ "${name}" not available here`);
-            } else if (used < qty) {
-                showCompanionToast(`Used ${used} of ${qty} "${name}" - then became unavailable (cooldown or out of stock?)`);
-            } else if (qty > 1) {
-                showCompanionToast(`✅ Used ${used}x "${name}"`);
-            }
+            const used = await wtRunUseLoop(name, fav.variant, qty);
+            wtReportUseResult(name, used, qty);
+            wtItemHotbarInFlight.delete(lockKey);
+        }
+        // Picks up where wtClickItemFavorite left off after a real page
+        // navigation (see wt_item_hotbar_pending above) - cleared
+        // immediately on read so a failed/abandoned attempt is never
+        // silently retried on some later, unrelated page load.
+        async function wtCheckPendingItemHotbarAction() {
+            const pending = safeGmGet('wt_item_hotbar_pending', null);
+            if (!pending) return;
+            safeGmSet('wt_item_hotbar_pending', null);
+            if (Date.now() - (pending.ts || 0) > 30000) return; // stale - took too long to land here
+            if (wtCurrentItemPageType() !== pending.source) return; // ended up somewhere unexpected
+            const lockKey = pending.name + '|' + (pending.variant || '');
+            if (wtItemHotbarInFlight.has(lockKey)) return;
+            wtItemHotbarInFlight.add(lockKey);
+            await wtSleep(800); // let the freshly-loaded page actually finish rendering first
+            await wtEnsureCategorySelected(pending.category);
+            const qty = pending.qty || 1;
+            const used = await wtRunUseLoop(pending.name, pending.variant, qty);
+            wtReportUseResult(pending.name, used, qty);
             wtItemHotbarInFlight.delete(lockKey);
         }
         function wtItemHotbarPickerOutsideClick(e) {
@@ -7907,6 +7985,11 @@ setInterval(scanProfileFlightBar, 3000);
         }
         let wtDragFavIdx = null;
         function wtRenderItemHotbar() {
+            if (wtItemHotbarMode === 'hide') {
+                const existingBar = document.getElementById('wt-item-hotbar');
+                if (existingBar) existingBar.remove();
+                return;
+            }
             // Never touch the bar while the add-picker/variant/qty-ask
             // popups are open - all separate top-level elements, but
             // re-deriving useEls here is still cheap and keeps whichever
@@ -7914,15 +7997,23 @@ setInterval(scanProfileFlightBar, 3000);
             // time it's opened.
             const useEls = wtFindUseElements();
             const pageType = wtCurrentItemPageType();
-            // Items and Armory are two different real pages - a favorite
-            // only ever shows on the one it was added from (fav.source),
-            // never both, even though the underlying trigger markup is
+            const everywhere = wtItemHotbarMode === 'everywhere';
+            // Items and Armory are two different real pages - in the
+            // default mode, a favorite only ever shows on the one it was
+            // added from (fav.source), never both AND never off those two
+            // pages at all, even though the underlying trigger markup is
             // identical on either page. A favorite with no recorded source
             // (added before this existed) shows nowhere until re-added,
-            // same as every earlier item-hotbar schema change this session.
+            // same as every earlier item-hotbar schema change this
+            // session. 'everywhere' mode skips all of this - clicking one
+            // from the wrong page (or no page at all) navigates to its own
+            // real page first, see wtClickItemFavorite.
             const visible = [];
             wtItemFavorites.forEach((fav, realIdx) => {
-                if (pageType && fav.source && fav.source !== pageType) return;
+                if (!everywhere) {
+                    if (!pageType) return;
+                    if (fav.source && fav.source !== pageType) return;
+                }
                 visible.push({ fav, realIdx });
             });
             let bar = document.getElementById('wt-item-hotbar');
@@ -8002,6 +8093,7 @@ setInterval(scanProfileFlightBar, 3000);
         }
         setInterval(wtScanItemHotbarPage, 3000);
         wtScanItemHotbarPage();
+        wtCheckPendingItemHotbarAction();
 
         } // end startCompanionFeatures
 
