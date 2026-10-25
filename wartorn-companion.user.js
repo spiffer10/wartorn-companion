@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.12.0
+// @version      4.13.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.12.0';
+    const COMPANION_VERSION_FALLBACK = '4.13.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1677,16 +1677,24 @@
                 wtItemFavoritesFetchedAt = Date.now();
             } catch (e) {}
         }
-        async function wtToggleItemFavorite(name, favorite, icon, variant, askQty) {
+        async function wtToggleItemFavorite(name, favorite, icon, variant, askQty, source) {
             const v = variant || '';
+            const src = source || '';
             try {
-                await postToWartorn('item-favorites', { name, favorite, icon: icon || '', variant: v, askQty: !!askQty });
-                const matches = it => it.name === name && (it.variant || '') === v;
+                await postToWartorn('item-favorites', { name, favorite, icon: icon || '', variant: v, askQty: !!askQty, source: src });
+                const matches = it => it.name === name && (it.variant || '') === v && (it.source || '') === src;
                 wtItemFavorites = favorite
-                    ? wtItemFavorites.filter(it => !matches(it)).concat([{ name, icon: icon || '', variant: v, askQty: !!askQty }])
+                    ? wtItemFavorites.filter(it => !matches(it)).concat([{ name, icon: icon || '', variant: v, askQty: !!askQty, source: src }])
                     : wtItemFavorites.filter(it => !matches(it));
                 wtItemFavoritesFetchedAt = Date.now();
             } catch (e) {}
+        }
+        // Full-list overwrite for drag-reorder - sends the client's own
+        // already-correct array back as-is so the new order persists
+        // server-side (same user_preferences row, so it syncs across
+        // devices exactly like the favorites themselves already do).
+        async function wtSaveItemFavoritesOrder() {
+            try { await postToWartorn('item-favorites/reorder', { items: wtItemFavorites }); } catch (e) {}
         }
 
         // War Targets panel view mode - persisted via GM_setValue so the
@@ -7564,6 +7572,10 @@ setInterval(scanProfileFlightBar, 3000);
         // wtWaitAndClickConfirm) and, during ADD, to safely inspect what
         // an item offers without using it (see wtWaitForDialog - the add
         // flow always backs out via closeEl instead of confirming).
+        // source distinguishes a personal item (.use-act-wrap, Inventory)
+        // from a faction item (.use-cont.action-cont, Armory - data-fac="1"
+        // on its own .next-act confirms it's shared faction stock) - used
+        // so a favorite only ever shows up on the matching page.
         function wtReadOpenUseDialog() {
             const wraps = document.querySelectorAll('.use-act-wrap, .use-cont.action-cont');
             for (const wrap of wraps) {
@@ -7572,9 +7584,19 @@ setInterval(scanProfileFlightBar, 3000);
                 if (!nextActs.length) continue;
                 return {
                     options: nextActs.map(el => (el.textContent || '').trim()).filter(Boolean),
-                    closeEl: wrap.querySelector('.close-act, .wai-support')
+                    closeEl: wrap.querySelector('.close-act, .wai-support'),
+                    source: wrap.classList.contains('use-cont') ? 'armory' : 'inventory'
                 };
             }
+            return null;
+        }
+        // Items/Armory are two different real pages (item.php vs the
+        // Armory hash-tab under factions.php) - used to hide a favorite
+        // added on one from ever showing on the other, even though their
+        // "Use" trigger markup looks identical.
+        function wtCurrentItemPageType() {
+            if (/item\.php/.test(location.pathname)) return 'inventory';
+            if (/factions\.php/.test(location.pathname)) return 'armory';
             return null;
         }
         function wtWaitForDialog(maxTries) {
@@ -7682,7 +7704,7 @@ setInterval(scanProfileFlightBar, 3000);
         // etc, no variant) - just asks once whether this favorite should
         // prompt for a quantity every time it's used, rather than guessing
         // from the item's name which items are "stackable".
-        function wtShowAskQtyPicker(name, icon) {
+        function wtShowAskQtyPicker(name, icon, source) {
             const box = document.createElement('div');
             box.id = 'wt-item-hotbar-picker';
             box.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); bottom:46px; z-index:999991; background:#15171c; border:1px solid #2a2d34; border-radius:8px; padding:10px; box-shadow:0 4px 15px rgba(0,0,0,0.6); min-width:220px; text-align:center;';
@@ -7694,7 +7716,7 @@ setInterval(scanProfileFlightBar, 3000);
             document.body.appendChild(box);
             box.querySelectorAll('.wt-item-askqty-opt').forEach(btn => {
                 btn.addEventListener('click', async () => {
-                    await wtToggleItemFavorite(name, true, icon, '', btn.dataset.ask === '1');
+                    await wtToggleItemFavorite(name, true, icon, '', btn.dataset.ask === '1', source);
                     box.remove();
                     wtRenderItemHotbar();
                 });
@@ -7704,7 +7726,7 @@ setInterval(scanProfileFlightBar, 3000);
         // option becomes its own separate favorite (own variant), so you
         // can pin "Quick Game" and "Hardcore Game" side by side. Stays open
         // after each add so more than one can be picked without reopening.
-        function wtShowVariantPicker(name, icon, options) {
+        function wtShowVariantPicker(name, icon, options, source) {
             const box = document.createElement('div');
             box.id = 'wt-item-hotbar-picker';
             box.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); bottom:46px; z-index:999991; background:#15171c; border:1px solid #2a2d34; border-radius:8px; padding:8px; max-height:260px; overflow-y:auto; box-shadow:0 4px 15px rgba(0,0,0,0.6); min-width:220px;';
@@ -7717,7 +7739,7 @@ setInterval(scanProfileFlightBar, 3000);
                 row.addEventListener('click', async () => {
                     if (row.dataset.added === '1') return;
                     const opt = options[parseInt(row.dataset.idx, 10)];
-                    await wtToggleItemFavorite(name, true, icon, opt, false);
+                    await wtToggleItemFavorite(name, true, icon, opt, false, source);
                     row.dataset.added = '1';
                     row.style.background = '#1f3d24';
                     row.innerHTML = '✓ ' + wtChatEscapeHtml(opt);
@@ -7737,7 +7759,8 @@ setInterval(scanProfileFlightBar, 3000);
         async function wtShowItemHotbarAddPicker(useEls) {
             const existing = document.getElementById('wt-item-hotbar-picker');
             if (existing) { existing.remove(); return; }
-            const favKeys = new Set(wtItemFavorites.map(it => it.name + '|' + (it.variant || '')));
+            const pageType = wtCurrentItemPageType();
+            const favKeys = new Set(wtItemFavorites.filter(it => !pageType || !it.source || it.source === pageType).map(it => it.name + '|' + (it.variant || '')));
             const seen = new Set();
             const candidates = [];
             useEls.forEach(el => {
@@ -7754,7 +7777,7 @@ setInterval(scanProfileFlightBar, 3000);
             picker.id = 'wt-item-hotbar-picker';
             picker.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); bottom:46px; z-index:999991; background:#15171c; border:1px solid #2a2d34; border-radius:8px; padding:8px; max-height:220px; overflow-y:auto; box-shadow:0 4px 15px rgba(0,0,0,0.6); min-width:200px;';
             picker.innerHTML = candidates.length
-                ? candidates.map((c, i) => `<div class="wt-item-add-row" data-idx="${i}" style="display:flex; align-items:center; gap:6px; padding:5px 8px; font-size:12px; color:#ddd; cursor:pointer; border-radius:4px;">${c.icon ? `<img src="${wtChatEscapeHtml(c.icon)}" width="20" height="20" style="border-radius:3px;">` : ''}<span>${wtChatEscapeHtml(c.name)}</span></div>`).join('')
+                ? candidates.map((c, i) => `<div class="wt-item-add-row" data-idx="${i}" style="display:flex; align-items:center; gap:6px; padding:5px 8px; font-size:12px; color:#ddd; cursor:pointer; border-radius:4px;">${c.icon ? `<img src="${wtChatEscapeHtml(c.icon)}" style="height:20px; width:auto; max-width:48px; border-radius:3px;">` : ''}<span>${wtChatEscapeHtml(c.name)}</span></div>`).join('')
                 : '<div style="color:#888; font-size:12px; padding:4px;">No use-able items found on this page.</div>';
             document.body.appendChild(picker);
             picker.querySelectorAll('.wt-item-add-row').forEach(row => {
@@ -7770,8 +7793,8 @@ setInterval(scanProfileFlightBar, 3000);
                     if (dlg && dlg.closeEl) dlg.closeEl.click();
                     wtClosePicker();
                     if (!dlg) { showCompanionToast(`⚠️ Couldn't read options for "${c.name}"`); return; }
-                    if (dlg.options.length > 1) wtShowVariantPicker(c.name, c.icon, dlg.options);
-                    else wtShowAskQtyPicker(c.name, c.icon);
+                    if (dlg.options.length > 1) wtShowVariantPicker(c.name, c.icon, dlg.options, dlg.source);
+                    else wtShowAskQtyPicker(c.name, c.icon, dlg.source);
                 });
             });
             setTimeout(() => document.addEventListener('click', wtItemHotbarPickerOutsideClick), 0);
@@ -7795,8 +7818,9 @@ setInterval(scanProfileFlightBar, 3000);
         }
         function wtItemMonogramHtml(name, available) {
             const letter = (name.trim()[0] || '?').toUpperCase();
-            return `<span style="display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:4px; background:#333; color:${available ? '#fff' : '#777'}; font-size:14px; font-weight:bold;">${wtChatEscapeHtml(letter)}</span>`;
+            return `<span style="display:inline-flex; align-items:center; justify-content:center; width:44px; height:28px; border-radius:4px; background:#333; color:${available ? '#fff' : '#777'}; font-size:14px; font-weight:bold;">${wtChatEscapeHtml(letter)}</span>`;
         }
+        let wtDragFavIdx = null;
         function wtRenderItemHotbar() {
             // Never touch the bar while the add-picker/variant/qty-ask
             // popups are open - all separate top-level elements, but
@@ -7804,8 +7828,20 @@ setInterval(scanProfileFlightBar, 3000);
             // one's "not already favorited" list implicitly correct next
             // time it's opened.
             const useEls = wtFindUseElements();
+            const pageType = wtCurrentItemPageType();
+            // Items and Armory are two different real pages - a favorite
+            // only ever shows on the one it was added from (fav.source),
+            // never both, even though the underlying trigger markup is
+            // identical on either page. A favorite with no recorded source
+            // (added before this existed) shows nowhere until re-added,
+            // same as every earlier item-hotbar schema change this session.
+            const visible = [];
+            wtItemFavorites.forEach((fav, realIdx) => {
+                if (pageType && fav.source && fav.source !== pageType) return;
+                visible.push({ fav, realIdx });
+            });
             let bar = document.getElementById('wt-item-hotbar');
-            if (!useEls.length && !wtItemFavorites.length) {
+            if (!useEls.length && !visible.length) {
                 if (bar) bar.remove();
                 return;
             }
@@ -7815,13 +7851,17 @@ setInterval(scanProfileFlightBar, 3000);
             }
             wtPositionItemHotbar(bar);
             const foundNames = new Set(useEls.map(wtItemNameFromEl));
-            let html = wtItemFavorites.map((fav, idx) => {
+            let html = visible.map(({ fav, realIdx }) => {
                 const available = foundNames.has(fav.name);
+                // height-only sizing (no forced width) so a wide Torn item
+                // icon keeps its real aspect ratio instead of being
+                // squished into a square - matches how Torn itself shows
+                // these in the Inventory/Armory rows.
                 const icon = fav.icon
-                    ? `<img src="${wtChatEscapeHtml(fav.icon)}" width="32" height="32" style="border-radius:4px; ${available ? '' : 'opacity:0.4;'}">`
+                    ? `<img src="${wtChatEscapeHtml(fav.icon)}" style="height:28px; width:auto; max-width:60px; border-radius:4px; ${available ? '' : 'opacity:0.4;'}">`
                     : wtItemMonogramHtml(fav.name, available);
                 const label = fav.variant ? `${fav.name} — ${fav.variant}` : fav.name;
-                return `<span class="wt-item-fav-btn" data-idx="${idx}" title="${available ? 'Use ' + wtChatEscapeHtml(label) : wtChatEscapeHtml(label) + ' not available here'}" style="position:relative; display:inline-flex; align-items:center; justify-content:center; background:${available ? '#1f3d24' : '#2a2a2a'}; border:1px solid ${available ? '#4CAF50' : '#444'}; border-radius:6px; padding:4px; cursor:pointer;">${icon}<span class="wt-item-fav-remove" data-idx="${idx}" title="Remove from hotbar" style="position:absolute; top:-7px; right:-7px; width:15px; height:15px; line-height:15px; text-align:center; font-size:10px; background:#15171c; border:1px solid #444; border-radius:50%; opacity:0.8;">✕</span></span>`;
+                return `<span class="wt-item-fav-btn" draggable="true" data-idx="${realIdx}" title="${available ? 'Use ' + wtChatEscapeHtml(label) : wtChatEscapeHtml(label) + ' not available here'}" style="position:relative; display:inline-flex; align-items:center; justify-content:center; background:${available ? '#1f3d24' : '#2a2a2a'}; border:1px solid ${available ? '#4CAF50' : '#444'}; border-radius:6px; padding:4px; cursor:grab;">${icon}<span class="wt-item-fav-remove" data-idx="${realIdx}" title="Remove from hotbar" style="position:absolute; top:-7px; right:-7px; width:15px; height:15px; line-height:15px; text-align:center; font-size:10px; background:#15171c; border:1px solid #444; border-radius:50%; opacity:0.8;">✕</span></span>`;
             }).join('');
             html += `<span id="wt-item-hotbar-add" title="Add an item to the hotbar" style="display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:1px solid #444; border-radius:6px; color:#888; cursor:pointer; font-size:16px;">+</span>`;
             bar.innerHTML = html;
@@ -7830,10 +7870,30 @@ setInterval(scanProfileFlightBar, 3000);
                     e.stopPropagation();
                     const fav = wtItemFavorites[parseInt(el.dataset.idx, 10)];
                     if (!fav) return;
-                    wtToggleItemFavorite(fav.name, false, fav.icon, fav.variant).then(() => wtRenderItemHotbar());
+                    wtToggleItemFavorite(fav.name, false, fav.icon, fav.variant, fav.askQty, fav.source).then(() => wtRenderItemHotbar());
                 });
             });
+            // Click-and-drag reorder (native HTML5 DnD) - reorders the real
+            // underlying array (not just the filtered visible list, since
+            // data-idx is always the real index) and saves the new order
+            // server-side via wtSaveItemFavoritesOrder so it's the same on
+            // every device, not a local-only UI preference.
             bar.querySelectorAll('.wt-item-fav-btn').forEach(el => {
+                el.addEventListener('dragstart', (e) => {
+                    wtDragFavIdx = parseInt(el.dataset.idx, 10);
+                    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+                });
+                el.addEventListener('dragover', (e) => { e.preventDefault(); });
+                el.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    const targetIdx = parseInt(el.dataset.idx, 10);
+                    if (wtDragFavIdx === null || wtDragFavIdx === targetIdx) return;
+                    const moved = wtItemFavorites.splice(wtDragFavIdx, 1)[0];
+                    wtItemFavorites.splice(targetIdx, 0, moved);
+                    wtDragFavIdx = null;
+                    wtSaveItemFavoritesOrder();
+                    wtRenderItemHotbar();
+                });
                 el.addEventListener('click', (e) => {
                     if (e.target.classList.contains('wt-item-fav-remove')) return;
                     const fav = wtItemFavorites[parseInt(el.dataset.idx, 10)];
