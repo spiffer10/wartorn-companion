@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.10.5
+// @version      4.10.6
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.10.5';
+    const COMPANION_VERSION_FALLBACK = '4.10.6';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1684,6 +1684,12 @@
         let flightSoundEnabled = safeGmGet('wt_flight_sound', false);
         let chainSoundEnabled = safeGmGet('wt_chain_sound', false);
         let chainHitsSirenEnabled = safeGmGet('wt_chain_hits_siren', false);
+        // Set from the milestone panel's own data and from checkChainHitsActive's
+        // background check - whichever last saw real data - so both the open
+        // panel's refresh cadence and the background active-check can speed up
+        // together as a buildup gets close, without either depending on the
+        // other being the one actually fetching.
+        let lastMilestoneHitsRemaining = null;
         let chainWarnSecs = safeGmGet('wt_chain_warn_secs', 120);
         const CHAIN_WARN_SOUNDS = { beep: 'Beep', chime: 'Chime', pulse: 'Triple pulse', siren: 'Siren' };
         let chainWarnSound = safeGmGet('wt_chain_warn_sound', 'beep');
@@ -1969,14 +1975,29 @@
             // request (that's one shared cache slot per faction, not one
             // per viewer, so polling it this often costs nothing extra
             // against Torn's own rate limit no matter how many people have
-            // this panel open).
+            // this panel open). Milestone specifically speeds up further as
+            // the buildup gets close - hits can get called and claimed
+            // within a couple of seconds in the final few, where a flat 5s
+            // cadence meant looking at (and acting on) stale coordination
+            // state. Checked every 1s so the adaptive interval can actually
+            // take effect without waiting out a long-stale setInterval period.
+            let lastForceRefresh = 0;
             w.refreshTimer = setInterval(() => {
                 if (key !== 'war' && key !== 'milestone') return;
+                let intervalMs = 5000;
+                if (key === 'milestone' && typeof lastMilestoneHitsRemaining === 'number') {
+                    if (lastMilestoneHitsRemaining <= 2) intervalMs = 1000;
+                    else if (lastMilestoneHitsRemaining <= 5) intervalMs = 2000;
+                    else if (lastMilestoneHitsRemaining <= 10) intervalMs = 3000;
+                }
+                const now = Date.now();
+                if (now - lastForceRefresh < intervalMs) return;
+                lastForceRefresh = now;
                 delete panelCache[key];
                 forgetPersistedPanel(key);
                 if (key === 'war') delete panelCache.targetCalls;
                 PANEL_DEFS[key].render();
-            }, 5000);
+            }, 1000);
         }
 
         // Chain Targets filter settings - shared with the dashboard (same account
@@ -2567,9 +2588,11 @@ function targetRowHtml(t, estRespect) {
                 body.dataset.wtLoaded = '1';
                 if (!openWindows.has('milestone') || !document.getElementById('wt-panel-body-milestone')) return;
                 if (!data || !data.active) {
+                    lastMilestoneHitsRemaining = null;
                     document.getElementById('wt-panel-body-milestone').innerHTML = '<div style="color:#888;">No chain hit coordination active right now.</div>';
                     return;
                 }
+                lastMilestoneHitsRemaining = data.hitsRemaining;
 
                 let html = `<div style="color:#FF9800; font-weight:bold; margin-bottom:8px;">Chain Hit ${data.milestone} - ${data.hitsRemaining} hit${data.hitsRemaining === 1 ? '' : 's'} away</div>`;
                 data.hitNumbers.forEach(hit => {
@@ -2679,7 +2702,7 @@ function targetRowHtml(t, estRespect) {
                         </label>
                         <label style="display:flex; align-items:center; gap:8px; color:#ccc; font-size:0.85em; cursor:pointer;">
                             <input type="checkbox" id="wt-set-chainhitssiren" ${chainHitsSirenEnabled ? 'checked' : ''} style="cursor:pointer;">
-                            🚨 Chain Hits siren (whoop whoop)
+                            🔔 Chain Hits alert sound
                             <span id="wt-set-chainhitssiren-test" style="cursor:pointer; color:#00e5ff; font-size:0.85em; margin-left:auto; text-decoration:underline;">Test</span>
                         </label>
                     </div>
@@ -2773,7 +2796,7 @@ function targetRowHtml(t, estRespect) {
                 e.preventDefault();
                 e.stopPropagation();
                 unlockAudioContext();
-                playPoliceSiren();
+                playChainHitsChime();
             });
             // Same slide-out panel the Tampermonkey menu command and the
             // "Auto-link not working?" link use - previously the ONLY way
@@ -6225,6 +6248,37 @@ function targetRowHtml(t, estRespect) {
             } catch (e) {}
         }
 
+        // Chain Hits going active - this used to be playPoliceSiren(), repeated
+        // every 5s for the entire buildup window, which the user flagged as
+        // genuinely annoying (a near-2s wail, over and over, for as long as a
+        // milestone buildup runs). Replaced with a short, soft two-note upward
+        // "ping" instead - still its own clearly distinct sound, just something
+        // nobody needs to mute the tab over. playChainWarnSound's own 'siren'
+        // option (chain-timeout warnings) is untouched - that's a deliberate
+        // user choice from the dropdown, not this feature.
+        function playChainHitsChime() {
+            if (!sharedAudioCtx) return;
+            try {
+                const ctx = sharedAudioCtx;
+                const now = ctx.currentTime;
+                const ping = (startTime, freq) => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(freq, startTime);
+                    gain.gain.setValueAtTime(0, startTime);
+                    gain.gain.linearRampToValueAtTime(0.3, startTime + 0.02);
+                    gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.25);
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start(startTime);
+                    osc.stop(startTime + 0.28);
+                };
+                ping(now, 740);        // F#5
+                ping(now + 0.14, 988); // B5 - quick upward lift, done in under 0.4s
+            } catch (e) {}
+        }
+
         // The Custom Timer's alert sound. Can't embed the actual copyrighted
         // Final Fantasy moogle "Kupo!" clip this is named after, so this
         // synthesizes a stand-in with the same two-syllable feel: a short
@@ -7300,32 +7354,41 @@ setInterval(scanProfileFlightBar, 3000);
         // buildup is actually live (same "active" flag renderMilestonePanel
         // itself checks) - a completely separate, lightweight fetch so this
         // works even when nobody has that panel open to trigger its own
-        // poll. Rides its own 5s interval rather than piggybacking on
-        // checkLiveAlerts, since chain-calls has nothing to do with war-
-        // status and there's no reason to couple their failure/retry
-        // behavior together.
+        // poll. Self-schedules its own next check rather than a flat
+        // setInterval, so it speeds up the closer the buildup gets to the
+        // milestone - hits can get called and claimed within a couple of
+        // seconds in the final few, and a flat 5s cadence meant seeing (and
+        // acting on) data that was already stale by the time it rendered.
         async function checkChainHitsActive() {
-            const btn = document.querySelector('.wt-side-btn[data-key="milestone"]');
-            if (!btn) return;
+            let nextDelay = 5000;
             try {
-                const data = await fetchFromWartorn('chain-calls');
-                const isActive = !!(data && data.active);
-                btn.classList.toggle('wt-chain-active', isActive);
-                // Only shown while a coordination window is open (20 hits out from a milestone).
-                // 'grid', not '' - same reasoning as wtUpdateOcIssuesBadge:
-                // clearing it with '' falls back to a plain <div>'s default
-                // display:block, losing buildSideButton's place-items:center.
-                btn.style.display = isActive ? 'grid' : 'none';
-                if (!isActive && openWindows.has('milestone')) closePanelWindow('milestone');
-                // Repeats on this same 5s cadence for as long as it stays
-                // active - same "keep alerting while the condition holds"
-                // pattern as the chain-timeout warning beep above, not a
-                // one-shot ping that's easy to miss if you're not looking
-                // right when it first goes active.
-                if (isActive && chainHitsSirenEnabled) playPoliceSiren();
+                const btn = document.querySelector('.wt-side-btn[data-key="milestone"]');
+                if (btn) {
+                    const data = await fetchFromWartorn('chain-calls');
+                    const isActive = !!(data && data.active);
+                    btn.classList.toggle('wt-chain-active', isActive);
+                    // Only shown while a coordination window is open (20 hits out from a milestone).
+                    // 'grid', not '' - same reasoning as wtUpdateOcIssuesBadge:
+                    // clearing it with '' falls back to a plain <div>'s default
+                    // display:block, losing buildSideButton's place-items:center.
+                    btn.style.display = isActive ? 'grid' : 'none';
+                    if (!isActive && openWindows.has('milestone')) closePanelWindow('milestone');
+                    // Repeats on this same cadence for as long as it stays
+                    // active - same "keep alerting while the condition holds"
+                    // pattern as the chain-timeout warning beep above, not a
+                    // one-shot ping that's easy to miss if you're not looking
+                    // right when it first goes active.
+                    if (isActive && chainHitsSirenEnabled) playChainHitsChime();
+                    lastMilestoneHitsRemaining = isActive ? data.hitsRemaining : null;
+                    if (isActive && typeof data.hitsRemaining === 'number') {
+                        if (data.hitsRemaining <= 2) nextDelay = 1000;
+                        else if (data.hitsRemaining <= 5) nextDelay = 2000;
+                        else if (data.hitsRemaining <= 10) nextDelay = 3000;
+                    }
+                }
             } catch (e) {}
+            setTimeout(checkChainHitsActive, nextDelay);
         }
-        setInterval(checkChainHitsActive, 5000);
         checkChainHitsActive();
 
         function tickLocalAlertClocks() {
