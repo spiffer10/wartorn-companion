@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.10.8
+// @version      4.10.9
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.10.8';
+    const COMPANION_VERSION_FALLBACK = '4.10.9';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1438,6 +1438,23 @@
         // network latency.
         let serverClockOffsetMs = 0;
         function nowServerMs() { return Date.now() + serverClockOffsetMs; }
+        // data.user_cooldowns.server_time is only ever non-zero while the
+        // backend's companion-self-status skip path happens to be active for
+        // THIS user (see backend/server.js's currentWarHandler) - the rest of
+        // the time it reads as a flat 0 (Torn's /user endpoint never actually
+        // returns this field), silently leaving serverClockOffsetMs
+        // uncorrected. Every one of this file's own clock-offset call sites
+        // used to read user_cooldowns.server_time alone for that reason -
+        // confirmed live (2026-10-25) as a real cause of "timer not matching
+        // Torn" that a page reload couldn't fix on its own, since the next
+        // poll just read the same always-zero field again. data.chain.
+        // server_time (from the same response) is reliably fresh - same
+        // defensive Math.max() the dashboard (index.html) already does.
+        function wfBestServerTimeSecs(data) {
+            const a = (data && data.user_cooldowns && data.user_cooldowns.server_time) || 0;
+            const b = (data && data.chain && data.chain.server_time) || 0;
+            return Math.max(a, b);
+        }
         // War Targets' chain display re-renders every 1s (startWindowTick),
         // but getPanelData('war', ...) caches its response for 20s -
         // formatDuration(data.chain.timeout) on the raw cached value looked
@@ -1501,15 +1518,17 @@
             if (persisted) {
                 // The server clock offset is worked out from the fetch time, so a
                 // stored snapshot gives it the same way, using when it was fetched.
-                if (cacheKey === 'war' && persisted.data.user_cooldowns && persisted.data.user_cooldowns.server_time) {
-                    serverClockOffsetMs = (persisted.data.user_cooldowns.server_time * 1000) - persisted.ts;
+                if (cacheKey === 'war') {
+                    const st = wfBestServerTimeSecs(persisted.data);
+                    if (st) serverClockOffsetMs = (st * 1000) - persisted.ts;
                 }
                 panelCache[cacheKey] = persisted;
                 return persisted.data;
             }
             const data = await fetchFromWartorn(endpoint, timeoutMs);
-            if (cacheKey === 'war' && data && data.user_cooldowns && data.user_cooldowns.server_time) {
-                serverClockOffsetMs = (data.user_cooldowns.server_time * 1000) - Date.now();
+            if (cacheKey === 'war') {
+                const st = wfBestServerTimeSecs(data);
+                if (st) serverClockOffsetMs = (st * 1000) - Date.now();
             }
             panelCache[cacheKey] = { data, ts: Date.now() };
             writePersistedPanel(cacheKey, panelCache[cacheKey]);
@@ -7289,8 +7308,9 @@ setInterval(scanProfileFlightBar, 3000);
                     updateLogoDangerState(null, null);
                     return;
                 }
-                if (data.user_cooldowns && data.user_cooldowns.server_time) {
-                    serverClockOffsetMs = (data.user_cooldowns.server_time * 1000) - Date.now();
+                const wfSt = wfBestServerTimeSecs(data);
+                if (wfSt) {
+                    serverClockOffsetMs = (wfSt * 1000) - Date.now();
                 }
 
                 const me = (data.us || []).find(m => String(m.id) === String(data.current_user_id));
