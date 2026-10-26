@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.16.1
+// @version      4.16.2
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.16.1';
+    const COMPANION_VERSION_FALLBACK = '4.16.2';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -6481,13 +6481,10 @@ function targetRowHtml(t, estRespect) {
             // tracked regardless of whether the sound alert itself is on.
             // The sound's own on/off check stays separate, right where it
             // actually plays.
-            if (!userApiKey) { travelLandAtMs = null; travelDestination = null; updateFlightWidgetForTravel(); return; }
+            if (!userApiKey) { travelLandAtMs = null; travelDestination = null; wtIsFlying = false; updateFlightWidgetForTravel(); wtRenderItemHotbar(); return; }
             const travel = await fetchTornTravel();
             const stillTraveling = !!(travel && typeof travel.time_left === 'number' && travel.time_left > 0);
-            if (stillTraveling !== wtIsFlying) {
-                wtIsFlying = stillTraveling;
-                wtRenderItemHotbar();
-            }
+            wtIsFlying = stillTraveling;
             // travel.destination is populated both mid-flight and while
             // genuinely Abroad in a foreign country - but it ALSO reads
             // "Torn" for a return trip (mid-flight back) and once you've
@@ -6521,7 +6518,13 @@ function targetRowHtml(t, estRespect) {
             if (!stillTraveling) {
                 travelLandAtMs = null;
                 travelDestination = null;
+                // Resolved BEFORE the re-render below, so landing abroad
+                // (stillTraveling flips true->false here) hides the item
+                // hotbar on the travel page immediately instead of briefly
+                // flashing it while wtIsFlying is already false but this
+                // hadn't been set yet.
                 currentAbroadDestination = isHomeDest ? null : rawDest;
+                wtRenderItemHotbar();
                 return;
             }
 
@@ -6532,9 +6535,11 @@ function targetRowHtml(t, estRespect) {
                 travelLandAtMs = null;
                 travelDestination = null;
                 currentAbroadDestination = null;
+                wtRenderItemHotbar();
                 return;
             }
             currentAbroadDestination = null; // still airborne, not abroad yet
+            wtRenderItemHotbar();
             if (travelLandAtMs === null && travel.time_left < MIN_FRESH_TRAVEL_SECS) return;
             travelDestination = rawDest || null;
             const candidateLandAtMs = Date.now() + travel.time_left * 1000;
@@ -7928,7 +7933,15 @@ setInterval(scanProfileFlightBar, 3000);
         }
         let wtDragFavIdx = null;
         function wtRenderItemHotbar() {
-            if (wtItemHotbarMode === 'hide' || wtIsFlying) {
+            // The Travel Agency page (sid=travel) is where flying AND
+            // abroad both live - wtIsFlying alone only catches the airborne
+            // half, so once landed abroad (stillTraveling goes false) the
+            // bar could reappear there even though you're still not "in
+            // Torn". Only on this one page, also hide for abroad - nowhere
+            // else needs that since being abroad doesn't block real item
+            // use the way flying does.
+            const onTravelPage = /sid=travel/.test(window.location.href);
+            if (wtItemHotbarMode === 'hide' || wtIsFlying || (onTravelPage && !!currentAbroadDestination)) {
                 const existingBar = document.getElementById('wt-item-hotbar');
                 if (existingBar) existingBar.remove();
                 return;
