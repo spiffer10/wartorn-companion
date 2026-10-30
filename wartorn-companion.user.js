@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.16.2
+// @version      4.17.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.16.2';
+    const COMPANION_VERSION_FALLBACK = '4.17.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -936,6 +936,29 @@
         return rows;
     }
 
+    // Price column, same dual-strategy as findShopRows() above (a
+    // data-tt-content-type attribute first, falling back to a plain
+    // sr-only-label text match when that's missing - e.g. inside TornPDA's
+    // webview). "cost"/"price" are a best-effort guess at Torn's actual
+    // attribute/label name, following the same convention "stock" already
+    // confirmed live - unverified against a real page as of 2026-10-29,
+    // so this fails safe: if neither matches, the row just has no cost and
+    // scrapeItemMarket() below skips it for new-item discovery exactly like
+    // before this existed, never breaking the existing quantity-only scrape.
+    function findRowCost(row) {
+        const attrCell = row.querySelector('[data-tt-content-type="cost"]') || row.querySelector('[data-tt-content-type="price"]');
+        let text = attrCell ? attrCell.textContent : null;
+        if (!text) {
+            const label = Array.from(row.querySelectorAll('span')).find(el =>
+                el.children.length === 0 && ['cost', 'price'].includes(el.textContent.replace(/ /g, ' ').trim().toLowerCase())
+            );
+            text = label && label.parentElement ? label.parentElement.textContent : null;
+        }
+        if (!text) return null;
+        const match = text.replace(/,/g, '').match(/\d+/);
+        return match ? parseInt(match[0], 10) : null;
+    }
+
     let lastMarketSignature = '';
     function scrapeItemMarket(shopRows) {
         const countryName = document.body && document.body.dataset && document.body.dataset.country;
@@ -962,7 +985,11 @@
             // easy to get subtly wrong.
             const qtyMatch = stockText.replace(/,/g, '').match(/\d+/);
             if (!qtyMatch) return;
-            items.push({ id: id, quantity: parseInt(qtyMatch[0], 10) });
+            // Cost is only needed for an item the server has never seen
+            // before in this country (see POST /api/companion/market's new-
+            // item branch) - sent whenever found, harmless/unused otherwise.
+            const cost = findRowCost(row);
+            items.push({ id: id, quantity: parseInt(qtyMatch[0], 10), cost: cost });
         });
 
         if (items.length === 0) return;
