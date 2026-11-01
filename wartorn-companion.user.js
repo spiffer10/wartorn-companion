@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.20.0
-// @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
+// @version      4.21.0
+// @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows a bundled multi-item trip (or the most profitable item to grab on landing/abroad) with a full browsable list behind it, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
 // @match        https://wartorn.spiffer10.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.20.0';
+    const COMPANION_VERSION_FALLBACK = '4.21.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3750,6 +3750,10 @@ function targetRowHtml(t, estRespect) {
             war: { icon: '⚔️', title: 'War Targets', render: renderWarTargetsPanel, ticking: true },
             targets: { icon: '⛓️', title: 'Chain Targets', render: renderTargetsPanel, ticking: true },
             milestone: { icon: '🔥', title: 'Chain Hits', render: renderMilestonePanel, ticking: true },
+            // The browsable list the flight widget's one-card view can't
+            // show - see the FLIGHTS PANEL block below (near
+            // createFlightWidget) for renderFlightsPanel itself.
+            flights: { icon: '✈️', title: 'Flights', render: renderFlightsPanel, ticking: false },
             vendetta: { icon: '🔪', title: 'Vendettas', render: renderVendettaPanel, ticking: false },
             chat: { icon: '💬', title: 'Faction Chat', render: renderChatPanel, ticking: false },
             // Not ticking: the setup form (label/h/m/s inputs) would get
@@ -3772,18 +3776,20 @@ function targetRowHtml(t, estRespect) {
         // --- FLIGHT WIDGET ---
         // Shows either a target pushed from the dashboard's Time-On-Target
         // scheduler (see wtSendFlightToCompanion in the DASHBOARD HANDSHAKE
-        // block, and sendScheduleToCompanion in flight-planner.js) or one
-        // auto-picked here from /api/public/top-roi-items - a plane icon
-        // when idle, a flag + item image + live countdown when something's
-        // active. Not a togglable PANEL_DEFS entry (there's no window to
-        // open, just a status readout), so it's inserted directly into the
-        // button stack instead - see the 'settings' check in the
-        // Object.keys(PANEL_DEFS) loop below.
+        // block, and sendScheduleToCompanion in flight-planner.js) or a
+        // bundled trip auto-picked here from /api/public/top-flight-bundles -
+        // a plane icon when idle, a flag + trip summary + live countdown
+        // when something's active. Not a togglable PANEL_DEFS entry (there's
+        // no window to open, just a status readout), so it's inserted
+        // directly into the button stack instead - see the 'settings' check
+        // in the Object.keys(PANEL_DEFS) loop below. The separate 'flights'
+        // PANEL_DEFS entry further down is the browsable LIST this widget's
+        // single card can't show - see renderFlightsPanel.
         //
         // Small local copies of flight-planner.js's own flagMap/
         // flightTimesStd (keyed by YATA code, not full country name, to
-        // match what top-roi-items already returns) - duplicated rather
-        // than shared since that file doesn't run on torn.com at all.
+        // match what top-flight-bundles already returns) - duplicated
+        // rather than shared since that file doesn't run on torn.com at all.
         // flagcdn.com images looked right in a normal browser from the
         // start, so that stays the default there. TornPDA's webview is the
         // one place that doesn't reliably load images from a third-party
@@ -3866,7 +3872,18 @@ function targetRowHtml(t, estRespect) {
                 : '';
             const flagBadgeHtml = `<span id="wt-flight-flag-badge" style="font-size:0.62em; font-weight:bold; letter-spacing:0.5px; background:#252525; border:1px solid #444; color:#00e5ff; border-radius:3px; padding:2px 4px; flex-shrink:0; ${showFlagImg ? 'display:none;' : ''}">${(code || '??').toUpperCase()}</span>`;
             const flagHtml = flagImgHtml + flagBadgeHtml;
-            const itemImgHtml = target.itemId ? `<img src="https://www.torn.com/images/items/${target.itemId}/medium.png" draggable="false" style="width:28px; height:28px; object-fit:contain; flex-shrink:0;">` : '<span style="font-size:1.1em;">✈️</span>';
+            // 'auto' targets are now a whole BUNDLED trip (items: [...]),
+            // not one itemId/itemName/profit - everything else (dashboard
+            // push, flight-detected, abroad) is still single-item and
+            // unchanged. Shown as "N items" + total profit here; the full
+            // per-item breakdown lives in the Flights panel's list view.
+            const isBundle = target.source === 'auto' && Array.isArray(target.items);
+            const bundleItemCount = isBundle ? target.items.length : 0;
+            const itemImgHtml = isBundle
+                ? `<span style="font-size:1.1em;">🧳</span>`
+                : (target.itemId ? `<img src="https://www.torn.com/images/items/${target.itemId}/medium.png" draggable="false" style="width:28px; height:28px; object-fit:contain; flex-shrink:0;">` : '<span style="font-size:1.1em;">✈️</span>');
+            const itemLabelText = isBundle ? `${bundleItemCount} item${bundleItemCount === 1 ? '' : 's'}` : (target.itemName || 'Item');
+            const profitValue = isBundle ? target.totalProfit : target.profit;
             // A flight-detected target means you're already in the air -
             // there's no "time until launch" left to show, what matters
             // now is time until LANDING. Every other source (dashboard
@@ -3897,8 +3914,8 @@ function targetRowHtml(t, estRespect) {
                 : isInFlight
                     ? { text: showExpected ? `Land: ~${target.expectedQty}` : `Stock: ${target.stockQty ?? '?'}`, color: '#00e5ff' }
                     : formatFlightCountdown(remainingMs);
-            const profitHtml = (target.profit != null)
-                ? `<div style="font-size:0.72em; color:#4CAF50; font-weight:bold;">+$${Math.round(target.profit).toLocaleString()} est.</div>`
+            const profitHtml = (profitValue != null)
+                ? `<div style="font-size:0.72em; color:#4CAF50; font-weight:bold;">+$${Math.round(profitValue).toLocaleString()} est.</div>`
                 : '';
             // Cycling picks from the cross-country ranking, which makes
             // no sense once you're already committed to one destination
@@ -3918,7 +3935,7 @@ function targetRowHtml(t, estRespect) {
                 </div>
                 <div style="display:flex; align-items:center; gap:6px;">
                     ${itemImgHtml}
-                    <span style="font-size:0.8em; color:#ddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${target.itemName || 'Item'}</span>
+                    <span style="font-size:0.8em; color:#ddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${itemLabelText}</span>
                 </div>
                 ${profitHtml}
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
@@ -3933,6 +3950,8 @@ function targetRowHtml(t, estRespect) {
                 ? (target.itemName || 'Flight target') + (target.available ? ' - in stock: ' + (target.stockQty ?? '?') : ' - restocks in ' + (abroadRestockMs != null ? formatRestockIn(abroadRestockMs) : 'unknown')) + '. Click to try another item.'
                 : isInFlight
                 ? (target.itemName || 'Flight target') + ' - stock: ' + (target.stockQty ?? '?') + (target.expectedQty != null ? `, ~${target.expectedQty} expected on landing` : '') + '. Click to try another item.'
+                : isBundle
+                ? target.items.map(i => `${i.itemName} x${i.qty}${i.direction === 'sell' ? ' (sell)' : ''}`).join(', ') + ' - launch ' + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '. Click to try another trip.'
                 : (target.itemName || 'Flight target') + ' - launch ' + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '. Click to hide.';
             // Recreated every render (innerHTML replaces it each tick), so
             // this has to be rewired every time rather than once at
@@ -4010,6 +4029,7 @@ function targetRowHtml(t, estRespect) {
                 ts: Date.now()
             });
             renderFlightWidget();
+            wtRefreshFlightsPanelIfOpen();
         }
         // Shared by the close (x) button and onFlightWidgetClick's
         // no-other-candidates fallback - remembers the dismissal so it
@@ -4158,44 +4178,54 @@ function targetRowHtml(t, estRespect) {
 
         // Cached briefly rather than re-fetched on every idle click - the
         // ranking itself only changes as often as restocks do, not every
-        // second.
+        // second. Each candidate is now a whole BUNDLED trip (1+ items,
+        // buy- or sell-abroad, ranked using this player's real Flight
+        // Planner settings) rather than a single item on generic defaults -
+        // see /api/public/top-flight-bundles (backend/server.js).
         let flightAutoCandidates = null;
         let flightAutoCandidatesFetchedAt = 0;
         function applyAutoFlightCandidate() {
             if (!flightAutoCandidates || !flightAutoCandidates.length) return;
             const idx = safeGmGet('wt_flight_cycle_index', 0) % flightAutoCandidates.length;
-            const c = flightAutoCandidates[idx];
+            const b = flightAutoCandidates[idx];
             safeGmSet('wt_flight_cycle_index', (idx + 1) % flightAutoCandidates.length);
-            const oneWayMins = Math.round((FLIGHT_MINS_MAP[c.code] || 0) * 0.7);
             safeGmSet('wt_active_flight_target', {
-                source: 'auto', code: c.code, itemId: c.itemId, itemName: c.itemName, profit: c.roi || null,
-                launchMs: c.restockMs - oneWayMins * 60000, landMs: c.restockMs, ts: Date.now()
+                source: 'auto', code: b.code, items: b.items, totalProfit: b.totalProfit,
+                launchMs: b.launchMs, landMs: b.landMs, ts: Date.now()
             });
             renderFlightWidget();
+            wtRefreshFlightsPanelIfOpen();
         }
-        // Shared by the idle-click auto-pick and the expanded card's "+"
-        // cycle button - fetches a fresh ranking only if the cached one is
-        // stale/missing, otherwise just advances to the next candidate in
-        // whatever's already cached.
-        function cycleFlightCandidate() {
+        // Populates flightAutoCandidates WITHOUT touching the active
+        // floating-widget target - shared by cycleFlightCandidate below
+        // (which does then apply one) and the Flights panel's own list
+        // view (which only wants to BROWSE candidates, not silently change
+        // what the widget is currently showing just by being opened).
+        function ensureFlightAutoCandidates(onDone) {
             const useCache = flightAutoCandidates && (Date.now() - flightAutoCandidatesFetchedAt) < 10 * 60 * 1000;
-            if (useCache) { applyAutoFlightCandidate(); return; }
+            if (useCache) { if (onDone) onDone(); return; }
             GM_xmlhttpRequest({
                 method: 'GET',
-                url: `${WARTORN_HOST}/api/public/top-roi-items`,
+                url: `${WARTORN_HOST}/api/public/top-flight-bundles`,
                 headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
                 timeout: 8000,
                 onload: (res) => {
                     if (res.status === 401) { wtHandleUnauthorized(); return; }
                     let data = null;
                     try { data = JSON.parse(res.responseText); } catch (e) {}
-                    flightAutoCandidates = (data && data.items) || [];
+                    flightAutoCandidates = (data && data.bundles) || [];
                     flightAutoCandidatesFetchedAt = Date.now();
-                    applyAutoFlightCandidate();
+                    if (onDone) onDone();
                 },
-                onerror: () => {},
-                ontimeout: () => {}
+                onerror: () => { if (onDone) onDone(); },
+                ontimeout: () => { if (onDone) onDone(); }
             });
+        }
+        // Shared by the idle-click auto-pick and the expanded card's "+"
+        // cycle button - ensures a (possibly cached) ranking is loaded,
+        // then advances to the next candidate in it.
+        function cycleFlightCandidate() {
+            ensureFlightAutoCandidates(() => applyAutoFlightCandidate());
         }
         // What the flight button shows depends only on where you are right now:
         // recommendations while in Torn or flying home, predicted landing stock
@@ -4260,6 +4290,100 @@ function targetRowHtml(t, estRespect) {
             if (!flightWidgetTickTimer) flightWidgetTickTimer = setInterval(renderFlightWidget, 1000);
             renderFlightWidget();
             return el;
+        }
+
+        // --- FLIGHTS PANEL: the browsable list the widget's one card can't
+        // show. Mirrors whichever mode the widget itself is in
+        // (flightStateMode) rather than keeping its own separate state -
+        // recommend shows the full top-flight-bundles ranking, predicted/
+        // abroad show the same flightDetectCandidates array the widget's
+        // own "+" button already cycles through one at a time. Opening this
+        // panel never silently changes what the widget is showing in
+        // recommend mode (ensureFlightAutoCandidates only fetches, never
+        // applies) - but in predicted/abroad mode it CAN trigger the same
+        // on-demand fetch a direct click on the widget would, since nothing
+        // auto-fetches those otherwise (see the "button never auto-
+        // populates" note on checkTravelStatus above) and there'd otherwise
+        // be nothing here to show at all.
+        function wtRefreshFlightsPanelIfOpen() {
+            if (openWindows.has('flights')) renderFlightsPanel();
+        }
+        function wtFlightRowFlagHtml(code) {
+            const showImg = !isTornPDA() && FLIGHT_FLAG_ISO[code];
+            return showImg
+                ? `<img src="https://flagcdn.com/w40/${FLIGHT_FLAG_ISO[code]}.png" draggable="false" style="width:18px; border-radius:2px; flex-shrink:0;" onerror="this.style.display='none';">`
+                : `<span style="font-size:0.65em; font-weight:bold; background:#252525; border:1px solid #444; color:#00e5ff; border-radius:3px; padding:1px 4px; flex-shrink:0;">${(code || '??').toUpperCase()}</span>`;
+        }
+        async function renderFlightsPanel() {
+            const body = document.getElementById('wt-panel-body-flights');
+            if (!body) return;
+            const mode = flightStateMode();
+            if (mode === 'recommend') {
+                body.innerHTML = '<div style="text-align:center; color:#888; padding:20px;">Loading trips...</div>';
+                ensureFlightAutoCandidates(() => renderFlightsBundleList());
+                return;
+            }
+            // predicted/abroad - trigger the same on-demand fetch a direct
+            // widget click would if nothing's loaded for this trip/stop yet.
+            if (!flightDetectCandidates.length) {
+                body.innerHTML = '<div style="text-align:center; color:#888; padding:20px;">Loading live stock...</div>';
+                if (mode === 'predicted') updateFlightWidgetForTravel();
+                else fetchAbroadStockNow(currentAbroadDestination);
+                return;
+            }
+            renderFlightsDetectList(mode);
+        }
+        function renderFlightsBundleList() {
+            const body = document.getElementById('wt-panel-body-flights');
+            if (!body) return;
+            if (!flightAutoCandidates || !flightAutoCandidates.length) {
+                body.innerHTML = '<div style="text-align:center; color:#888; padding:20px;">No profitable trips found right now.</div>';
+                return;
+            }
+            body.innerHTML = flightAutoCandidates.map((b, idx) => {
+                const chipsHtml = b.items.map(i =>
+                    `<span style="display:inline-flex; align-items:center; gap:3px; background:#1a1c21; border:1px solid #333; border-radius:3px; padding:2px 5px; font-size:0.78em; color:#ccc; margin:2px 3px 0 0;">
+                        ${i.direction === 'sell' ? '<span style="color:#FF9800;" title="Sell abroad">🔄</span>' : ''}${i.itemName} ×${i.qty}
+                    </span>`
+                ).join('');
+                return `<div class="wt-flight-bundle-row" data-idx="${idx}" style="background:#1a1c21; border:1px solid #333; border-radius:6px; padding:8px; margin-bottom:8px; cursor:pointer;">
+                    <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
+                        <div style="display:flex; align-items:center; gap:6px;">${wtFlightRowFlagHtml(b.code)}<span style="color:#ddd; font-weight:bold;">${b.countryName}</span></div>
+                        <span style="color:#4CAF50; font-weight:bold;">+$${Math.round(b.totalProfit).toLocaleString()}</span>
+                    </div>
+                    <div style="display:flex; flex-wrap:wrap; margin-top:4px;">${chipsHtml}</div>
+                </div>`;
+            }).join('');
+            body.querySelectorAll('.wt-flight-bundle-row').forEach(row => {
+                row.addEventListener('click', () => {
+                    safeGmSet('wt_flight_cycle_index', parseInt(row.dataset.idx, 10));
+                    applyAutoFlightCandidate();
+                });
+            });
+        }
+        function renderFlightsDetectList(mode) {
+            const body = document.getElementById('wt-panel-body-flights');
+            if (!body) return;
+            body.innerHTML = flightDetectCandidates.map((c, idx) => {
+                const stockLine = c.available
+                    ? `<span style="color:#00e5ff;">Stock: ${c.quantity ?? '?'}</span>`
+                    : `<span style="color:#FF9800;">${c.restockAt ? 'Restock: ' + formatRestockIn(c.restockAt - Date.now()) : 'Sold out'}</span>`;
+                return `<div class="wt-flight-detect-row" data-idx="${idx}" style="display:flex; align-items:center; justify-content:space-between; gap:8px; background:#1a1c21; border:1px solid #333; border-radius:6px; padding:8px; margin-bottom:6px; cursor:pointer;">
+                    <div style="display:flex; align-items:center; gap:8px; overflow:hidden;">
+                        <img src="https://www.torn.com/images/items/${c.itemId}/medium.png" draggable="false" style="width:24px; height:24px; object-fit:contain; flex-shrink:0;">
+                        <span style="color:#ddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${c.itemName}</span>
+                    </div>
+                    <div style="display:flex; flex-direction:column; align-items:flex-end; flex-shrink:0; font-size:0.85em;">
+                        ${c.roi != null ? `<span style="color:#4CAF50; font-weight:bold;">+$${Math.round(c.roi).toLocaleString()}</span>` : ''}
+                        ${stockLine}
+                    </div>
+                </div>`;
+            }).join('');
+            body.querySelectorAll('.wt-flight-detect-row').forEach(row => {
+                row.addEventListener('click', () => {
+                    applyFlightDetectCandidate(parseInt(row.dataset.idx, 10), mode === 'predicted' ? 'flight-detected' : 'abroad');
+                });
+            });
         }
 
         // Shared by refreshButtonHighlights and the per-button hover
