@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.21.0
-// @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows a bundled multi-item trip (or the most profitable item to grab on landing/abroad) with a full browsable list behind it, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
+// @version      4.22.0
+// @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
 // @match        https://wartorn.spiffer10.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.21.0';
+    const COMPANION_VERSION_FALLBACK = '4.22.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -198,9 +198,9 @@
         // Scheduler's "Send to Companion" button (sendScheduleToCompanion
         // in flight-planner.js) calls this directly - it's a plain page
         // script with no GM_* access of its own, so this is the only way
-        // it can reach shared GM storage. See renderFlightWidget/
-        // onFlightWidgetClick further down for the torn.com side that
-        // reads wt_active_flight_target back out.
+        // it can reach shared GM storage. See renderFlightSelectedCard
+        // further down for the torn.com side that reads
+        // wt_active_flight_target back out.
         //
         // flight-planner.js's countryRaw is the full lowercase country
         // name ("mexico"), not the short YATA code ("mex") the torn.com
@@ -210,8 +210,8 @@
         // silently misses for every dashboard-pushed target (auto-picked
         // ones already come back from the backend as short codes, so they
         // were never affected). Kept local to this branch rather than
-        // reusing FLIGHT_MINS_MAP's sibling maps further down, since this
-        // whole block returns before that code ever runs on this domain.
+        // reusing a sibling map further down, since this whole block
+        // returns before that code ever runs on this domain.
         const FLIGHT_NAME_TO_CODE = { mexico: 'mex', cayman: 'cay', canada: 'can', hawaii: 'haw', 'united kingdom': 'uni', argentina: 'arg', switzerland: 'swi', japan: 'jap', china: 'chi', uae: 'uae', 'south africa': 'sou' };
         unsafeWindow.wtSendFlightToCompanion = function(target) {
             const rawCountry = String(target.countryRaw || '').toLowerCase();
@@ -257,7 +257,7 @@
         (document.head || document.documentElement).appendChild(style);
     }
     // TornPDA's attack page is the whole screen - the companion's own UI (edge
-    // buttons, flight widget, panels) just gets in the way there. Hidden by
+    // buttons, panels) just gets in the way there. Hidden by
     // stylesheet rather than skipped, so it's back as soon as you navigate away.
     if (/sid=attack/.test(window.location.href) && isTornPDA()) {
         const hideCompanion = document.createElement('style');
@@ -1913,12 +1913,15 @@
                 w.el.style.background = `rgba(21,23,28,${opacitySetting})`;
                 w.el.style.fontSize = fontSizeSetting + 'px';
             });
-            // Not part of openWindows (it's a status widget, not a
-            // togglable panel), and it rebuilds its own style.cssText from
-            // scratch on every 1s tick anyway (see renderFlightWidget) -
-            // this just makes a font-size change land immediately instead
-            // of waiting up to a second for the next tick to pick it up.
-            if (typeof renderFlightWidget === 'function') renderFlightWidget();
+            // The flight card isn't part of openWindows (it lives inside
+            // the Flights panel's own body, not a panel itself), and it
+            // rebuilds its own style.cssText from scratch on every 1s tick
+            // anyway (see renderFlightSelectedCard) - this just makes a
+            // font-size change land immediately instead of waiting up to a
+            // second for the next tick to pick it up. A no-op if the
+            // Flights panel isn't currently open (getFlightSelectedCardEl
+            // returns null, the function exits immediately).
+            if (typeof renderFlightSelectedCard === 'function') renderFlightSelectedCard();
         }
 
         function openAttackPopup(id) {
@@ -3750,9 +3753,9 @@ function targetRowHtml(t, estRespect) {
             war: { icon: '⚔️', title: 'War Targets', render: renderWarTargetsPanel, ticking: true },
             targets: { icon: '⛓️', title: 'Chain Targets', render: renderTargetsPanel, ticking: true },
             milestone: { icon: '🔥', title: 'Chain Hits', render: renderMilestonePanel, ticking: true },
-            // The browsable list the flight widget's one-card view can't
-            // show - see the FLIGHTS PANEL block below (near
-            // createFlightWidget) for renderFlightsPanel itself.
+            // A browsable list of bundled trips, with whichever one is
+            // currently selected pinned as a card at the bottom - see the
+            // FLIGHTS PANEL block below for renderFlightsPanel itself.
             flights: { icon: '✈️', title: 'Flights', render: renderFlightsPanel, ticking: false },
             vendetta: { icon: '🔪', title: 'Vendettas', render: renderVendettaPanel, ticking: false },
             chat: { icon: '💬', title: 'Faction Chat', render: renderChatPanel, ticking: false },
@@ -3767,24 +3770,22 @@ function targetRowHtml(t, estRespect) {
             // already-cached wtOcCrimesCache (refreshed every 90s by the
             // shared OC poll), nothing to redraw every second. Placed last
             // (PANEL_DEFS order drives the button stack order) so it lands
-            // right below the flight widget, which is itself inserted right
-            // before 'settings' - see the key === 'settings' check below.
+            // right before 'settings' - see the key === 'settings' check below.
             ocIssues: { icon: '💰', title: 'OC Issues', render: renderOcIssuesPanel, ticking: false },
             settings: { icon: '⚙️', title: 'Settings', render: renderSettingsPanel, ticking: false }
         };
 
-        // --- FLIGHT WIDGET ---
-        // Shows either a target pushed from the dashboard's Time-On-Target
+        // --- FLIGHT SELECTED-TARGET CARD ---
+        // Shows whichever target is currently active - a bundled trip
+        // auto-picked from /api/public/top-flight-bundles, a live in-flight/
+        // abroad pick, or one pushed from the dashboard's Time-On-Target
         // scheduler (see wtSendFlightToCompanion in the DASHBOARD HANDSHAKE
-        // block, and sendScheduleToCompanion in flight-planner.js) or a
-        // bundled trip auto-picked here from /api/public/top-flight-bundles -
-        // a plane icon when idle, a flag + trip summary + live countdown
-        // when something's active. Not a togglable PANEL_DEFS entry (there's
-        // no window to open, just a status readout), so it's inserted
-        // directly into the button stack instead - see the 'settings' check
-        // in the Object.keys(PANEL_DEFS) loop below. The separate 'flights'
-        // PANEL_DEFS entry further down is the browsable LIST this widget's
-        // single card can't show - see renderFlightsPanel.
+        // block) - as a small card pinned to the bottom of the Flights
+        // panel (renderFlightsPanel, below), under its browsable list.
+        // Originally its own always-visible floating widget sitting
+        // alongside a separate "Flights" list button - combined into one
+        // single panel per explicit request, since having both was two
+        // buttons for what's really one feature.
         //
         // Small local copies of flight-planner.js's own flagMap/
         // flightTimesStd (keyed by YATA code, not full country name, to
@@ -3797,17 +3798,14 @@ function targetRowHtml(t, estRespect) {
         // skips the image there entirely rather than let it fail, falling
         // straight to the plain code-badge below. The badge also backs up
         // the image in a normal browser too (see the onerror wiring in
-        // renderFlightWidget) in case flagcdn.com itself is unreachable
+        // renderFlightSelectedCard) in case flagcdn.com itself is unreachable
         // there for some unrelated reason (blocked, offline, etc).
         const FLIGHT_FLAG_ISO = { mex: 'mx', cay: 'ky', can: 'ca', haw: 'us-hi', uni: 'gb', arg: 'ar', swi: 'ch', jap: 'jp', chi: 'cn', uae: 'ae', sou: 'za' };
-        const FLIGHT_MINS_MAP = { mex: 24, cay: 33, can: 39, haw: 127, uni: 151, arg: 158, swi: 166, jap: 213, chi: 229, uae: 257, sou: 282 };
         // Same names/spellings as flight-planner.js's own yataMap, so the
-        // widget's country label matches what the dashboard already shows.
+        // card's country label matches what the dashboard already shows.
         const FLIGHT_COUNTRY_NAMES = { mex: 'Mexico', cay: 'Cayman', can: 'Canada', haw: 'Hawaii', uni: 'United Kingdom', arg: 'Argentina', swi: 'Switzerland', jap: 'Japan', chi: 'China', uae: 'UAE', sou: 'South Africa' };
 
-        const FLIGHT_WIDGET_BASE_CSS = 'display:flex; flex-direction:column; justify-content:center; gap:5px; background:rgba(21,23,28,0.92); border:1px solid #3a3f4b; border-radius:8px; cursor:pointer; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.88; box-sizing:border-box; user-select:none; position:relative; pointer-events:auto;';
-
-        function getFlightWidgetEl() { return document.getElementById('wt-flight-widget'); }
+        function getFlightSelectedCardEl() { return document.getElementById('wt-flight-selected-card'); }
 
         // On TornPDA a tap can end after the element it started on was rebuilt by a
         // periodic render, which silently drops the click. Renders that replace
@@ -3842,22 +3840,19 @@ function targetRowHtml(t, estRespect) {
             const m = totalMins % 60;
             return h > 0 ? `${h}h ${m}m` : `${m}m`;
         }
-        function renderFlightWidget() {
-            if (wtPressActive) { setTimeout(renderFlightWidget, 120); return; }
-            const el = getFlightWidgetEl();
+        function renderFlightSelectedCard() {
+            const el = getFlightSelectedCardEl();
+            // Null whenever the Flights panel isn't open - the dedicated
+            // tick that calls this (started in renderFlightsPanel, stored
+            // on the window's own tickTimer slot) is already stopped by
+            // closePanelWindow the moment the panel closes, so this is
+            // just a quiet no-op for any stray call that slips in between.
             if (!el) return;
+            if (wtPressActive) { setTimeout(renderFlightSelectedCard, 120); return; }
             const target = safeGmGet('wt_active_flight_target', null);
             if (!target) {
-                // Matches the other side buttons' actual rendered
-                // footprint. They're sized via width/height:34px with no
-                // box-sizing override, so their default content-box model
-                // renders 36px total once the 1px border is added on each
-                // side - explicit border-box here (see
-                // FLIGHT_WIDGET_BASE_CSS) means this has to ask for 36px
-                // directly to end up the same visible size, not 34px.
-                el.style.cssText = FLIGHT_WIDGET_BASE_CSS + `align-items:center; width:36px; height:36px; padding:0; font-size:${fontSizeSetting}px;`;
-                el.innerHTML = '<span style="font-size:1.1em;">✈️</span>';
-                el.title = 'Click to auto-pick a high-ROI flight target';
+                el.innerHTML = '<div style="text-align:center; color:#888; padding:10px 4px; font-size:0.85em;">Nothing selected yet - pick a trip above.</div>';
+                el.title = '';
                 return;
             }
             // Dashboard-pushed targets write `code`; auto-picked ones used
@@ -3923,19 +3918,18 @@ function targetRowHtml(t, estRespect) {
             // action that would just replace it with an unrelated country.
             const cycleBtnHtml = isInFlight ? '' : `<button id="wt-flight-cycle-btn" title="Try a different item" style="width:20px; height:20px; line-height:1; padding:0; flex-shrink:0; background:#252525; border:1px solid #444; color:#00e5ff; border-radius:4px; font-size:0.95em; font-weight:bold; cursor:pointer;">+</button>`;
             // Clicking anywhere else on an in-flight target now cycles
-            // items instead of dismissing (see onFlightWidgetClick) - this
-            // is the only way left to close the widget mid-flight.
-            const closeBtnHtml = `<span id="wt-flight-close-btn" title="Hide" style="position:absolute; top:0; right:0; width:28px; height:28px; display:flex; align-items:center; justify-content:center; font-size:1.2em; line-height:1; color:#999; cursor:pointer; z-index:1;">&times;</span>`;
-            el.style.cssText = FLIGHT_WIDGET_BASE_CSS + `align-items:stretch; width:180px; padding:8px 10px; font-size:${fontSizeSetting}px;`;
+            // items instead of dismissing - the only way left to close the
+            // card mid-flight.
+            const closeBtnHtml = `<span id="wt-flight-close-btn" title="Hide" style="width:20px; height:20px; display:flex; align-items:center; justify-content:center; font-size:1.1em; line-height:1; color:#999; cursor:pointer; flex-shrink:0;">&times;</span>`;
+            el.style.cssText = 'display:flex; flex-direction:column; gap:5px; background:#1a1c21; border:1px solid #333; border-radius:6px; padding:8px 10px;';
             el.innerHTML = `
-                ${closeBtnHtml}
-                <div style="display:flex; align-items:center; gap:6px;">
-                    ${flagHtml}
-                    <span style="font-size:0.8em; color:#ddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${countryName}</span>
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
+                    <div style="display:flex; align-items:center; gap:6px; overflow:hidden;">${flagHtml}<span style="font-size:0.85em; color:#ddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${countryName}</span></div>
+                    ${closeBtnHtml}
                 </div>
                 <div style="display:flex; align-items:center; gap:6px;">
                     ${itemImgHtml}
-                    <span style="font-size:0.8em; color:#ddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${itemLabelText}</span>
+                    <span style="font-size:0.85em; color:#ddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${itemLabelText}</span>
                 </div>
                 ${profitHtml}
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
@@ -3947,17 +3941,14 @@ function targetRowHtml(t, estRespect) {
                 </div>
             `;
             el.title = isAbroadView
-                ? (target.itemName || 'Flight target') + (target.available ? ' - in stock: ' + (target.stockQty ?? '?') : ' - restocks in ' + (abroadRestockMs != null ? formatRestockIn(abroadRestockMs) : 'unknown')) + '. Click to try another item.'
+                ? (target.itemName || 'Flight target') + (target.available ? ' - in stock: ' + (target.stockQty ?? '?') : ' - restocks in ' + (abroadRestockMs != null ? formatRestockIn(abroadRestockMs) : 'unknown')) + '. Click + to try another item.'
                 : isInFlight
-                ? (target.itemName || 'Flight target') + ' - stock: ' + (target.stockQty ?? '?') + (target.expectedQty != null ? `, ~${target.expectedQty} expected on landing` : '') + '. Click to try another item.'
+                ? (target.itemName || 'Flight target') + ' - stock: ' + (target.stockQty ?? '?') + (target.expectedQty != null ? `, ~${target.expectedQty} expected on landing` : '') + '. Click + to try another item.'
                 : isBundle
-                ? target.items.map(i => `${i.itemName} x${i.qty}${i.direction === 'sell' ? ' (sell)' : ''}`).join(', ') + ' - launch ' + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '. Click to try another trip.'
-                : (target.itemName || 'Flight target') + ' - launch ' + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '. Click to hide.';
+                ? target.items.map(i => `${i.itemName} x${i.qty}${i.direction === 'sell' ? ' (sell)' : ''}`).join(', ') + ' - launch ' + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '.'
+                : (target.itemName || 'Flight target') + ' - launch ' + (remainingMs <= 0 ? 'now' : 'in ' + countdownText) + '.';
             // Recreated every render (innerHTML replaces it each tick), so
-            // this has to be rewired every time rather than once at
-            // creation - stopPropagation keeps the click from also
-            // bubbling up to el's own listener, which would otherwise
-            // immediately dismiss the target this button just set.
+            // this has to be rewired every time rather than once at creation.
             const flagImgEl = document.getElementById('wt-flight-flag-img');
             if (flagImgEl) {
                 flagImgEl.addEventListener('error', () => {
@@ -4028,16 +4019,16 @@ function targetRowHtml(t, estRespect) {
                 landMs: travelLandAtMs,
                 ts: Date.now()
             });
-            renderFlightWidget();
+            renderFlightSelectedCard();
             wtRefreshFlightsPanelIfOpen();
         }
-        // Shared by the close (x) button and onFlightWidgetClick's
-        // no-other-candidates fallback - remembers the dismissal so it
-        // doesn't just pop back on the next travel poll for this same trip.
+        // Called by the card's close (x) button - remembers the dismissal
+        // so it doesn't just pop back on the next travel poll for this
+        // same trip.
         function dismissFlightDetectedTarget() {
             dismissedFlightDetectLandAtMs = travelLandAtMs;
             safeGmSet('wt_active_flight_target', null);
-            renderFlightWidget();
+            renderFlightSelectedCard();
         }
         function updateFlightWidgetForTravel() {
             const current = safeGmGet('wt_active_flight_target', null);
@@ -4048,7 +4039,7 @@ function targetRowHtml(t, estRespect) {
                 // they always have.
                 if (current && current.source === 'flight-detected') {
                     safeGmSet('wt_active_flight_target', null);
-                    renderFlightWidget();
+                    renderFlightSelectedCard();
                 }
                 flightDetectFetchedForLandAtMs = null;
                 dismissedFlightDetectLandAtMs = null;
@@ -4125,7 +4116,7 @@ function targetRowHtml(t, estRespect) {
                         // Nothing catchable here any more - clear rather
                         // than keep showing a stale/wrong quantity.
                         safeGmSet('wt_active_flight_target', null);
-                        renderFlightWidget();
+                        renderFlightSelectedCard();
                         return;
                     }
                     const stillShowing = safeGmGet('wt_active_flight_target', null);
@@ -4140,9 +4131,10 @@ function targetRowHtml(t, estRespect) {
 
         // Set by checkTravelStatus whenever you're genuinely standing in a
         // foreign country (not traveling, destination isn't home) - lets
-        // onFlightWidgetClick know there's an abroad-style lookup to run
-        // on demand. Nothing here fetches or shows anything by itself;
-        // the button only ever activates on a real click now, even while
+        // the Flights panel and the card's own "+" button know there's an
+        // abroad-style lookup to run on demand. Nothing here fetches or
+        // shows anything by itself; it only activates on a real click or
+        // panel open now, even while
         // flying or freshly landed (see fetchAbroadStockNow below).
         let currentAbroadDestination = null;
         let abroadFetchRequestInFlight = false;
@@ -4162,7 +4154,7 @@ function targetRowHtml(t, estRespect) {
                     if (!data || !data.code) return;
                     if (!data.items || !data.items.length) {
                         safeGmSet('wt_active_flight_target', null);
-                        renderFlightWidget();
+                        renderFlightSelectedCard();
                         return;
                     }
                     flightDetectCode = data.code;
@@ -4193,7 +4185,7 @@ function targetRowHtml(t, estRespect) {
                 source: 'auto', code: b.code, items: b.items, totalProfit: b.totalProfit,
                 launchMs: b.launchMs, landMs: b.landMs, ts: Date.now()
             });
-            renderFlightWidget();
+            renderFlightSelectedCard();
             wtRefreshFlightsPanelIfOpen();
         }
         // Populates flightAutoCandidates WITHOUT touching the active
@@ -4235,35 +4227,10 @@ function targetRowHtml(t, estRespect) {
             if (currentAbroadDestination) return 'abroad';
             return 'recommend';
         }
-        const FLIGHT_MODE_BY_SOURCE = { 'flight-detected': 'predicted', 'abroad': 'abroad', 'auto': 'recommend' };
-        function openFlightMode(mode) {
-            if (mode === 'predicted') {
-                dismissedFlightDetectLandAtMs = null;
-                flightDetectFetchedForLandAtMs = null;
-                updateFlightWidgetForTravel();
-            } else if (mode === 'abroad') {
-                fetchAbroadStockNow(currentAbroadDestination);
-            } else {
-                cycleFlightCandidate();
-            }
-        }
-        // Clicking the view that's already showing cycles its items; clicking
-        // while a different view is showing switches to the one for where you
-        // are now. A dashboard push is the one exception - a click just dismisses it.
-        function onFlightWidgetClick() {
-            const current = safeGmGet('wt_active_flight_target', null);
-            if (current && current.source === 'dashboard') {
-                safeGmSet('wt_active_flight_target', null);
-                renderFlightWidget();
-                return;
-            }
-            const desired = flightStateMode();
-            if (current && FLIGHT_MODE_BY_SOURCE[current.source] === desired) {
-                cycleCurrentFlightView();
-                return;
-            }
-            openFlightMode(desired);
-        }
+        // Shared by the card's own "+" cycle button and the panel's list
+        // rows below. In predicted/abroad mode this just steps to the next
+        // already-fetched candidate for the current trip/stop; otherwise
+        // it's the cross-country recommend-mode cycle.
         function cycleCurrentFlightView() {
             const current = safeGmGet('wt_active_flight_target', null);
             if (current && (current.source === 'flight-detected' || current.source === 'abroad')) {
@@ -4274,39 +4241,34 @@ function targetRowHtml(t, estRespect) {
             }
             cycleFlightCandidate();
         }
-        let flightWidgetTickTimer = null;
-        function createFlightWidget() {
-            const el = document.createElement('div');
-            el.id = 'wt-flight-widget';
-            // Actual sizing/layout is fully owned by renderFlightWidget()
-            // (called immediately below) since idle vs active states need
-            // very different dimensions - this is just the bare element.
-            el.addEventListener('mouseenter', () => { el.style.opacity = '1'; });
-            el.addEventListener('mouseleave', () => { el.style.opacity = '0.88'; });
-            el.addEventListener('click', onFlightWidgetClick);
-            // One shared tick regardless of how many times this gets
-            // (re)created - a fresh Torn page load only ever creates this
-            // once anyway, but guards against a future double-init.
-            if (!flightWidgetTickTimer) flightWidgetTickTimer = setInterval(renderFlightWidget, 1000);
-            renderFlightWidget();
-            return el;
-        }
 
-        // --- FLIGHTS PANEL: the browsable list the widget's one card can't
-        // show. Mirrors whichever mode the widget itself is in
-        // (flightStateMode) rather than keeping its own separate state -
-        // recommend shows the full top-flight-bundles ranking, predicted/
-        // abroad show the same flightDetectCandidates array the widget's
-        // own "+" button already cycles through one at a time. Opening this
-        // panel never silently changes what the widget is showing in
-        // recommend mode (ensureFlightAutoCandidates only fetches, never
-        // applies) - but in predicted/abroad mode it CAN trigger the same
-        // on-demand fetch a direct click on the widget would, since nothing
-        // auto-fetches those otherwise (see the "button never auto-
-        // populates" note on checkTravelStatus above) and there'd otherwise
-        // be nothing here to show at all.
+        // --- FLIGHTS PANEL: a browsable list of trips, with whichever one
+        // is currently selected pinned as a card at the bottom (see
+        // renderFlightSelectedCard, above). Mirrors whichever mode
+        // flightStateMode() reports right now - recommend shows the full
+        // top-flight-bundles ranking, predicted/abroad show the same
+        // flightDetectCandidates array the selected card's own "+" button
+        // already cycles through one at a time. Opening this panel never
+        // silently changes the selection in recommend mode
+        // (ensureFlightAutoCandidates only fetches, never applies) - but in
+        // predicted/abroad mode it CAN trigger the same on-demand fetch a
+        // direct "+" click would, since nothing auto-fetches those
+        // otherwise (see the "button never auto-populates" note on
+        // checkTravelStatus above) and there'd otherwise be nothing here
+        // to show at all.
+        //
+        // Only the selected card at the bottom (renderFlightSelectedCard)
+        // gets its own dedicated 1s tick (started below, stored on this
+        // window's own tickTimer slot so closePanelWindow's existing
+        // stopWindowTick cleans it up automatically) - the list above it
+        // is deliberately NOT part of PANEL_DEFS's generic ticking
+        // (ticking:false), since re-running this whole function every
+        // second would re-fetch/redraw the full list just to keep a
+        // countdown moving.
         function wtRefreshFlightsPanelIfOpen() {
-            if (openWindows.has('flights')) renderFlightsPanel();
+            // Only the selection changed, not the underlying list - redraw
+            // just the card, not the whole panel.
+            if (openWindows.has('flights')) renderFlightSelectedCard();
         }
         function wtFlightRowFlagHtml(code) {
             const showImg = !isTornPDA() && FLIGHT_FLAG_ISO[code];
@@ -4317,16 +4279,26 @@ function targetRowHtml(t, estRespect) {
         async function renderFlightsPanel() {
             const body = document.getElementById('wt-panel-body-flights');
             if (!body) return;
+            body.innerHTML = `
+                <div id="wt-flight-list-container"><div style="text-align:center; color:#888; padding:20px;">Loading...</div></div>
+                <div style="margin-top:10px; padding-top:8px; border-top:1px solid #333;">
+                    <div style="font-size:0.7em; color:#888; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:5px;">Currently Selected</div>
+                    <div id="wt-flight-selected-card"></div>
+                </div>
+            `;
+            renderFlightSelectedCard();
+            const w = openWindows.get('flights');
+            if (w && !w.tickTimer) w.tickTimer = setInterval(renderFlightSelectedCard, 1000);
             const mode = flightStateMode();
             if (mode === 'recommend') {
-                body.innerHTML = '<div style="text-align:center; color:#888; padding:20px;">Loading trips...</div>';
                 ensureFlightAutoCandidates(() => renderFlightsBundleList());
                 return;
             }
             // predicted/abroad - trigger the same on-demand fetch a direct
-            // widget click would if nothing's loaded for this trip/stop yet.
+            // "+" click would if nothing's loaded for this trip/stop yet.
             if (!flightDetectCandidates.length) {
-                body.innerHTML = '<div style="text-align:center; color:#888; padding:20px;">Loading live stock...</div>';
+                const listEl = document.getElementById('wt-flight-list-container');
+                if (listEl) listEl.innerHTML = '<div style="text-align:center; color:#888; padding:20px;">Loading live stock...</div>';
                 if (mode === 'predicted') updateFlightWidgetForTravel();
                 else fetchAbroadStockNow(currentAbroadDestination);
                 return;
@@ -4334,7 +4306,7 @@ function targetRowHtml(t, estRespect) {
             renderFlightsDetectList(mode);
         }
         function renderFlightsBundleList() {
-            const body = document.getElementById('wt-panel-body-flights');
+            const body = document.getElementById('wt-flight-list-container');
             if (!body) return;
             if (!flightAutoCandidates || !flightAutoCandidates.length) {
                 body.innerHTML = '<div style="text-align:center; color:#888; padding:20px;">No profitable trips found right now.</div>';
@@ -4362,7 +4334,7 @@ function targetRowHtml(t, estRespect) {
             });
         }
         function renderFlightsDetectList(mode) {
-            const body = document.getElementById('wt-panel-body-flights');
+            const body = document.getElementById('wt-flight-list-container');
             if (!body) return;
             body.innerHTML = flightDetectCandidates.map((c, idx) => {
                 const stockLine = c.available
@@ -4860,21 +4832,18 @@ function targetRowHtml(t, estRespect) {
                 return btn;
             }
             Object.keys(PANEL_DEFS).forEach(key => {
-                // ocIssues is placed manually right after the flight widget
-                // below instead of here, so it lands directly below Flights
-                // regardless of where it sits in PANEL_DEFS itself.
+                // ocIssues is placed manually right before Settings below
+                // instead of here, so it lands there regardless of where
+                // it sits in PANEL_DEFS itself.
                 if (key === 'ocIssues') return;
                 // chat is pulled out of the left-edge stack entirely and
                 // anchored to Torn's own native chat tab row instead - see
                 // wtPositionChatButton below. Built and placed separately,
                 // right after this loop.
                 if (key === 'chat') return;
-                // Not a togglable panel - a live status widget - so it's
-                // inserted here rather than added to PANEL_DEFS, right
-                // before Settings specifically (an explicit ask, and
-                // 'settings' is guaranteed to be PANEL_DEFS' last key).
+                // 'settings' is guaranteed to be PANEL_DEFS' last key - an
+                // explicit ask puts ocIssues right before it.
                 if (key === 'settings') {
-                    wrap.appendChild(createFlightWidget());
                     wrap.appendChild(buildSideButton('ocIssues'));
                 }
                 wrap.appendChild(buildSideButton(key));
@@ -6748,21 +6717,22 @@ function targetRowHtml(t, estRespect) {
                 const shownView = safeGmGet('wt_active_flight_target', null);
                 if (shownView && shownView.source === 'abroad') {
                     safeGmSet('wt_active_flight_target', null);
-                    renderFlightWidget();
+                    renderFlightSelectedCard();
                 }
             }
 
-            // The button never auto-populates any more, in flight or not -
-            // every branch below only tracks STATE (what onFlightWidgetClick
-            // should look up if and when it's actually clicked). Nothing
-            // here calls updateFlightWidgetForTravel/fetchAbroadStockNow -
-            // doing that on every poll would immediately clear out
-            // whatever the user just clicked to see (travelLandAtMs is
-            // null in every branch below, so updateFlightWidgetForTravel's
-            // own clear-path would fire right away). A stale flight-
-            // detected pick from before a state change like this is left
-            // for the user to dismiss (the x button) or cycle past
-            // themselves, same as it already was mid-flight.
+            // This poll never auto-populates the selected card any more,
+            // in flight or not - every branch below only tracks STATE
+            // (what the Flights panel/"+" button should look up if and
+            // when it's actually opened or clicked). Nothing here calls
+            // updateFlightWidgetForTravel/fetchAbroadStockNow - doing that
+            // on every poll would immediately clear out whatever the user
+            // just picked to see (travelLandAtMs is null in every branch
+            // below, so updateFlightWidgetForTravel's own clear-path would
+            // fire right away). A stale flight-detected pick from before a
+            // state change like this is left for the user to dismiss (the
+            // x button) or cycle past themselves, same as it already was
+            // mid-flight.
             if (!stillTraveling) {
                 travelLandAtMs = null;
                 travelDestination = null;
@@ -6798,10 +6768,11 @@ function targetRowHtml(t, estRespect) {
                 travelLandAtMs = candidateLandAtMs;
             }
             // No updateFlightWidgetForTravel() call here - that's the
-            // button's auto-fetch-and-show path. Mid-flight state (for the
+            // on-demand auto-fetch-and-show path (the card's "+" button,
+            // or opening the Flights panel). Mid-flight state (for the
             // countdown/landing chime above) is still tracked either way;
-            // onFlightWidgetClick reads travelLandAtMs/travelDestination
-            // directly to run this same lookup on demand instead.
+            // that path reads travelLandAtMs/travelDestination directly
+            // to run this same lookup on demand instead.
         }
         // Once travelLandAtMs is locked in, the countdown itself ticks down
         // locally every second in tickLocalAlertClocks() below at zero API
