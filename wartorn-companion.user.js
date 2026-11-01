@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.19.0
+// @version      4.20.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.19.0';
+    const COMPANION_VERSION_FALLBACK = '4.20.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3107,6 +3107,34 @@ function targetRowHtml(t, estRespect) {
         // button straight from this panel. No attack-log side here (there's
         // no room for it in a 280px panel, and the dashboard already has
         // it) - this is the status-tracking half only.
+        // Compact tracked-factions chip row + unread-alert line - the small
+        // part of the dashboard's Stakeouts UI that fits a 280px panel.
+        // Tapping a chip loads it into the roster view below (same
+        // setVendettaFactionIdCompanion the input bar already uses). Full
+        // threshold editing stays on the dashboard - no room for 5 inline
+        // controls here.
+        async function stakeoutChipsAndAlertsHtml() {
+            let chipsHtml = '';
+            let alertsLineHtml = '';
+            try {
+                const data = await getPanelData('vendettaStakeouts', 'vendettas/stakeouts');
+                const stakeouts = (data && data.stakeouts) || [];
+                if (stakeouts.length) {
+                    chipsHtml = `<div style="display:flex; gap:4px; flex-wrap:wrap; margin-bottom:6px;">${stakeouts.map(s =>
+                        `<span class="wt-vendetta-stakeout-chip" data-fid="${s.target_faction_id}" style="background:#252525; border:1px solid #444; color:#ccc; padding:2px 8px; border-radius:10px; font-size:0.75em; cursor:pointer;">${s.faction_name || ('Faction ' + s.target_faction_id)}</span>`
+                    ).join('')}</div>`;
+                }
+            } catch (e) {}
+            try {
+                const alertData = await getPanelData('vendettaStakeoutAlertsUnread', 'vendettas/stakeout-alerts/unread-count');
+                const unread = (alertData && alertData.unread) || 0;
+                if (unread > 0) {
+                    alertsLineHtml = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; color:#E91E63; font-size:0.8em;"><span>🔔 ${unread} new alert${unread > 1 ? 's' : ''}</span><span id="wt-vendetta-stakeout-mark-read" style="cursor:pointer; text-decoration:underline; color:#888;">mark read</span></div>`;
+                }
+            } catch (e) {}
+            return chipsHtml + alertsLineHtml;
+        }
+
         async function renderVendettaFactionBody(body) {
             await refreshVendettaFactionId();
             const factionId = companionVendettaFactionId.id;
@@ -3115,7 +3143,8 @@ function targetRowHtml(t, estRespect) {
                 <span id="wt-vendetta-faction-track-btn" style="background:#E91E63; color:#fff; padding:0 10px; border-radius:4px; font-size:0.85em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; white-space:nowrap;">Track</span>
                 ${factionId ? `<span id="wt-vendetta-faction-clear-btn" title="Clear" style="background:#252525; border:1px solid #444; color:#ccc; padding:0 10px; border-radius:4px; font-size:0.85em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center;">✕</span>` : ''}
             </div>`;
-            const header = vendettaToggleBarHtml() + inputBarHtml;
+            const stakeoutExtrasHtml = await stakeoutChipsAndAlertsHtml();
+            const header = vendettaToggleBarHtml() + stakeoutExtrasHtml + inputBarHtml;
             const wireHeader = () => {
                 wireVendettaToggleBar(body);
                 const trackBtn = document.getElementById('wt-vendetta-faction-track-btn');
@@ -3124,11 +3153,26 @@ function targetRowHtml(t, estRespect) {
                     const match = input && String(input.value || '').match(/\d+/);
                     if (!match) return;
                     setVendettaFactionIdCompanion(match[0]);
+                    postToWartorn('vendettas/stakeouts', { target_faction_id: match[0] }).then(() => {
+                        delete panelCache.vendettaStakeouts;
+                        renderVendettaPanel();
+                    }).catch(() => {});
                 });
                 const inputEl = document.getElementById('wt-vendetta-faction-input');
                 if (inputEl) inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') document.getElementById('wt-vendetta-faction-track-btn').click(); });
                 const clearBtn = document.getElementById('wt-vendetta-faction-clear-btn');
                 if (clearBtn) clearBtn.addEventListener('click', () => setVendettaFactionIdCompanion(null));
+                body.querySelectorAll('.wt-vendetta-stakeout-chip').forEach(chip => {
+                    chip.addEventListener('click', () => setVendettaFactionIdCompanion(chip.dataset.fid));
+                });
+                const markReadEl = document.getElementById('wt-vendetta-stakeout-mark-read');
+                if (markReadEl) markReadEl.addEventListener('click', () => {
+                    postToWartorn('vendettas/stakeout-alerts/mark-read', {}).then(() => {
+                        delete panelCache.vendettaStakeoutAlertsUnread;
+                        pollStakeoutAlerts();
+                        renderVendettaPanel();
+                    }).catch(() => {});
+                });
             };
 
             if (!factionId) {
@@ -3260,6 +3304,8 @@ function targetRowHtml(t, estRespect) {
         // casual faction chat; it just isn't real-time the way the
         // dashboard's own chat bubble is.
         const CHAT_POLL_MS = 20000;
+        // Informational, not a conversation - a lighter cadence than chat's.
+        const VENDETTA_STAKEOUT_ALERT_POLL_MS = 60000;
         // Tracked by ts (a real millisecond timestamp), NOT id - chat moved
         // onto MySQL with id now a server-generated UUID (so two
         // independently-writable databases can never collide one - see
@@ -3358,6 +3404,23 @@ function targetRowHtml(t, estRespect) {
                 badge.textContent = count > 99 ? '99+' : String(count);
             }
             refreshButtonHighlights();
+        }
+        // Vendettas' side-button (🔪) covers both Targets and the Stakeouts
+        // list, not chat - a pending alert gets the same dataset.unread
+        // boolean-only treatment as OC Issues (wtUpdateOcIssuesBadge), not
+        // chat's numeric badge, since there's no single "message count"
+        // concept here, just "something's pending."
+        function wtVendettaSetButtonUnread(hasUnread) {
+            const btn = document.querySelector('.wt-side-btn[data-key="vendetta"]');
+            if (!btn) return;
+            btn.dataset.unread = hasUnread ? '1' : '0';
+            refreshButtonHighlights();
+        }
+        async function pollStakeoutAlerts() {
+            try {
+                const data = await fetchFromWartorn('vendettas/stakeout-alerts/unread-count');
+                wtVendettaSetButtonUnread((data && data.unread) > 0);
+            } catch (e) {}
         }
         // Handles both the panel's first render (full list + input,
         // fetched fresh) and every later poll while it stays open
@@ -4825,6 +4888,11 @@ function targetRowHtml(t, estRespect) {
             // yet. One immediate check on load, then every CHAT_POLL_MS.
             pollChat();
             setInterval(pollChat, CHAT_POLL_MS);
+
+            // Same "regardless of whether the panel is open" treatment as
+            // chat's unread check above, just lighter-weight.
+            pollStakeoutAlerts();
+            setInterval(pollStakeoutAlerts, VENDETTA_STAKEOUT_ALERT_POLL_MS);
 
             // --- Radio: Tesseract (tesseract.on-air.fm) ---
             // Slides open the same way every other panel does (registered
