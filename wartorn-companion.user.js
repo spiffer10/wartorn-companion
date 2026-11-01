@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.23.0
+// @version      4.24.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.23.0';
+    const COMPANION_VERSION_FALLBACK = '4.24.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4399,9 +4399,12 @@ function targetRowHtml(t, estRespect) {
                         ${i.direction === 'sell' ? '<span style="color:#FF9800;" title="Sell abroad">🔄</span>' : ''}${i.itemName} ×${i.qty}
                     </span>`
                 ).join('');
+                const nowBadge = b.isCatchableNow
+                    ? `<span style="color:#4CAF50; font-size:0.68em; font-weight:bold; text-transform:uppercase;">Now</span>`
+                    : `<span style="color:#FF9800; font-size:0.68em;" title="Best option requires waiting on a predicted restock">Wait</span>`;
                 return `<div class="wt-flight-bundle-row" data-idx="${idx}" style="background:#1a1c21; border:1px solid #333; border-radius:6px; padding:8px; margin-bottom:8px; cursor:pointer;">
                     <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
-                        <div style="display:flex; align-items:center; gap:6px;">${wtFlightRowFlagHtml(b.code)}<span style="color:#ddd; font-weight:bold;">${b.countryName}</span></div>
+                        <div style="display:flex; align-items:center; gap:6px;">${wtFlightRowFlagHtml(b.code)}<span style="color:#ddd; font-weight:bold;">${b.countryName}</span>${nowBadge}</div>
                         <span style="color:#4CAF50; font-weight:bold;">+$${Math.round(b.totalProfit).toLocaleString()}</span>
                     </div>
                     <div style="display:flex; flex-wrap:wrap; margin-top:4px;">${chipsHtml}</div>
