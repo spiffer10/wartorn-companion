@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.24.0
+// @version      4.25.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.24.0';
+    const COMPANION_VERSION_FALLBACK = '4.25.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -522,15 +522,22 @@
                 url: `${WARTORN_HOST}/api/public/companion-version?_=${Date.now()}`,
                 timeout: 8000,
                 onload: (res) => {
-                    let latest = null;
-                    try { latest = JSON.parse(res.responseText).version; } catch (e) {}
+                    let latest = null, notifyEnabled = true;
+                    try {
+                        const parsed = JSON.parse(res.responseText);
+                        latest = parsed.version;
+                        notifyEnabled = parsed.notifyEnabled !== false;
+                    } catch (e) {}
                     if (!latest) {
                         if (verbose) showDiagnosticToast(`⚠️ <b>Update check failed</b><br><span style="color:#aaa;">Got HTTP ${res.status} but couldn't read a version out of the response.</span>`, '#f44336');
                         return;
                     }
                     const isNewer = compareVersions(latest, currentVersion) > 0;
-                    if (isNewer) showUpdateNotice();
-                    if (verbose) showDiagnosticToast(`✅ <b>Checked for updates</b><br><span style="color:#aaa;">You have ${currentVersion} - latest is ${latest}${isNewer ? ' <b style="color:#00e5ff;">(update available!)</b>' : ' (up to date)'}</span>`, isNewer ? '#00e5ff' : '#4CAF50');
+                    // Admin-disabled notices (see /api/admin/companion-update-notice)
+                    // only suppress this silent per-page-load popup - a manual
+                    // check (verbose=true) still shows the real result either way.
+                    if (isNewer && (verbose || notifyEnabled)) showUpdateNotice();
+                    if (verbose) showDiagnosticToast(`✅ <b>Checked for updates</b><br><span style="color:#aaa;">You have ${currentVersion} - latest is ${latest}${isNewer ? ' <b style="color:#00e5ff;">(update available!)</b>' : ' (up to date)'}</span>${isNewer && !notifyEnabled ? '<br><span style="color:#FF9800;">Auto-notice is admin-disabled right now, so other users won\'t see this.</span>' : ''}`, isNewer ? '#00e5ff' : '#4CAF50');
                 },
                 onerror: () => { if (verbose) showDiagnosticToast(`⚠️ <b>Update check failed</b><br><span style="color:#aaa;">Network request to ${WARTORN_HOST} failed.</span>`, '#f44336'); },
                 ontimeout: () => { if (verbose) showDiagnosticToast('⚠️ <b>Update check failed</b><br><span style="color:#aaa;">Request timed out after 8s.</span>', '#f44336'); }
