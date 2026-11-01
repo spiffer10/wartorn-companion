@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.22.0
+// @version      4.23.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.22.0';
+    const COMPANION_VERSION_FALLBACK = '4.23.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4276,16 +4276,97 @@ function targetRowHtml(t, estRespect) {
                 ? `<img src="https://flagcdn.com/w40/${FLIGHT_FLAG_ISO[code]}.png" draggable="false" style="width:18px; border-radius:2px; flex-shrink:0;" onerror="this.style.display='none';">`
                 : `<span style="font-size:0.65em; font-weight:bold; background:#252525; border:1px solid #444; color:#00e5ff; border-radius:3px; padding:1px 4px; flex-shrink:0;">${(code || '??').toUpperCase()}</span>`;
         }
+        // --- MAX CASH OVERRIDE ---
+        // Mirrors the dashboard's own "Max Cash / Trip" box (ftSettingsBar
+        // in flight-testing.js) through the same backend field
+        // (flight_planner_settings.maxCash, GET/POST /api/companion/
+        // flight-settings - a companion-mirrored pair of the dashboard's
+        // own /api/flight-settings, same requireAuth/requireCompanionAuth
+        // dual-mount convention every other route here follows) - typing a
+        // number on EITHER side sets the same value the other side reads,
+        // same as the two sides already share hidden-items. Blank means
+        // "auto": /api/public/top-flight-bundles always re-reads the live
+        // wallet balance for that case rather than trusting a stored
+        // number that can go stale the moment you spend or earn cash.
+        // Same shorthand parsing as the dashboard's own ftParseMoney
+        // (flight-testing.js) - "42k", "23.4m" etc - so a value typed on
+        // either side reads back the same way on the other.
+        function wtParseMoneyInput(str) {
+            const t = String(str).trim().toLowerCase().replace(/[$,\s_]/g, '');
+            if (t === '') return null;
+            const m = t.match(/^(\d+(\.\d+)?)([kmbt])?$/);
+            if (!m) return undefined;
+            const mult = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 }[m[3]] || 1;
+            return Math.round(parseFloat(m[1]) * mult);
+        }
+        function wtFormatMoneyInput(n) { return (n == null) ? '' : n.toLocaleString(); }
+        function wtLoadFlightMaxCashBox() {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `${WARTORN_HOST}/api/companion/flight-settings`,
+                headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
+                timeout: 8000,
+                onload: (res) => {
+                    if (res.status === 401) { wtHandleUnauthorized(); return; }
+                    let data = null;
+                    try { data = JSON.parse(res.responseText); } catch (e) {}
+                    const el = document.getElementById('wt-flight-maxcash-input');
+                    if (!el) return;
+                    const maxCash = (data && data.settings && data.settings.maxCash != null) ? data.settings.maxCash : null;
+                    el.value = wtFormatMoneyInput(maxCash);
+                },
+                onerror: () => {},
+                ontimeout: () => {}
+            });
+        }
+        function wtSaveFlightMaxCash(inputEl) {
+            const parsed = wtParseMoneyInput(inputEl.value);
+            if (parsed === undefined) { inputEl.style.borderColor = '#f44336'; return; }
+            inputEl.style.borderColor = '#444';
+            inputEl.value = wtFormatMoneyInput(parsed);
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: `${WARTORN_HOST}/api/companion/flight-settings`,
+                headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION, 'Content-Type': 'application/json' },
+                data: JSON.stringify({ maxCash: parsed }),
+                timeout: 8000,
+                onload: (res) => {
+                    if (res.status === 401) { wtHandleUnauthorized(); return; }
+                    // The new cap can change which bundle wins - force a
+                    // fresh fetch rather than serve the stale 10-minute
+                    // recommend-mode cache (see ensureFlightAutoCandidates).
+                    flightAutoCandidates = null;
+                    const listEl = document.getElementById('wt-flight-list-container');
+                    if (listEl && flightStateMode() === 'recommend') {
+                        listEl.innerHTML = '<div style="text-align:center; color:#888; padding:20px;">Loading...</div>';
+                        ensureFlightAutoCandidates(() => renderFlightsBundleList());
+                    }
+                },
+                onerror: () => {},
+                ontimeout: () => {}
+            });
+        }
+        function wtWireFlightMaxCashInput() {
+            const el = document.getElementById('wt-flight-maxcash-input');
+            if (!el) return;
+            wtLoadFlightMaxCashBox();
+            el.addEventListener('change', () => wtSaveFlightMaxCash(el));
+        }
         async function renderFlightsPanel() {
             const body = document.getElementById('wt-panel-body-flights');
             if (!body) return;
             body.innerHTML = `
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; padding:6px 8px; background:#1a1c21; border:1px solid #333; border-radius:6px;">
+                    <label for="wt-flight-maxcash-input" style="font-size:0.7em; color:#888; text-transform:uppercase; letter-spacing:0.5px; flex-shrink:0;" title="Caps how much a trip is allowed to cost. Same setting as the dashboard's Max Cash / Trip box - changing it here changes it there too.">Max Cash / Trip</label>
+                    <input id="wt-flight-maxcash-input" type="text" placeholder="Auto (wallet)" style="width:100px; background:#222; color:#FF9800; border:1px solid #444; padding:3px 6px; border-radius:3px; font-size:0.8em; text-align:right;">
+                </div>
                 <div id="wt-flight-list-container"><div style="text-align:center; color:#888; padding:20px;">Loading...</div></div>
                 <div style="margin-top:10px; padding-top:8px; border-top:1px solid #333;">
                     <div style="font-size:0.7em; color:#888; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:5px;">Currently Selected</div>
                     <div id="wt-flight-selected-card"></div>
                 </div>
             `;
+            wtWireFlightMaxCashInput();
             renderFlightSelectedCard();
             const w = openWindows.get('flights');
             if (w && !w.tickTimer) w.tickTimer = setInterval(renderFlightSelectedCard, 1000);
