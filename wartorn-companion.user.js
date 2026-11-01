@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.25.0
+// @version      4.26.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.25.0';
+    const COMPANION_VERSION_FALLBACK = '4.26.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1390,7 +1390,20 @@
         let wtOcCrimesTimer = null;
         let wtOcCrimesCache = [];
         let wtOcIssueList = [];
-        function fetchFromWartorn(endpoint, timeoutMs = 10000) {
+        // One quick, immediate retry on a timeout/network error before
+        // actually giving up - reported directly as panels (War Targets'
+        // "Our Faction" column among them) "sometimes" failing to load,
+        // which this function previously surfaced as a hard, un-retried
+        // failure on the very first blip. A one-off network hiccup on a
+        // mobile connection (TornPDA's own webview is the prime suspect -
+        // see isTornPDA() and its other quirk-handling throughout this
+        // file) is exactly the kind of thing a single retry fixes for
+        // free, same "a few fast retries cost nothing when it just works"
+        // philosophy already used by wtProbeServerInitial's startup retry.
+        // Never retries a 401 (unauthorized) or a bad JSON body (res
+        // arrived fine, so retrying would just get the identical answer) -
+        // only onerror/ontimeout, which are the actually-transient cases.
+        function fetchFromWartorn(endpoint, timeoutMs = 10000, _isRetry) {
             return new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
                     method: 'GET',
@@ -1402,8 +1415,14 @@
                         try { resolve(JSON.parse(res.responseText)); }
                         catch (e) { reject(e); }
                     },
-                    onerror: () => reject(new Error('network error')),
-                    ontimeout: () => reject(new Error('timeout'))
+                    onerror: () => {
+                        if (!_isRetry) { fetchFromWartorn(endpoint, timeoutMs, true).then(resolve, reject); return; }
+                        reject(new Error('network error'));
+                    },
+                    ontimeout: () => {
+                        if (!_isRetry) { fetchFromWartorn(endpoint, timeoutMs, true).then(resolve, reject); return; }
+                        reject(new Error('timeout'));
+                    }
                 });
             });
         }
