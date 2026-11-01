@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.18.0
+// @version      4.19.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.18.0';
+    const COMPANION_VERSION_FALLBACK = '4.19.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -2004,11 +2004,28 @@
             const color = onlineStatus === 'Online' ? '#4CAF50' : (onlineStatus === 'Idle' ? '#FF9800' : '#666');
             return `<span style="color:${color}; font-size:1.5em; line-height:0; margin-right:5px; vertical-align:middle;" title="${onlineStatus || 'Offline'}">●</span>`;
         }
-        function rowHtml(name, subtitleHtml, actionHtml, onlineStatus, profileId, odBadge) {
+        // last_action_ts is unix SECONDS (straight off Torn's own
+        // last_action.timestamp). Every panel using this re-renders fully
+        // every 1s via startWindowTick's tickTimer, so this is computed fresh
+        // at render time rather than needing its own incremental DOM-patch
+        // ticker the way the dashboard's live-lastaction-timer spans do.
+        function formatLastAction(ts) {
+            if (!ts) return '';
+            const diffSecs = Math.max(0, Math.floor(nowServerMs() / 1000) - ts);
+            if (diffSecs < 60) return 'just now';
+            const mins = Math.floor(diffSecs / 60);
+            if (mins < 60) return mins + 'm ago';
+            const hrs = Math.floor(mins / 60);
+            if (hrs < 24) return hrs + 'h ' + (mins % 60) + 'm ago';
+            const days = Math.floor(hrs / 24);
+            return days + 'd ago';
+        }
+        function rowHtml(name, subtitleHtml, actionHtml, onlineStatus, profileId, odBadge, lastActionTs) {
             const dot = onlineStatus !== undefined ? onlineDotHtml(onlineStatus) : '';
             const nameHtml = profileId
                 ? `<a href="https://www.torn.com/profiles.php?XID=${profileId}" target="_blank" style="color:#fff; text-decoration:none;">${name}</a>`
                 : name;
+            const lastActionHtml = lastActionTs ? ` <span style="color:#666;">·</span> <span style="color:#888;">🕐 ${formatLastAction(lastActionTs)}</span>` : '';
             // Genuine two-row layout (name+dot+OD icon on row 1, status and
             // call/attack actions on row 2) instead of squeezing actionHtml
             // into a single column vertically centered beside both rows -
@@ -2023,7 +2040,7 @@
             return `<div style="display:flex; align-items:stretch; gap:8px; padding:6px 0; border-bottom:1px solid #1f2229;">
                 <div style="flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; gap:2px; overflow:hidden;">
                     <div style="color:#fff; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${dot}${nameHtml}${odBadge || ''}</div>
-                    <div style="font-size:0.8em; overflow:hidden; text-overflow:ellipsis;">${subtitleHtml}</div>
+                    <div style="font-size:0.8em; overflow:hidden; text-overflow:ellipsis;">${subtitleHtml}${lastActionHtml}</div>
                 </div>
                 ${actionHtml || ''}
             </div>`;
@@ -2625,6 +2642,10 @@ function targetRowHtml(t, estRespect) {
                         // via the ⚙️ Settings toggles.
                         const levelBadge = (isEnemy && showEnemyLevel) ? levelTextHtml(m.level) : '';
                         const ffBadge = (isEnemy && showFfScore) ? ffBadgeHtml(m.ff_score) : '';
+                        // Only the enemy side gets this - "when did they last
+                        // act" is a threat signal against the opponent, not
+                        // something that means anything for your own faction.
+                        const lastActionHtml = (isEnemy && m.last_action_ts) ? ` <span style="color:#666;">·</span> <span style="color:#888;">🕐 ${formatLastAction(m.last_action_ts)}</span>` : '';
                         return `<div style="display:flex; align-items:stretch; gap:4px; padding:3px 0; border-bottom:1px solid #1f2229; font-size:0.72em; overflow:hidden;">
                             <div style="flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; gap:1px; overflow:hidden;">
                                 <div style="display:flex; align-items:center; gap:3px; overflow:hidden;">
@@ -2634,7 +2655,7 @@ function targetRowHtml(t, estRespect) {
                                     ${ffBadge}
                                     ${odIcon}
                                 </div>
-                                ${showStatus ? `<span style="color:${tag.color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${tag.label}</span>` : ''}
+                                ${showStatus ? `<span style="color:${tag.color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${tag.label}</span>${lastActionHtml}` : ''}
                             </div>
                             ${actionHtml}
                         </div>`;
@@ -2660,7 +2681,7 @@ function targetRowHtml(t, estRespect) {
                     const rowsHtml = validTargets.map(m => {
                         const tag = abbreviateStatus(m.state, m.until, m.desc);
                         const name = (isFavorited(m.id) ? `⭐ ${m.name}` : m.name) + (showEnemyLevel ? levelTextHtml(m.level) : '') + (showFfScore ? ffBadgeHtml(m.ff_score) : '');
-                        return rowHtml(name, showStatus ? `<span style="color:${tag.color};">${tag.label}</span>` : '', buildTargetActionHtml(m), m.online_status, m.id, odBadgeHtml(m.last_od));
+                        return rowHtml(name, showStatus ? `<span style="color:${tag.color};">${tag.label}</span>` : '', buildTargetActionHtml(m), m.online_status, m.id, odBadgeHtml(m.last_od), m.last_action_ts);
                     }).join('');
                     contentHtml = rowsHtml || `<div style="color:#888;">${beatableOnlyFilter ? 'No valid targets found under your stats.' : 'No enemy members found.'}</div>`;
                 }
