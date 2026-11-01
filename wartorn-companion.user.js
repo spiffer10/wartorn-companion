@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.17.0
+// @version      4.18.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, and Faction Chat right on torn.com, a flight widget that detects when you're actually traveling and shows the most profitable item to grab on landing, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.17.0';
+    const COMPANION_VERSION_FALLBACK = '4.18.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1454,6 +1454,14 @@
         // second rate limit.
         const PANEL_CACHE_TTL = 20000;
         const panelCache = {};
+        // War-aware polling for checkLiveAlerts (the logo danger indicator) below -
+        // mirrors the dashboard's own wfRateConfig (backend/server.js's apiRateConfig),
+        // fetched once per page load since this value rarely changes and every
+        // poller below just re-reads this object on each tick.
+        let wtRateConfig = { dashboardPollMs: 30000, dashboardPollMsWar: 4000, dashboardPollMsBurst: 2000 };
+        fetchFromWartorn('rate-config').then(d => { if (d && d.config) Object.assign(wtRateConfig, d.config); }).catch(() => {});
+        let wtLastWarActive = false;
+        let wtLastInBurst = false;
         // Torn's server clock vs this machine's local clock - a countdown
         // computed against a drifted local clock won't "match reality"
         // (Torn's own on-page timers), so this is captured whenever
@@ -7437,6 +7445,8 @@ setInterval(scanProfileFlightBar, 3000);
                 // they're online and stronger than you.
                 const nowSecs = Math.floor(nowServerMs() / 1000);
                 const warIsActive = data.start_time > 0 && data.start_time <= nowSecs && data.end_time === 0;
+                wtLastWarActive = warIsActive;
+                wtLastInBurst = data.in_burst === true;
                 const myStat = data.current_user_stat || 0;
                 let dangerTarget = null; // red: Online
                 let awayTarget = null;   // orange: Idle
@@ -7458,8 +7468,26 @@ setInterval(scanProfileFlightBar, 3000);
                 updateWarButtonVisibility(warIsActive);
             } catch (e) {}
         }
-        setInterval(checkLiveAlerts, 5000);
-        checkLiveAlerts(); // don't wait 5s for the first check
+        // Was a flat 5s interval - same gap the dashboard's own dashboardPollMs
+        // fix addressed: war-target online/idle/offline state (what actually
+        // drives the logo's red/orange danger glow) could sit stale for up to
+        // 5s even during an active war or a post-attack burst window, when the
+        // backend itself is refreshing far faster. Ticks every 1s but only
+        // actually polls at the rate matching the LAST known war/burst state
+        // (updated inside checkLiveAlerts itself above) - same idiom as the
+        // dashboard's own poll tick.
+        let wtLastLiveAlertsPollAt = Date.now();
+        setInterval(() => {
+            const pollMs = wtLastInBurst
+                ? (wtRateConfig.dashboardPollMsBurst || 2000)
+                : wtLastWarActive
+                    ? (wtRateConfig.dashboardPollMsWar || 4000)
+                    : (wtRateConfig.dashboardPollMs || 30000);
+            if (Date.now() - wtLastLiveAlertsPollAt < pollMs) return;
+            wtLastLiveAlertsPollAt = Date.now();
+            checkLiveAlerts();
+        }, 1000);
+        checkLiveAlerts(); // don't wait for the first tick
 
         // War button only makes sense to show while a war is actually
         // running - hidden the rest of the time instead of sitting there
