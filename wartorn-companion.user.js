@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.26.0
+// @version      4.27.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.26.0';
+    const COMPANION_VERSION_FALLBACK = '4.27.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1526,8 +1526,30 @@
         // recomputing "remaining" against the live clock on every render
         // fixes that, same pattern as every other countdown in this file.
         let companionChainAnchorData = null;
-        let companionChainTargetMs = null;
-        let companionChainIsCooldown = false;
+        // Freshest known chain snapshot, fed by whichever poller last got a
+        // real fetch - checkLiveAlerts (war-status, 30s/4s/2s), the fast
+        // quick-chain overdrive poll, or this panel's own fetch below.
+        // Every chain-timer display reads this through getBestChainAnchor()
+        // instead of trusting whichever ONE source it happened to be wired
+        // to, so none of them can serve something staler than what another
+        // poller already knows. See the matching writeup further down
+        // (next to pollCompanionQuickChain) - confirmed live 2026-11-02 as
+        // the fix for the chain timer "often lagging behind reality."
+        let companionChainKnownState = null; // { count, timeoutSecs, cooldownSecs, serverTimeSecs, fetchedAtMs }
+        function noteChainSnapshot(current, timeoutSecs, cooldownSecs, serverTimeSecs, fetchedAtMs) {
+            if (companionChainKnownState && fetchedAtMs < companionChainKnownState.fetchedAtMs) return;
+            companionChainKnownState = { count: current || 0, timeoutSecs: timeoutSecs || 0, cooldownSecs: cooldownSecs || 0, serverTimeSecs: serverTimeSecs || 0, fetchedAtMs };
+        }
+        function getBestChainAnchor() {
+            const s = companionChainKnownState;
+            if (!s) return null;
+            const baseMs = s.serverTimeSecs ? s.serverTimeSecs * 1000 : s.fetchedAtMs;
+            return {
+                count: s.count,
+                cooldownEndMs: s.cooldownSecs > 0 ? baseMs + s.cooldownSecs * 1000 : 0,
+                expiryMs: s.timeoutSecs > 0 ? baseMs + s.timeoutSecs * 1000 : 0
+            };
+        }
         function secsUntil(untilEpochSecs) {
             if (!untilEpochSecs) return null;
             const diff = untilEpochSecs - Math.floor(nowServerMs() / 1000);
@@ -2549,24 +2571,31 @@ function targetRowHtml(t, estRespect) {
                 });
                 const validTargets = enemyList;
 
-                // Only re-anchor when this is genuinely a fresh fetch (a new
-                // data object), not merely a re-render of the same cached
-                // one - re-anchoring on every 1s tick would just keep
-                // resetting the countdown to the same ~20s-stale duration
-                // instead of ever actually counting down.
+                // Only feed this panel's own fetch into the shared chain
+                // state when it's genuinely a new fetch (a new data
+                // object), not merely a re-render of the same cached one -
+                // noting it on every 1s tick would wrongly look "freshest"
+                // forever even though the underlying fetch is up to 20s
+                // old. getBestChainAnchor() then picks whichever of this,
+                // the fast quick-chain poll, or war-status's own
+                // checkLiveAlerts call actually has the newest data -
+                // confirmed live 2026-11-02 as the fix for the chain timer
+                // "often lagging behind reality" during normal chaining.
                 if (data.chain && data !== companionChainAnchorData) {
                     companionChainAnchorData = data;
-                    companionChainIsCooldown = (data.chain.cooldown || 0) > 0;
-                    const secsFromFetch = companionChainIsCooldown ? data.chain.cooldown : data.chain.timeout;
-                    companionChainTargetMs = secsFromFetch > 0 ? (nowServerMs() + secsFromFetch * 1000) : null;
+                    noteChainSnapshot(data.chain.current, data.chain.timeout, data.chain.cooldown, data.chain.server_time, Date.now());
                 }
+                const chainAnchor = getBestChainAnchor();
                 let chainTimeLabel = '';
-                if (data.chain && companionChainTargetMs) {
-                    const remainingSecs = Math.max(0, Math.floor((companionChainTargetMs - nowServerMs()) / 1000));
+                if (data.chain && chainAnchor) {
+                    const now = nowServerMs();
+                    const isCooldown = chainAnchor.cooldownEndMs > now;
+                    const remainingSecs = Math.max(0, Math.floor(((isCooldown ? chainAnchor.cooldownEndMs : chainAnchor.expiryMs) - now) / 1000));
                     const d = formatDuration(remainingSecs);
-                    if (d) chainTimeLabel = ` · ${d} ${companionChainIsCooldown ? 'cooldown' : 'left'}`;
+                    if (d) chainTimeLabel = ` · ${d} ${isCooldown ? 'cooldown' : 'left'}`;
                 }
-                const chainHtml = data.chain ? `<div style="margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid #333; color:#FF9800; font-weight:bold;">⛓️ Chain: ${data.chain.current || 0}${chainTimeLabel}</div>` : '';
+                const chainCountDisplay = chainAnchor ? chainAnchor.count : (data.chain ? (data.chain.current || 0) : 0);
+                const chainHtml = data.chain ? `<div style="margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid #333; color:#FF9800; font-weight:bold;">⛓️ Chain: ${chainCountDisplay}${chainTimeLabel}</div>` : '';
 
                 // Same start_time/end_time check the dashboard's own roster
                 // uses to disable attacking before a queued war actually
@@ -6946,7 +6975,7 @@ function targetRowHtml(t, estRespect) {
         // recomputes against the last fetched snapshot every 1s using pure
         // elapsed-time math, so it catches the exact second a threshold is
         // crossed without needing a fresh network round-trip for it.
-        let lastAlertSnapshot = null; // { amAbroad, chainTimeoutAtFetch, chainCount, chainOnCooldown, chainCooldownAtFetch, fetchedAtMs }
+        let lastAlertSnapshot = null; // { amAbroad, fetchedAtMs } - chain timer fields now live in companionChainKnownState (see noteChainSnapshot/getBestChainAnchor above)
         // Small floating bar with the chain count and its timer (or cooldown). Click-through,
         // so it never blocks Torn underneath. Toggled in the chain options.
         let chainBarPos = safeGmGet('wt_chain_bar_pos', null);
@@ -7017,28 +7046,28 @@ function targetRowHtml(t, estRespect) {
             const main = document.getElementById('wt-chain-bar-main');
             const side = readSidebarChain();
             if (side) {
-                const count = side.count != null ? side.count : (lastAlertSnapshot ? lastAlertSnapshot.chainCount : '');
+                const count = side.count != null ? side.count : ((getBestChainAnchor() || {}).count ?? '');
                 main.classList.toggle('wt-chain-wiggle', side.secs <= 60);
                 main.textContent = '⛓️ ' + count + ' · ' + Math.floor(side.secs / 60) + ':' + String(side.secs % 60).padStart(2, '0');
                 main.style.color = side.secs <= 60 ? '#f44336' : (side.secs <= 90 ? '#FFEB3B' : '#4CAF50');
                 return;
             }
-            const s = lastAlertSnapshot;
+            const s = getBestChainAnchor();
             if (!s) { main.textContent = '⛓️ --'; main.style.color = '#fff'; return; }
             const fmt = secs => Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
             const now = nowServerMs();
             main.classList.remove('wt-chain-wiggle');
-            if (s.chainCooldownEndMs > now) {
-                main.textContent = '⛓️ ' + s.chainCount + ' · cooldown ' + fmt(Math.ceil((s.chainCooldownEndMs - now) / 1000));
+            if (s.cooldownEndMs > now) {
+                main.textContent = '⛓️ ' + s.count + ' · cooldown ' + fmt(Math.ceil((s.cooldownEndMs - now) / 1000));
                 main.style.color = '#FF9800';
-            } else if (s.chainExpiryMs > now) {
-                const left = Math.ceil((s.chainExpiryMs - now) / 1000);
-                main.textContent = '⛓️ ' + s.chainCount + ' · ' + fmt(left);
+            } else if (s.expiryMs > now) {
+                const left = Math.ceil((s.expiryMs - now) / 1000);
+                main.textContent = '⛓️ ' + s.count + ' · ' + fmt(left);
                 if (left <= 60) { main.style.color = '#f44336'; main.classList.add('wt-chain-wiggle'); }
                 else if (left <= 90) main.style.color = '#FFEB3B';
                 else main.style.color = '#4CAF50';
             } else {
-                main.textContent = '⛓️ ' + (s.chainCount || 'no chain');
+                main.textContent = '⛓️ ' + (s.count || 'no chain');
                 main.style.color = '#fff';
             }
         }
@@ -7046,9 +7075,9 @@ function targetRowHtml(t, estRespect) {
         function currentChainSecsLeft() {
             const side = readSidebarChain();
             if (side) return side.secs;
-            const s = lastAlertSnapshot;
-            if (!s || !(s.chainExpiryMs > 0)) return null;
-            const left = Math.ceil((s.chainExpiryMs - nowServerMs()) / 1000);
+            const s = getBestChainAnchor();
+            if (!s || !(s.expiryMs > 0)) return null;
+            const left = Math.ceil((s.expiryMs - nowServerMs()) / 1000);
             return left > 0 ? left : null;
         }
 
@@ -7720,15 +7749,20 @@ setInterval(scanProfileFlightBar, 3000);
                     ? (pageStatus.isTravelling || pageStatus.isAbroad)
                     : (myStateLower.includes('travel') || myStateLower.includes('abroad'));
 
-                lastAlertSnapshot = {
-                    amAbroad,
-                    chainTimeoutAtFetch: data.chain ? (data.chain.timeout || 0) : 0,
-                    chainCount: data.chain ? (data.chain.current || 0) : 0,
-                    chainOnCooldown: data.chain ? (data.chain.cooldown || 0) > 0 : false,
-                    chainExpiryMs: data.chain && data.chain.timeout > 0 ? ((data.chain.server_time ? data.chain.server_time * 1000 : nowServerMs()) + data.chain.timeout * 1000) : 0,
-                    chainCooldownEndMs: data.chain && data.chain.cooldown > 0 ? ((data.chain.server_time ? data.chain.server_time * 1000 : nowServerMs()) + data.chain.cooldown * 1000) : 0,
-                    fetchedAtMs: Date.now()
-                };
+                lastAlertSnapshot = { amAbroad, fetchedAtMs: Date.now() };
+                // Chain timer state now goes through the same shared
+                // noteChainSnapshot/getBestChainAnchor race as the fast
+                // quick-chain poll and the War Targets panel's own fetch
+                // (see companionChainAnchorData above) - this call just
+                // means war-status's own chain reading is ALSO a candidate
+                // for "freshest known," not the sole source it used to be.
+                noteChainSnapshot(
+                    data.chain ? data.chain.current : 0,
+                    data.chain ? data.chain.timeout : 0,
+                    data.chain ? data.chain.cooldown : 0,
+                    data.chain ? data.chain.server_time : 0,
+                    Date.now()
+                );
 
                 // "Attackable" depends on where you are: normally that
                 // means Okay (in Torn, not hospital/jail/traveling). If
@@ -7782,6 +7816,45 @@ setInterval(scanProfileFlightBar, 3000);
             checkLiveAlerts();
         }, 1000);
         checkLiveAlerts(); // don't wait for the first tick
+
+        // Fast chain-timer refresh (/api/companion/quick-chain) - same fix
+        // as the dashboard's own overdrive poller, index.html. Both
+        // readSidebarChain() (while Torn's own sidebar timer is on the
+        // page) and this fast poll exist because checkLiveAlerts above
+        // only refetches war-status every 30s outside an active war/burst
+        // (and the War Targets panel's own fetch is a flat 20s) - a real
+        // hit resets Torn's chain timeout back to full, and neither of
+        // those is fast enough to reflect that promptly during normal
+        // (non-war) chaining, which is most of the time a chain actually
+        // runs. Confirmed live 2026-11-02 as the cause of the chain timer
+        // "often lagging behind reality." The endpoint is cheap to poll
+        // this often: cached per-faction server-side for 4s regardless of
+        // how many companions/tabs ask. Feeds noteChainSnapshot (declared
+        // next to getBestChainAnchor, near companionChainAnchorData above)
+        // rather than keeping its own separate state.
+        let isFetchingCompanionQuickChain = false;
+        async function pollCompanionQuickChain() {
+            if (isFetchingCompanionQuickChain) return;
+            isFetchingCompanionQuickChain = true;
+            try {
+                const data = await fetchFromWartorn('quick-chain');
+                if (data && typeof data.timeout !== 'undefined') {
+                    noteChainSnapshot(data.current, data.timeout, data.cooldown, data.server_time, Date.now());
+                    const st = data.server_time || (data.now ? Math.floor(data.now / 1000) : 0);
+                    if (st) serverClockOffsetMs = (st * 1000) - (data.now || Date.now());
+                }
+            } catch (e) {}
+            isFetchingCompanionQuickChain = false;
+        }
+        let lastCompanionQuickChainAt = 0;
+        setInterval(() => {
+            const anchor = getBestChainAnchor();
+            const looksActive = anchor && anchor.count > 0 && !(anchor.cooldownEndMs > nowServerMs());
+            if (!looksActive) return;
+            if (Date.now() - lastCompanionQuickChainAt < 4000) return;
+            lastCompanionQuickChainAt = Date.now();
+            pollCompanionQuickChain();
+        }, 1000);
 
         // War button only makes sense to show while a war is actually
         // running - hidden the rest of the time instead of sitting there
@@ -7859,8 +7932,8 @@ setInterval(scanProfileFlightBar, 3000);
                 }
             }
 
-            const s = lastAlertSnapshot;
-            if (chainSoundEnabled && s && s.chainCount >= 10 && !s.chainOnCooldown) {
+            const chainAnchorForBeep = getBestChainAnchor();
+            if (chainSoundEnabled && chainAnchorForBeep && chainAnchorForBeep.count >= 10 && !(chainAnchorForBeep.cooldownEndMs > nowServerMs())) {
                 const left = currentChainSecsLeft();
                 if (left !== null && left > 0 && left <= chainWarnSecs) {
                     const now = Date.now();
