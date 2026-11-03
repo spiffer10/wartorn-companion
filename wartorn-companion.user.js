@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.27.2
+// @version      4.27.3
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.27.2';
+    const COMPANION_VERSION_FALLBACK = '4.27.3';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -7033,14 +7033,24 @@ function targetRowHtml(t, estRespect) {
         }
         // Torn's own chain timer in the sidebar (class names carry a build suffix, so match
         // on the stable part). Null when it isn't on the page.
+        //
+        // The stable part is camelCase ("chainBar___t4bd0", "barTimeLeft___VpBl9",
+        // "barValue___KkM6k" - confirmed live off a real page dump, 2026-11-02),
+        // not the kebab-case this used to look for ("chain-bar"/"bar-timeleft"/
+        // "bar-value") - that mismatch meant this NEVER matched anything, silently
+        // falling back to the (less accurate) API-derived estimate on every single
+        // call. That's why the floating chain bar/the backend's chainTimerReports
+        // override never actually kicked in, even though this function has existed
+        // the whole time - confirmed as the real explanation for the companion's
+        // chain timer reading noticeably ahead of Torn's own sidebar value.
         function readSidebarChain() {
             try {
-                const t = document.querySelector('[class*="chain-bar"] [class*="bar-timeleft"]');
+                const t = document.querySelector('[class*="chainBar"] [class*="barTimeLeft"]');
                 if (!t) return null;
                 const parts = t.textContent.trim().split(':').map(n => parseInt(n, 10));
                 if (parts.length < 2 || parts.length > 3 || parts.some(isNaN)) return null;
                 const secs = parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : parts[0] * 60 + parts[1];
-                const v = document.querySelector('[class*="chain-bar"] [class*="bar-value"]');
+                const v = document.querySelector('[class*="chainBar"] [class*="barValue"]');
                 const count = v ? parseInt(v.textContent, 10) : NaN;
                 return { secs, count: isNaN(count) ? null : count };
             } catch (e) { return null; }
@@ -7135,8 +7145,16 @@ function targetRowHtml(t, estRespect) {
         }
         function parseBarValue(el) {
             if (!el) return null;
-            const m = String(el.textContent || '').match(/(-?\d+)\s*\/\s*(-?\d+)/);
-            return m ? { current: parseInt(m[1], 10), max: parseInt(m[2], 10) } : null;
+            // Chain's value reads like "4788/5k" (Torn abbreviates the max to
+            // "5k"/"10k"/etc past 1000), unlike Energy/Nerve/Happy/Life which
+            // always show a plain number - handle the optional k/m suffix on
+            // the second number so chain's max doesn't parse as 5 instead of
+            // 5000.
+            const m = String(el.textContent || '').match(/(-?\d+)\s*\/\s*(-?\d+(?:\.\d+)?)\s*([km])?/i);
+            if (!m) return null;
+            let max = parseFloat(m[2]);
+            if (m[3]) max *= (m[3].toLowerCase() === 'k' ? 1000 : 1000000);
+            return { current: parseInt(m[1], 10), max: Math.round(max) };
         }
         function getPageBarsAndChain() {
             try {
@@ -7146,14 +7164,17 @@ function targetRowHtml(t, estRespect) {
                 const bars = {};
                 ['energy', 'nerve', 'happy', 'life'].forEach(name => {
                     const el = scope.querySelector(`[class*="${name}___"]`);
-                    const v = el ? parseBarValue(el.querySelector('[class*="bar-value"]')) : null;
+                    // See readSidebarChain's comment above - Torn's stable class
+                    // prefixes are camelCase ("barValue___...", "barTimeLeft___..."),
+                    // not kebab-case.
+                    const v = el ? parseBarValue(el.querySelector('[class*="barValue"]')) : null;
                     if (v) bars[name] = v;
                 });
                 let chain = null;
-                const chainEl = scope.querySelector('[class*="chain-bar"]');
+                const chainEl = scope.querySelector('[class*="chainBar"]');
                 if (chainEl) {
-                    const v = parseBarValue(chainEl.querySelector('[class*="bar-value"]'));
-                    const timeEl = chainEl.querySelector('[class*="bar-timeleft"]');
+                    const v = parseBarValue(chainEl.querySelector('[class*="barValue"]'));
+                    const timeEl = chainEl.querySelector('[class*="barTimeLeft"]');
                     if (v) chain = { current: v.current, max: v.max, timeoutSecs: parseBarTimeToSecs(timeEl ? timeEl.textContent : '') };
                 }
                 return (Object.keys(bars).length || chain) ? { bars, chain } : null;
