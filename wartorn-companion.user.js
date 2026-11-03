@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.27.0
+// @version      4.27.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.27.0';
+    const COMPANION_VERSION_FALLBACK = '4.27.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -7839,9 +7839,27 @@ setInterval(scanProfileFlightBar, 3000);
             try {
                 const data = await fetchFromWartorn('quick-chain');
                 if (data && typeof data.timeout !== 'undefined') {
+                    // data.server_time can be up to CHAIN_POLL_CACHE_TTL_MS
+                    // (4s) stale on a cache hit (the backend only refreshes
+                    // `now`, not `server_time`, on that path) - fine for
+                    // noteChainSnapshot below since timeout/cooldown are
+                    // frozen from that exact same moment, so the computed
+                    // absolute expiry still comes out correct. NOT fine for
+                    // the GLOBAL clock offset: that needs the always-fresh
+                    // `now`, never `server_time` - this is the exact
+                    // "conflating the two" bug already documented and
+                    // avoided in the dashboard's matching code (index.html,
+                    // the OVERDRIVE POLLING handler) - reintroducing it
+                    // here corrupted serverClockOffsetMs (shared by every
+                    // timer in this file, not just the chain one) by up to
+                    // 4s on every cache-hit poll, then snapping back on the
+                    // next fresh one. Confirmed live 2026-11-02 as the
+                    // cause of timers "drifting and jumping all over the
+                    // place" right after the chain-timer fix shipped - so
+                    // this poller touches noteChainSnapshot only, never the
+                    // clock offset (checkLiveAlerts already keeps that
+                    // calibrated on its own schedule).
                     noteChainSnapshot(data.current, data.timeout, data.cooldown, data.server_time, Date.now());
-                    const st = data.server_time || (data.now ? Math.floor(data.now / 1000) : 0);
-                    if (st) serverClockOffsetMs = (st * 1000) - (data.now || Date.now());
                 }
             } catch (e) {}
             isFetchingCompanionQuickChain = false;
