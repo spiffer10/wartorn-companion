@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.27.1
+// @version      4.27.2
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.27.1';
+    const COMPANION_VERSION_FALLBACK = '4.27.2';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1535,20 +1535,35 @@
         // poller already knows. See the matching writeup further down
         // (next to pollCompanionQuickChain) - confirmed live 2026-11-02 as
         // the fix for the chain timer "often lagging behind reality."
-        let companionChainKnownState = null; // { count, timeoutSecs, cooldownSecs, serverTimeSecs, fetchedAtMs }
-        function noteChainSnapshot(current, timeoutSecs, cooldownSecs, serverTimeSecs, fetchedAtMs) {
+        // Anchored to nowServerMs() AT NOTE TIME, never to a source's own
+        // absolute "server_time" field - confirmed live 2026-11-02 that
+        // mixing bases caused big jumps (5:00 -> 2:34 -> 4:59), not just
+        // small jitter. Quick-chain's server_time is Torn's own real
+        // clock; war-status's chain.server_time is the BACKEND's Date.now()
+        // re-stamped on every return (decayCachedChain) - neither is
+        // guaranteed to agree with the CLIENT's own nowServerMs() closely
+        // enough for absolute-epoch arithmetic against it, even though
+        // nowServerMs() itself is calibrated from these same responses.
+        // Treating timeoutSecs/cooldownSecs as "seconds remaining as of
+        // right now" and adding them straight onto the client's own
+        // already-consistent clock (same thing the original, single-
+        // source version of this code always did) sidesteps that - the
+        // only error this can introduce is however stale that one
+        // specific reading was when it was fetched (bounded, a few
+        // seconds at most), never a cross-source clock mismatch.
+        let companionChainKnownState = null; // { count, cooldownEndMs, expiryMs, fetchedAtMs }
+        function noteChainSnapshot(current, timeoutSecs, cooldownSecs, fetchedAtMs) {
             if (companionChainKnownState && fetchedAtMs < companionChainKnownState.fetchedAtMs) return;
-            companionChainKnownState = { count: current || 0, timeoutSecs: timeoutSecs || 0, cooldownSecs: cooldownSecs || 0, serverTimeSecs: serverTimeSecs || 0, fetchedAtMs };
+            const nowMs = nowServerMs();
+            companionChainKnownState = {
+                count: current || 0,
+                cooldownEndMs: cooldownSecs > 0 ? nowMs + cooldownSecs * 1000 : 0,
+                expiryMs: timeoutSecs > 0 ? nowMs + timeoutSecs * 1000 : 0,
+                fetchedAtMs
+            };
         }
         function getBestChainAnchor() {
-            const s = companionChainKnownState;
-            if (!s) return null;
-            const baseMs = s.serverTimeSecs ? s.serverTimeSecs * 1000 : s.fetchedAtMs;
-            return {
-                count: s.count,
-                cooldownEndMs: s.cooldownSecs > 0 ? baseMs + s.cooldownSecs * 1000 : 0,
-                expiryMs: s.timeoutSecs > 0 ? baseMs + s.timeoutSecs * 1000 : 0
-            };
+            return companionChainKnownState;
         }
         function secsUntil(untilEpochSecs) {
             if (!untilEpochSecs) return null;
@@ -2583,7 +2598,7 @@ function targetRowHtml(t, estRespect) {
                 // "often lagging behind reality" during normal chaining.
                 if (data.chain && data !== companionChainAnchorData) {
                     companionChainAnchorData = data;
-                    noteChainSnapshot(data.chain.current, data.chain.timeout, data.chain.cooldown, data.chain.server_time, Date.now());
+                    noteChainSnapshot(data.chain.current, data.chain.timeout, data.chain.cooldown, Date.now());
                 }
                 const chainAnchor = getBestChainAnchor();
                 let chainTimeLabel = '';
@@ -7760,7 +7775,6 @@ setInterval(scanProfileFlightBar, 3000);
                     data.chain ? data.chain.current : 0,
                     data.chain ? data.chain.timeout : 0,
                     data.chain ? data.chain.cooldown : 0,
-                    data.chain ? data.chain.server_time : 0,
                     Date.now()
                 );
 
@@ -7839,27 +7853,28 @@ setInterval(scanProfileFlightBar, 3000);
             try {
                 const data = await fetchFromWartorn('quick-chain');
                 if (data && typeof data.timeout !== 'undefined') {
-                    // data.server_time can be up to CHAIN_POLL_CACHE_TTL_MS
-                    // (4s) stale on a cache hit (the backend only refreshes
-                    // `now`, not `server_time`, on that path) - fine for
-                    // noteChainSnapshot below since timeout/cooldown are
-                    // frozen from that exact same moment, so the computed
-                    // absolute expiry still comes out correct. NOT fine for
-                    // the GLOBAL clock offset: that needs the always-fresh
-                    // `now`, never `server_time` - this is the exact
-                    // "conflating the two" bug already documented and
-                    // avoided in the dashboard's matching code (index.html,
-                    // the OVERDRIVE POLLING handler) - reintroducing it
-                    // here corrupted serverClockOffsetMs (shared by every
-                    // timer in this file, not just the chain one) by up to
-                    // 4s on every cache-hit poll, then snapping back on the
-                    // next fresh one. Confirmed live 2026-11-02 as the
-                    // cause of timers "drifting and jumping all over the
-                    // place" right after the chain-timer fix shipped - so
-                    // this poller touches noteChainSnapshot only, never the
-                    // clock offset (checkLiveAlerts already keeps that
-                    // calibrated on its own schedule).
-                    noteChainSnapshot(data.current, data.timeout, data.cooldown, data.server_time, Date.now());
+                    // Deliberately never touches serverClockOffsetMs here,
+                    // and never passes data.server_time to noteChainSnapshot
+                    // (which doesn't take it at all anymore - see its own
+                    // writeup above). Two confirmed-live bugs, both from
+                    // trusting an absolute server-side timestamp instead of
+                    // the client's own already-consistent nowServerMs():
+                    // (1) data.server_time can be up to
+                    // CHAIN_POLL_CACHE_TTL_MS (4s) stale on a cache hit (the
+                    // backend only refreshes `now`, not `server_time`, on
+                    // that path) - using it to recalibrate the GLOBAL clock
+                    // offset (shared by every timer in this file) corrupted
+                    // it by up to 4s on every cache-hit poll, then snapped
+                    // back on the next fresh one. (2) even just anchoring
+                    // THIS poll's own chain target against data.server_time
+                    // (Torn's real clock) while war-status's own anchors
+                    // used the backend's Date.now() caused big jumps
+                    // between the two bases (5:00 -> 2:34 -> 4:59), not
+                    // just jitter. noteChainSnapshot now only ever takes
+                    // the relative timeout/cooldown seconds and anchors
+                    // them to nowServerMs() at note time, same as every
+                    // other source.
+                    noteChainSnapshot(data.current, data.timeout, data.cooldown, Date.now());
                 }
             } catch (e) {}
             isFetchingCompanionQuickChain = false;
