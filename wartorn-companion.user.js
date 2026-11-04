@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.27.3
+// @version      4.27.4
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.27.3';
+    const COMPANION_VERSION_FALLBACK = '4.27.4';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -7064,21 +7064,29 @@ function targetRowHtml(t, estRespect) {
             sendToWartorn('chain-timer', { secondsLeft: side.secs, chainCount: side.count || 0 });
         }
         setInterval(() => { const side = readSidebarChain(); if (side) reportSidebarChain(side); }, 1000);
+        // Anything under 10 hits isn't treated as a real chain here - the bar
+        // stays hidden until it's actually worth watching, rather than
+        // popping up/wiggling for a one-or-two-hit chain that's as likely to
+        // get abandoned as continued.
+        const CHAIN_BAR_MIN_HITS = 10;
         function renderChainBar() {
             let bar = document.getElementById('wt-chain-bar');
             if (!chainBarEnabled) { if (bar) bar.remove(); return; }
-            if (!bar) bar = createChainBar();
-            const main = document.getElementById('wt-chain-bar-main');
             const side = readSidebarChain();
             if (side) {
-                const count = side.count != null ? side.count : ((getBestChainAnchor() || {}).count ?? '');
+                const count = side.count != null ? side.count : ((getBestChainAnchor() || {}).count ?? 0);
+                if (count < CHAIN_BAR_MIN_HITS) { if (bar) bar.remove(); return; }
+                if (!bar) bar = createChainBar();
+                const main = document.getElementById('wt-chain-bar-main');
                 main.classList.toggle('wt-chain-wiggle', side.secs <= 60);
                 main.textContent = '⛓️ ' + count + ' · ' + Math.floor(side.secs / 60) + ':' + String(side.secs % 60).padStart(2, '0');
                 main.style.color = side.secs <= 60 ? '#f44336' : (side.secs <= 90 ? '#FFEB3B' : '#4CAF50');
                 return;
             }
             const s = getBestChainAnchor();
-            if (!s) { main.textContent = '⛓️ --'; main.style.color = '#fff'; return; }
+            if (!s || (s.count || 0) < CHAIN_BAR_MIN_HITS) { if (bar) bar.remove(); return; }
+            if (!bar) bar = createChainBar();
+            const main = document.getElementById('wt-chain-bar-main');
             const fmt = secs => Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
             const now = nowServerMs();
             main.classList.remove('wt-chain-wiggle');
