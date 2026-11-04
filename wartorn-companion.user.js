@@ -3558,7 +3558,7 @@ function targetRowHtml(t, estRespect) {
                     wtChatRenderedMaxTs = messages.length ? messages[messages.length - 1].ts : 0;
                     const shown = messages.slice(-CHAT_PANEL_INITIAL_LIMIT);
                     body.innerHTML = `
-                        <select id="wt-chat-channel-select" style="display:none; margin-bottom:6px; width:100%; background:#0b0c10; border:1px solid #444; color:#ccc; border-radius:4px; padding:4px 6px; font-size:0.78em;"></select>
+                        <div id="wt-chat-tabs" style="display:none; gap:4px; margin-bottom:6px; flex-wrap:wrap;"></div>
                         <div id="wt-chat-list" style="display:flex; flex-direction:column; gap:8px;">
                             ${shown.length ? shown.map(wtChatMsgRowHtml).join('') : '<div style="color:#888;">No messages yet - say hello.</div>'}
                         </div>
@@ -3589,25 +3589,33 @@ function targetRowHtml(t, estRespect) {
                         }
                     });
                     // Only shown once this faction has access to more than
-                    // one channel (its own + any shared cross-faction one
-                    // an admin created) - most members never see this.
+                    // one channel (its own default chat + any shared/
+                    // private channel it's an accepted, rank-permitted
+                    // member of) - most members never see this.
                     fetchFromWartorn('chat-channels').then(chData => {
                         const channels = (chData && Array.isArray(chData.channels)) ? chData.channels : [];
-                        const sel = document.getElementById('wt-chat-channel-select');
-                        if (!sel || channels.length <= 1) return;
-                        sel.innerHTML = channels.map(c => `<option value="${wtChatEscapeHtml(c.channelKey)}">${wtChatEscapeHtml(c.name)}</option>`).join('');
-                        sel.value = wtChatCurrentChannel || channels[0].channelKey;
-                        sel.style.display = 'block';
-                        sel.addEventListener('change', () => {
-                            wtChatCurrentChannel = sel.value;
-                            wtChatStopTypingPoll();
-                            // Forces renderChatPanel's freshOpen branch to
-                            // run again (it checks for #wt-chat-list) - a
-                            // channel switch needs the whole panel rebuilt
-                            // against the new channel's history, not an
-                            // incremental append onto the old one's.
-                            body.innerHTML = '';
-                            renderChatPanel();
+                        const tabsEl = document.getElementById('wt-chat-tabs');
+                        if (!tabsEl || channels.length <= 1) return;
+                        const activeKey = wtChatCurrentChannel || channels[0].channelKey;
+                        tabsEl.innerHTML = channels.map(c => {
+                            const active = c.channelKey === activeKey;
+                            const bg = active ? '#2d3a2d' : '#252525';
+                            const border = active ? '#4CAF50' : '#444';
+                            return `<button type="button" class="wt-chat-tab" data-key="${wtChatEscapeHtml(c.channelKey)}" title="${wtChatEscapeHtml(c.name)}" style="background:${bg}; border:1px solid ${border}; color:#eee; border-radius:5px; width:28px; height:28px; cursor:pointer; font-size:0.9em; display:inline-flex; align-items:center; justify-content:center;">${c.icon || '💬'}</button>`;
+                        }).join('');
+                        tabsEl.style.display = 'flex';
+                        tabsEl.querySelectorAll('.wt-chat-tab').forEach(btn => {
+                            btn.addEventListener('click', () => {
+                                wtChatCurrentChannel = btn.getAttribute('data-key');
+                                wtChatStopTypingPoll();
+                                // Forces renderChatPanel's freshOpen branch to
+                                // run again (it checks for #wt-chat-list) - a
+                                // channel switch needs the whole panel rebuilt
+                                // against the new channel's history, not an
+                                // incremental append onto the old one's.
+                                body.innerHTML = '';
+                                renderChatPanel();
+                            });
                         });
                     }).catch(() => {});
                     wtChatStartTypingPoll();
