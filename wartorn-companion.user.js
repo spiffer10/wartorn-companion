@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.30.1
+// @version      4.31.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.30.1';
+    const COMPANION_VERSION_FALLBACK = '4.31.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3876,14 +3876,6 @@ function targetRowHtml(t, estRespect) {
             // currently selected pinned as a card at the bottom - see the
             // FLIGHTS PANEL block below for renderFlightsPanel itself.
             flights: { icon: '✈️', title: 'Flights', render: renderFlightsPanel, ticking: false },
-            // Hidden unless actually flying/abroad - see wtUpdateTurbobuyVisibility.
-            // Not ticking, same reasoning as flights just above: the item
-            // picker is a real <select> a person is actively using, and
-            // PANEL_DEFS's generic 1s re-render would wipe it out mid-pick.
-            // renderTurbobuyPanel builds the picker once per destination and
-            // sets up its own dedicated 1s tick (renderTurbobuyStatus) for
-            // just the live status card underneath it.
-            turbobuy: { icon: '🛒', title: 'Turbobuy', render: renderTurbobuyPanel, ticking: false },
             vendetta: { icon: '🔪', title: 'Vendettas', render: renderVendettaPanel, ticking: false },
             // Extra channels (beyond this faction's own default one) get
             // their own entry registered dynamically - see the "Chat
@@ -4573,188 +4565,6 @@ function targetRowHtml(t, estRespect) {
             });
         }
 
-        // --- TURBOBUY PANEL ---
-        // Picks one item at the current/upcoming destination and watches it
-        // for the moment it comes back in stock, then surfaces direct links
-        // to Torn's own Travel Agency page (which hosts both the local shop
-        // and the return-flight booking) - it does not click Buy or submit
-        // a flight for you. Explicit design constraint (2026-11-05): a
-        // script that fires a purchase/flight the instant a condition is
-        // met, without a real human click at that moment, is exactly the
-        // kind of scripted game-action automation Torn's rules prohibit -
-        // the same pattern this session's own botting investigation
-        // (abnormally fast Canada Xanax buyouts) flagged as likely rule-
-        // breaking. This only ever reads public shop data (same as every
-        // other flight feature) and notifies; every actual click, including
-        // Torn's own "Max" quantity shortcut on the real buy page, stays a
-        // real human action.
-        //
-        // Deliberately does NOT reuse abroad-stock/landing-pick - those
-        // filter out anything without a resale profit margin (fine for
-        // flight-profit ranking, wrong here: picking an item to personally
-        // buy/use, like Xanax, has nothing to do with resale margin). Uses
-        // /api/public/country-stock instead - the same live quantity/
-        // availability/restock data, unfiltered.
-        let turbobuyItems = [];
-        let turbobuyCode = null;
-        let turbobuyRenderedForCode = null;
-        let turbobuySelectedItemId = safeGmGet('wt_turbobuy_item_id', null);
-        let turbobuyWasAvailable = null; // null = not yet known for this pick; tracks the false->true edge that fires the alert
-        let turbobuyLastFetch = 0;
-        let turbobuyFetchInFlight = false;
-        // Fast while actively waiting on a specific out-of-stock item (the
-        // whole point of this panel - catch the restock moment quickly),
-        // otherwise the same cadence as the Flights panel's own background
-        // refresh, since the underlying YATA data doesn't change faster
-        // than that anyway when nothing's actively being watched.
-        const TURBOBUY_ARMED_REFRESH_MS = 5000;
-        const TURBOBUY_IDLE_REFRESH_MS = 60000;
-        function turbobuyDestinationCode() {
-            // currentAbroadDestination once actually landed, travelDestination
-            // while still airborne so the picker can be set up before touchdown.
-            return currentAbroadDestination || travelDestination || null;
-        }
-        function turbobuySelectedEntry() {
-            return turbobuyItems.find(i => i.itemId === turbobuySelectedItemId) || null;
-        }
-        function turbobuyRefreshIntervalMs() {
-            const sel = turbobuySelectedEntry();
-            return (sel && !sel.available) ? TURBOBUY_ARMED_REFRESH_MS : TURBOBUY_IDLE_REFRESH_MS;
-        }
-        function turbobuyAnnounceAvailable() {
-            if (flightSoundEnabled) playPulseWarning();
-            if (!openWindows.has('turbobuy')) openPanelWindow('turbobuy');
-            const btn = document.querySelector('.wt-side-btn[data-key="turbobuy"]');
-            if (btn) { btn.dataset.unread = '1'; refreshButtonHighlights(); }
-        }
-        function fetchTurbobuyStock(force) {
-            const dest = turbobuyDestinationCode();
-            if (!dest) { turbobuyItems = []; turbobuyCode = null; return; }
-            if (turbobuyFetchInFlight) return;
-            if (!force && Date.now() - turbobuyLastFetch < turbobuyRefreshIntervalMs()) return;
-            turbobuyFetchInFlight = true;
-            turbobuyLastFetch = Date.now();
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: `${WARTORN_HOST}/api/public/country-stock?country=${encodeURIComponent(dest)}`,
-                headers: { 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
-                timeout: 8000,
-                onload: (res) => {
-                    turbobuyFetchInFlight = false;
-                    if (res.status === 401) { wtHandleUnauthorized(); return; }
-                    let data = null;
-                    try { data = JSON.parse(res.responseText); } catch (e) {}
-                    if (!data || !data.code) return;
-                    turbobuyCode = data.code;
-                    turbobuyItems = data.items || [];
-                    if (!turbobuyItems.some(i => i.itemId === turbobuySelectedItemId)) {
-                        turbobuySelectedItemId = turbobuyItems.length ? turbobuyItems[0].itemId : null;
-                        safeGmSet('wt_turbobuy_item_id', turbobuySelectedItemId);
-                        turbobuyWasAvailable = null;
-                    }
-                    const sel = turbobuySelectedEntry();
-                    const nowAvailable = !!(sel && sel.available);
-                    if (nowAvailable && turbobuyWasAvailable === false) turbobuyAnnounceAvailable();
-                    turbobuyWasAvailable = sel ? nowAvailable : null;
-                    renderTurbobuyStatus();
-                },
-                onerror: () => { turbobuyFetchInFlight = false; },
-                ontimeout: () => { turbobuyFetchInFlight = false; }
-            });
-        }
-        function turbobuySelectItem(itemId) {
-            turbobuySelectedItemId = itemId;
-            safeGmSet('wt_turbobuy_item_id', itemId);
-            turbobuyWasAvailable = null;
-            const btn = document.querySelector('.wt-side-btn[data-key="turbobuy"]');
-            if (btn) btn.dataset.unread = '0';
-            refreshButtonHighlights();
-            fetchTurbobuyStock(true);
-            renderTurbobuyStatus();
-        }
-        function renderTurbobuyStatus() {
-            fetchTurbobuyStock(false);
-            const statusEl = document.getElementById('wt-turbobuy-status');
-            if (!statusEl) return;
-            const sel = turbobuySelectedEntry();
-            if (!sel) { statusEl.innerHTML = ''; return; }
-            const profitLine = sel.profit !== null
-                ? `<div style="color:#4CAF50; font-weight:bold; margin-top:2px;">+$${Math.round(sel.profit).toLocaleString()} profit (full stack)</div>`
-                : '';
-            statusEl.innerHTML = sel.available
-                ? `<div style="background:#0f2a12; border:1px solid #4CAF50; border-radius:6px; padding:12px; text-align:center; margin-top:10px;">
-                        <div style="color:#4CAF50; font-weight:bold; font-size:1.05em; margin-bottom:4px;">🟢 In stock - ${sel.quantity.toLocaleString()} available</div>
-                        ${profitLine}
-                        <div style="margin-top:8px;">
-                            <a href="https://www.torn.com/page.php?sid=travel" target="_blank" style="display:block; background:#4CAF50; color:#000; font-weight:bold; text-align:center; padding:10px; border-radius:4px; text-decoration:none;">🛒 Open Travel Agency</a>
-                        </div>
-                        <div style="color:#888; font-size:0.72em; margin-top:6px;">Buy and Travel home are both buttons on that same page - Torn doesn't give either one its own URL. Torn's own quantity box has a "Max" shortcut for a full stack in one click; Wartorn doesn't buy or fly for you.</div>
-                   </div>`
-                : `<div style="background:#2a1f0f; border:1px solid #FF9800; border-radius:6px; padding:12px; text-align:center; margin-top:10px;">
-                        <div style="color:#FF9800; font-weight:bold;">⏳ Waiting for restock...</div>
-                        ${profitLine}
-                        <div style="color:#ccc; margin-top:4px;">${sel.restockAt ? 'Predicted: ' + formatRestockIn(sel.restockAt - Date.now()) : 'No prediction yet'}</div>
-                        <div style="color:#666; font-size:0.72em; margin-top:6px;">This panel will alert you the instant it's back in stock.</div>
-                   </div>`;
-        }
-        function renderTurbobuyPanel() {
-            const body = document.getElementById('wt-panel-body-turbobuy');
-            if (!body) return;
-            const dest = turbobuyDestinationCode();
-            if (!dest) {
-                turbobuyRenderedForCode = null;
-                body.innerHTML = '<div style="text-align:center; color:#888; padding:20px;">Not traveling right now - this lights up once you take off.</div>';
-                return;
-            }
-            fetchTurbobuyStock(false);
-            if (!turbobuyItems.length) {
-                body.innerHTML = '<div style="text-align:center; color:#888; padding:20px;">Loading shop...</div>';
-                return;
-            }
-            if (turbobuyRenderedForCode !== turbobuyCode) {
-                turbobuyRenderedForCode = turbobuyCode;
-                // Sorted highest-profit-first server-side already (full-stack
-                // profit, same DEFAULT_CAP convention the Flights panel's own
-                // roi uses) - this just formats that same number for display,
-                // doesn't re-sort.
-                const options = turbobuyItems.map(i => {
-                    const profitLabel = i.profit !== null ? `+$${Math.round(i.profit).toLocaleString()}` : 'no market data';
-                    return `<option value="${i.itemId}" ${i.itemId === turbobuySelectedItemId ? 'selected' : ''}>${i.itemName} — ${profitLabel}${i.available ? ' (in stock)' : ''}</option>`;
-                }).join('');
-                body.innerHTML = `
-                    <div style="font-size:0.7em; color:#888; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:5px;">Item to buy</div>
-                    <select id="wt-turbobuy-select" style="width:100%; background:#222; color:#ddd; border:1px solid #444; padding:6px; border-radius:4px;">${options}</select>
-                    <div id="wt-turbobuy-status"></div>
-                `;
-                const selectEl = document.getElementById('wt-turbobuy-select');
-                if (selectEl) selectEl.addEventListener('change', () => turbobuySelectItem(parseInt(selectEl.value, 10)));
-            }
-            renderTurbobuyStatus();
-            // Ticks the WHOLE panel, not just the status card: the very
-            // first open always starts on "Loading shop..." (the fetch is
-            // async), and that branch above returns before the status div
-            // even exists in the DOM - a tick that only called
-            // renderTurbobuyStatus would find nothing to update and the
-            // panel would stay stuck on "Loading shop..." forever even
-            // after the data arrives. Calling the whole function each tick
-            // is safe/idempotent - it only rebuilds the <select> when
-            // turbobuyRenderedForCode actually changes, otherwise it's the
-            // same per-second status refresh as before.
-            const w = openWindows.get('turbobuy');
-            if (w && !w.tickTimer) w.tickTimer = setInterval(renderTurbobuyPanel, 1000);
-        }
-        // Hidden unless actually flying or standing abroad - called from
-        // checkTravelStatus on every state change, same pattern as
-        // wtUpdateOcIssuesBadge's rank gate.
-        function wtUpdateTurbobuyVisibility() {
-            const btn = document.querySelector('.wt-side-btn[data-key="turbobuy"]');
-            if (!btn) return;
-            const show = wtIsFlying || !!currentAbroadDestination;
-            btn.style.display = show ? 'grid' : 'none';
-            if (!show && openWindows.has('turbobuy')) closePanelWindow('turbobuy');
-            refreshButtonHighlights();
-        }
-
         // Shared by refreshButtonHighlights and the per-button hover
         // handlers below, so "unread" (chat and ocIssues both set
         // dataset.unread - see wtChatSetButtonUnread/wtUpdateOcIssuesBadge)
@@ -5401,7 +5211,6 @@ function targetRowHtml(t, estRespect) {
             wtChatUiLoop();
 
             wtUpdateOcIssuesBadge(); // hides the button immediately for anyone not Master/Helper/admin, rather than a visible flash until the first OC status check resolves
-            wtUpdateTurbobuyVisibility(); // hidden until checkTravelStatus confirms you're actually flying/abroad
             wtUpdateChatVisibility(); // hides chat immediately if this page load already started on the fallback, rather than a visible flash before it's hidden
 
             // Reopen whichever of these synchronous panels were open
@@ -7154,7 +6963,7 @@ function targetRowHtml(t, estRespect) {
             // tracked regardless of whether the sound alert itself is on.
             // The sound's own on/off check stays separate, right where it
             // actually plays.
-            if (!userApiKey) { travelLandAtMs = null; travelDestination = null; wtIsFlying = false; updateFlightWidgetForTravel(); wtRenderItemHotbar(); wtUpdateTurbobuyVisibility(); return; }
+            if (!userApiKey) { travelLandAtMs = null; travelDestination = null; wtIsFlying = false; updateFlightWidgetForTravel(); wtRenderItemHotbar(); return; }
             const travel = await fetchTornTravel();
             const stillTraveling = !!(travel && typeof travel.time_left === 'number' && travel.time_left > 0);
             wtIsFlying = stillTraveling;
@@ -7199,7 +7008,6 @@ function targetRowHtml(t, estRespect) {
                 // hadn't been set yet.
                 currentAbroadDestination = isHomeDest ? null : rawDest;
                 wtRenderItemHotbar();
-                wtUpdateTurbobuyVisibility();
                 return;
             }
 
@@ -7211,12 +7019,10 @@ function targetRowHtml(t, estRespect) {
                 travelDestination = null;
                 currentAbroadDestination = null;
                 wtRenderItemHotbar();
-                wtUpdateTurbobuyVisibility();
                 return;
             }
             currentAbroadDestination = null; // still airborne, not abroad yet
             wtRenderItemHotbar();
-            wtUpdateTurbobuyVisibility();
             if (travelLandAtMs === null && travel.time_left < MIN_FRESH_TRAVEL_SECS) return;
             travelDestination = rawDest || null;
             const candidateLandAtMs = Date.now() + travel.time_left * 1000;
