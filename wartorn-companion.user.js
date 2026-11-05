@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.29.2
+// @version      4.29.3
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.29.2';
+    const COMPANION_VERSION_FALLBACK = '4.29.3';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4731,8 +4731,18 @@ function targetRowHtml(t, estRespect) {
                 if (selectEl) selectEl.addEventListener('change', () => turbobuySelectItem(parseInt(selectEl.value, 10)));
             }
             renderTurbobuyStatus();
+            // Ticks the WHOLE panel, not just the status card: the very
+            // first open always starts on "Loading shop..." (the fetch is
+            // async), and that branch above returns before the status div
+            // even exists in the DOM - a tick that only called
+            // renderTurbobuyStatus would find nothing to update and the
+            // panel would stay stuck on "Loading shop..." forever even
+            // after the data arrives. Calling the whole function each tick
+            // is safe/idempotent - it only rebuilds the <select> when
+            // turbobuyRenderedForCode actually changes, otherwise it's the
+            // same per-second status refresh as before.
             const w = openWindows.get('turbobuy');
-            if (w && !w.tickTimer) w.tickTimer = setInterval(renderTurbobuyStatus, 1000);
+            if (w && !w.tickTimer) w.tickTimer = setInterval(renderTurbobuyPanel, 1000);
         }
         // Hidden unless actually flying or standing abroad - called from
         // checkTravelStatus on every state change, same pattern as
