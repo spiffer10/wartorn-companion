@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.29.3
+// @version      4.29.4
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.29.3';
+    const COMPANION_VERSION_FALLBACK = '4.29.4';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4685,11 +4685,10 @@ function targetRowHtml(t, estRespect) {
                 ? `<div style="background:#0f2a12; border:1px solid #4CAF50; border-radius:6px; padding:12px; text-align:center; margin-top:10px;">
                         <div style="color:#4CAF50; font-weight:bold; font-size:1.05em; margin-bottom:4px;">🟢 In stock - ${sel.quantity.toLocaleString()} available</div>
                         ${profitLine}
-                        <div style="display:flex; gap:8px; margin-top:8px;">
-                            <a href="https://www.torn.com/page.php?sid=travel" target="_blank" style="flex:1; background:#4CAF50; color:#000; font-weight:bold; text-align:center; padding:10px; border-radius:4px; text-decoration:none;">🛒 Open Shop</a>
-                            <a href="https://www.torn.com/page.php?sid=travel" target="_blank" style="flex:1; background:#2196F3; color:#000; font-weight:bold; text-align:center; padding:10px; border-radius:4px; text-decoration:none;">✈️ Travel Agency</a>
+                        <div style="margin-top:8px;">
+                            <a href="https://www.torn.com/page.php?sid=travel" target="_blank" style="display:block; background:#4CAF50; color:#000; font-weight:bold; text-align:center; padding:10px; border-radius:4px; text-decoration:none;">🛒 Open Travel Agency</a>
                         </div>
-                        <div style="color:#888; font-size:0.72em; margin-top:6px;">Both open Torn's own Travel Agency page - the shop and the return flight are tabs there. Torn's own quantity box has a "Max" shortcut for a full stack in one click; Wartorn doesn't buy or fly for you.</div>
+                        <div style="color:#888; font-size:0.72em; margin-top:6px;">Buy and Travel home are both buttons on that same page - Torn doesn't give either one its own URL. Torn's own quantity box has a "Max" shortcut for a full stack in one click; Wartorn doesn't buy or fly for you.</div>
                    </div>`
                 : `<div style="background:#2a1f0f; border:1px solid #FF9800; border-radius:6px; padding:12px; text-align:center; margin-top:10px;">
                         <div style="color:#FF9800; font-weight:bold;">⏳ Waiting for restock...</div>
