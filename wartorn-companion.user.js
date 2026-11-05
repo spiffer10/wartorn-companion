@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.29.4
+// @version      4.30.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.29.4';
+    const COMPANION_VERSION_FALLBACK = '4.30.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -967,6 +967,18 @@
     }
 
     let lastMarketSignature = '';
+
+    // Bridges Turbobuy's selection (declared way below, inside the big
+    // "if (window.name !== 'attack_window')" block starting ~line 1355 -
+    // a separate block scope marketTick() here can't see into) up to this
+    // outer scope, which is the only place that can actually touch the
+    // live shop DOM on the 500ms tick below. Set from wtSyncTurbobuyTarget()
+    // in the Turbobuy module itself; null whenever nothing's being tracked.
+    let wtTurbobuyTarget = null; // { itemId, destRaw } | null - destRaw is
+    // turbobuyDestinationCode()'s raw string (e.g. "Mexico" from Torn's own
+    // travel API), compared case-insensitively against document.body's
+    // data-country ("mexico") below since the two sources don't share a
+    // casing convention.
     function scrapeItemMarket(shopRows) {
         const countryName = document.body && document.body.dataset && document.body.dataset.country;
         if (!countryName) return;
@@ -1048,6 +1060,47 @@
             });
             targetCell.appendChild(btn);
         });
+    }
+
+    // While Turbobuy is tracking an item, strips the real shop down to
+    // just that one row - everything else on the page is still real Torn
+    // UI (a filter, not a replacement), it just isn't shown. id lookup is
+    // the same dual-strategy as scrapeItemMarket() above, duplicated
+    // rather than shared since that path is delicate (TornPDA fallback)
+    // and not worth risking for a 4th caller. Recomputes every tick from
+    // the live row list rather than remembering which rows it hid, so a
+    // cleared selection (or leaving the matching country) always leaves
+    // every row visible again with no separate cleanup path needed.
+    function applyTurbobuyShopFocus(shopRows) {
+        const countryName = document.body && document.body.dataset && document.body.dataset.country;
+        const target = (wtTurbobuyTarget && countryName && wtTurbobuyTarget.destRaw.toLowerCase() === countryName.toLowerCase()) ? wtTurbobuyTarget : null;
+        shopRows.forEach(({ row }) => {
+            if (!row) return;
+            if (!target) { row.style.display = ''; return; }
+            const img = row.querySelector('[data-tt-content-type="item"] img') || row.querySelector('img');
+            const imgMatch = img && img.src && img.src.match(/\/items\/(\d+)\//);
+            const nameBtn = !imgMatch && (row.querySelector('[data-tt-content-type="name"] button[aria-controls]') || row.querySelector('button[aria-controls]'));
+            const btnMatch = nameBtn && nameBtn.getAttribute('aria-controls') && nameBtn.getAttribute('aria-controls').match(/^item-(\d+)-/);
+            const id = imgMatch ? parseInt(imgMatch[1], 10) : (btnMatch ? parseInt(btnMatch[1], 10) : null);
+            row.style.display = (id === target.itemId) ? '' : 'none';
+        });
+    }
+
+    // Glows Torn's own "Travel home" button so it's impossible to miss
+    // once Turbobuy has something picked - still a real human click on
+    // Torn's real button, this only ever adds a CSS class (see the
+    // wt-turbobuy-fly-highlight rule injected in injectSidePanels()).
+    // aria-controls="travel-home-panel" is the stable anchor (confirmed
+    // live 2026-11-05 via real page source); the class-name fallback
+    // covers it if Torn ever renames that aria attribute without also
+    // renaming the hashed class, which is the more likely of the two to
+    // survive a rebuild given how everything else on this page churns.
+    function applyTurbobuyFlyHighlight() {
+        const countryName = document.body && document.body.dataset && document.body.dataset.country;
+        const target = (wtTurbobuyTarget && countryName && wtTurbobuyTarget.destRaw.toLowerCase() === countryName.toLowerCase()) ? wtTurbobuyTarget : null;
+        const btn = document.querySelector('a[aria-controls="travel-home-panel"]') || document.querySelector('.travel-home-header-button');
+        if (!btn) return;
+        btn.classList.toggle('wt-turbobuy-fly-highlight', !!target);
     }
 
     // Draws the chart once, plus wires mousemove/mouseleave to redraw with
@@ -1296,6 +1349,8 @@
             const shopRows = findShopRows();
             scrapeItemMarket(shopRows);
             injectItemHistoryButtons(shopRows);
+            applyTurbobuyShopFocus(shopRows);
+            applyTurbobuyFlyHighlight();
         };
         marketTick();
         // The try/catch below only catches Worker CONSTRUCTION throwing -
@@ -4589,6 +4644,14 @@ function targetRowHtml(t, estRespect) {
         // Torn's own "Max" quantity shortcut on the real buy page, stays a
         // real human action.
         //
+        // applyTurbobuyShopFocus/applyTurbobuyFlyHighlight (in the market-
+        // scrape module, ~line 1070) stay on the same side of that line:
+        // while an item's tracked, they hide every OTHER row in Torn's own
+        // live shop and glow Torn's own "Travel home" button via plain CSS
+        // (display:none / a class toggle) - Buy and Travel home remain
+        // Torn's real buttons, clicked for real by the player; nothing
+        // here ever calls .click() or submits a form on their behalf.
+        //
         // Deliberately does NOT reuse abroad-stock/landing-pick - those
         // filter out anything without a resale profit margin (fine for
         // flight-profit ranking, wrong here: picking an item to personally
@@ -4614,6 +4677,14 @@ function targetRowHtml(t, estRespect) {
             // while still airborne so the picker can be set up before touchdown.
             return currentAbroadDestination || travelDestination || null;
         }
+        // Mirrors the current pick into the outer-scope wtTurbobuyTarget
+        // (declared up near scrapeItemMarket) so the live market-scrape
+        // tick - a different block scope, can't see turbobuySelectedItemId
+        // directly - knows what to focus the real shop page on.
+        function wtSyncTurbobuyTarget() {
+            const dest = turbobuyDestinationCode();
+            wtTurbobuyTarget = (turbobuySelectedItemId && dest) ? { itemId: turbobuySelectedItemId, destRaw: dest } : null;
+        }
         function turbobuySelectedEntry() {
             return turbobuyItems.find(i => i.itemId === turbobuySelectedItemId) || null;
         }
@@ -4629,7 +4700,7 @@ function targetRowHtml(t, estRespect) {
         }
         function fetchTurbobuyStock(force) {
             const dest = turbobuyDestinationCode();
-            if (!dest) { turbobuyItems = []; turbobuyCode = null; return; }
+            if (!dest) { turbobuyItems = []; turbobuyCode = null; wtSyncTurbobuyTarget(); return; }
             if (turbobuyFetchInFlight) return;
             if (!force && Date.now() - turbobuyLastFetch < turbobuyRefreshIntervalMs()) return;
             turbobuyFetchInFlight = true;
@@ -4656,6 +4727,7 @@ function targetRowHtml(t, estRespect) {
                     const nowAvailable = !!(sel && sel.available);
                     if (nowAvailable && turbobuyWasAvailable === false) turbobuyAnnounceAvailable();
                     turbobuyWasAvailable = sel ? nowAvailable : null;
+                    wtSyncTurbobuyTarget();
                     renderTurbobuyStatus();
                 },
                 onerror: () => { turbobuyFetchInFlight = false; },
@@ -4669,6 +4741,7 @@ function targetRowHtml(t, estRespect) {
             const btn = document.querySelector('.wt-side-btn[data-key="turbobuy"]');
             if (btn) btn.dataset.unread = '0';
             refreshButtonHighlights();
+            wtSyncTurbobuyTarget();
             fetchTurbobuyStock(true);
             renderTurbobuyStatus();
         }
@@ -4688,7 +4761,7 @@ function targetRowHtml(t, estRespect) {
                         <div style="margin-top:8px;">
                             <a href="https://www.torn.com/page.php?sid=travel" target="_blank" style="display:block; background:#4CAF50; color:#000; font-weight:bold; text-align:center; padding:10px; border-radius:4px; text-decoration:none;">🛒 Open Travel Agency</a>
                         </div>
-                        <div style="color:#888; font-size:0.72em; margin-top:6px;">Buy and Travel home are both buttons on that same page - Torn doesn't give either one its own URL. Torn's own quantity box has a "Max" shortcut for a full stack in one click; Wartorn doesn't buy or fly for you.</div>
+                        <div style="color:#888; font-size:0.72em; margin-top:6px;">If you're on the Travel Agency page right now, Wartorn already hid every other item in the shop and lit up Torn's own "Travel home" button for you - Buy and Travel home are both still real clicks on Torn's own page, Wartorn never fires either one for you.</div>
                    </div>`
                 : `<div style="background:#2a1f0f; border:1px solid #FF9800; border-radius:6px; padding:12px; text-align:center; margin-top:10px;">
                         <div style="color:#FF9800; font-weight:bold;">⏳ Waiting for restock...</div>
@@ -5136,6 +5209,18 @@ function targetRowHtml(t, estRespect) {
                 }
                 .wt-side-btn.wt-chain-active {
                     animation: wt-chainbtn-pulse 0.5s linear infinite, wt-chainbtn-wiggle 2.4s ease-in-out infinite;
+                }
+                /* Turbobuy: highlights Torn's own "Travel home" button
+                   while an item is being tracked - see
+                   applyTurbobuyFlyHighlight() in the market-scrape module. */
+                @keyframes wt-turbobuy-fly-pulse {
+                    0%, 100% { box-shadow: 0 0 6px rgba(76,175,80,0.8); }
+                    50% { box-shadow: 0 0 18px rgba(76,175,80,1); }
+                }
+                .wt-turbobuy-fly-highlight {
+                    outline: 2px solid #4CAF50 !important;
+                    border-radius: 4px;
+                    animation: wt-turbobuy-fly-pulse 1.4s ease-in-out infinite;
                 }
             `;
             document.head.appendChild(scrollbarStyle);
