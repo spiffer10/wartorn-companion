@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.29.1
+// @version      4.29.2
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.29.1';
+    const COMPANION_VERSION_FALLBACK = '4.29.2';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -7866,11 +7866,21 @@ setInterval(scanProfileFlightBar, 3000);
                         ${(entry.items || []).map(i => `<li>${wtChatEscapeHtml(i)}</li>`).join('')}
                     </ul>
                     <div style="text-align:right;">
-                        <span onclick="document.getElementById('wt-whats-new-popup').remove()" style="background:#00e5ff; color:#000; padding:8px 18px; border-radius:6px; cursor:pointer; font-weight:bold; display:inline-block;">Got it</span>
+                        <span id="wt-whats-new-dismiss" style="background:#00e5ff; color:#000; padding:8px 18px; border-radius:6px; cursor:pointer; font-weight:bold; display:inline-block;">Got it</span>
                     </div>
                 </div>
             `;
             document.body.appendChild(overlay);
+            // Not an inline onclick="" string - see attackButtonHtml's own
+            // comment above on why that doesn't reliably fire for injected
+            // HTML here. Click listener wired up after the real DOM node
+            // exists, same as everywhere else in this file. Backdrop click
+            // (anywhere outside the card) dismisses it too, standard modal
+            // behavior, matching how other full-screen overlays in the
+            // Companion already close.
+            const dismiss = () => overlay.remove();
+            document.getElementById('wt-whats-new-dismiss').addEventListener('click', dismiss);
+            overlay.addEventListener('click', (e) => { if (e.target === overlay) dismiss(); });
         }
         wtCheckWhatsNew();
 
