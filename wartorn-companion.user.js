@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.31.0
+// @version      4.31.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.31.0';
+    const COMPANION_VERSION_FALLBACK = '4.31.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4389,9 +4389,26 @@ function targetRowHtml(t, estRespect) {
         // second would re-fetch/redraw the full list just to keep a
         // countdown moving.
         function wtRefreshFlightsPanelIfOpen() {
+            if (!openWindows.has('flights')) return;
             // Only the selection changed, not the underlying list - redraw
             // just the card, not the whole panel.
-            if (openWindows.has('flights')) renderFlightSelectedCard();
+            renderFlightSelectedCard();
+            // EXCEPT in predicted/abroad mode, this is also exactly what
+            // fires once the landing-pick/abroad-stock fetch resolves (see
+            // applyFlightDetectCandidate) - the only thing that ever turns
+            // the list out of renderFlightsPanel's initial "Loading live
+            // stock..." placeholder for those two modes. Without this, the
+            // list stayed stuck on that placeholder forever once opened
+            // before the fetch resolved - closing and reopening the panel
+            // was the only way to see it, since THAT re-render finds
+            // flightDetectCandidates already populated and skips the
+            // loading branch entirely. Recommend mode's list is populated
+            // by ensureFlightAutoCandidates's own onDone instead, so it's
+            // deliberately left alone here.
+            const mode = flightStateMode();
+            if ((mode === 'predicted' || mode === 'abroad') && flightDetectCandidates.length) {
+                renderFlightsDetectList(mode);
+            }
         }
         function wtFlightRowFlagHtml(code) {
             const showImg = !isTornPDA() && FLIGHT_FLAG_ISO[code];
