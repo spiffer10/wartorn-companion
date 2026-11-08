@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.36.0
+// @version      4.37.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.36.0';
+    const COMPANION_VERSION_FALLBACK = '4.37.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3394,7 +3394,7 @@ function targetRowHtml(t, estRespect) {
         // request from torn.com besides). A ~20s poll is fine for a
         // casual faction chat; it just isn't real-time the way the
         // dashboard's own chat bubble is.
-        const CHAT_POLL_MS = 20000;
+        const CHAT_POLL_MS = 5000;
         // Informational, not a conversation - a lighter cadence than chat's.
         const VENDETTA_STAKEOUT_ALERT_POLL_MS = 60000;
         // Tracked by ts (a real millisecond timestamp), NOT id - chat moved
@@ -3693,14 +3693,6 @@ function targetRowHtml(t, estRespect) {
                     if (it.kind === 'file' && /^image\//.test(it.type)) { e.preventDefault(); wtChatSendImageFile(channelKey, it.getAsFile()); return; }
                 }
             });
-            // Hides the link button entirely once this player's already
-            // linked - there's nothing left for it to do, same reasoning
-            // as wtChatRefreshDiscordLinkStatus hiding it inside the
-            // (now effectively unreachable) popover.
-            fetchFromWartorn('chat-discord-link').then(data => {
-                const linkBtn = document.getElementById('wt-chat-discordlink-btn-' + safeId);
-                if (linkBtn && data && data.linked) linkBtn.style.display = 'none';
-            }).catch(() => {});
         }
         // channelKey identifies which docked tab/window this call is for -
         // each channel is now its own top-level tab (see "Chat button:
@@ -3892,23 +3884,23 @@ function targetRowHtml(t, estRespect) {
             const codeBox = document.getElementById('wt-chat-discordlink-codebox-' + safeId);
             const genBtn = document.getElementById('wt-chat-discordlink-gen-' + safeId);
             const unlinkBtn = document.getElementById('wt-chat-discordlink-unlink-' + safeId);
-            const linkBtn = document.getElementById('wt-chat-discordlink-btn-' + safeId);
             if (!statusEl) return;
             statusEl.innerText = 'Checking...';
             if (codeBox) codeBox.style.display = 'none';
+            // The outer 🔗 button used to hide itself entirely once linked -
+            // removed: Unlink lives INSIDE the popover this button opens,
+            // so hiding the button made Unlink unreachable with no way
+            // back in. It now always stays visible/clickable; this
+            // popover is what reflects linked vs not.
             fetchFromWartorn('chat-discord-link').then(data => {
                 if (data && data.linked) {
                     statusEl.innerHTML = 'Linked to Discord as <b style="color:#5865F2;">' + (data.discordUsername || 'unknown') + '</b>.';
                     if (genBtn) genBtn.style.display = 'none';
                     if (unlinkBtn) unlinkBtn.style.display = 'block';
-                    // Nothing left for the button itself to do once linked -
-                    // same rule buildChatInputBar applies on first open.
-                    if (linkBtn) linkBtn.style.display = 'none';
                 } else {
                     statusEl.innerText = 'Not linked. Generate a code, then send it in any Discord channel the Wartorn bot can see.';
                     if (genBtn) genBtn.style.display = 'block';
                     if (unlinkBtn) unlinkBtn.style.display = 'none';
-                    if (linkBtn) linkBtn.style.display = 'inline-flex';
                 }
             }).catch(() => { statusEl.innerText = 'Failed to load status.'; });
         }
