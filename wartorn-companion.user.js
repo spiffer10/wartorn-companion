@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.32.1
+// @version      4.33.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.32.1';
+    const COMPANION_VERSION_FALLBACK = '4.33.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1910,6 +1910,21 @@
             }
             return leftmost;
         }
+        // Every open Wartorn chat window (default channel or any extra
+        // one) shares ONE size/position scheme, keyed only by its index
+        // among currently-docked chat buttons (0 = default/closest to
+        // Torn's own tab row) - there's no separate "the default channel
+        // is special" case any more. If a native Torn chat window is open
+        // ("Faction", "Your private chats", ...), every one of our windows
+        // matches ITS height and chains further left of it, one
+        // width-plus-gap per index - exactly how Torn's own multiple open
+        // chat windows line up next to each other, so our windows read as
+        // "more of the same row," not a differently-sized outlier.
+        function wtChatWindowIndex(key) {
+            const all = document.querySelectorAll('.wt-side-btn[data-key="chat"], .wt-side-btn[data-key^="chat:"]');
+            for (let i = 0; i < all.length; i++) if (all[i].dataset.key === key) return i;
+            return 0;
+        }
         function getWindowGeometryStyle(key) {
             // Chat stacks directly above its own button - which itself
             // floats next to Torn's native chat tab row (see
@@ -1917,51 +1932,25 @@
             // buttons, exactly like Torn's own chat windows stack above
             // their tabs. openPanelWindow ignores any saved geometry for
             // chat (it's never draggable/resizable), so this always runs.
-            if (key === 'chat') {
+            if (isChatKey(key)) {
                 const width = 320, height = 420;
+                const i = wtChatWindowIndex(key);
                 // Snaps near (not flush against - small gap, see
                 // WT_CHAT_WINDOW_GAP) an already-open native chat window on
                 // this very first open, same as the live wtPositionChatUi
                 // loop does afterward - otherwise it'd briefly open
-                // overlapping one until that loop's next tick (up to 2s)
-                // corrects it.
+                // overlapping one until that loop's next tick corrects it.
                 const nativeRect = wtFindOpenNativeChatWindowRect();
                 if (nativeRect) {
                     return {
                         top: Math.max(0, nativeRect.top),
-                        left: Math.max(0, nativeRect.left - width - WT_CHAT_WINDOW_GAP),
+                        left: Math.max(0, nativeRect.left - (i + 1) * (width + WT_CHAT_WINDOW_GAP)),
                         width, height: nativeRect.height
                     };
                 }
-                // No native window open to snap against - docks at the
-                // viewport's right edge instead (where a lone native
-                // window would itself sit, since that row is right-
-                // anchored), rather than wherever our own button happens
-                // to be (which sits to the left of the row - see
-                // wtPositionChatUi).
-                const chatBtnEl = document.querySelector('.wt-side-btn[data-key="chat"]');
-                if (chatBtnEl) {
-                    const r = chatBtnEl.getBoundingClientRect();
-                    return {
-                        top: Math.max(0, r.top - height - 6),
-                        left: Math.max(0, window.innerWidth - width - 5),
-                        width, height
-                    };
-                }
-                return {
-                    top: Math.max(0, window.innerHeight - height - 20),
-                    left: Math.max(0, window.innerWidth - width - 20),
-                    width, height
-                };
-            }
-            // Any OTHER chat channel's window - same "stack above my own
-            // button" idea as the default channel above, just without the
-            // native-chat-window-snap refinement (that was tuned for
-            // exactly one window; stacking above its own button already
-            // reads correctly as "this tab's window" for however many
-            // extra channels exist).
-            if (isChatKey(key)) {
-                const width = 320, height = 420;
+                // No native window open to snap against - stacks above its
+                // own button instead (which sits to the left of Torn's
+                // native tab row - see wtPositionChatUi).
                 const btnEl = document.querySelector('.wt-side-btn[data-key="' + key + '"]');
                 if (btnEl) {
                     const r = btnEl.getBoundingClientRect();
@@ -3595,6 +3584,76 @@ function targetRowHtml(t, estRespect) {
             st.lastTypingPingAt = now;
             postToWartorn('chat-typing', { channel: channelKey || undefined }).catch(() => {});
         }
+        // Built ONCE per window, by openPanelWindow right after the window
+        // itself is created - NOT by renderChatPanel, and NOT inside the
+        // scrollable message area (#wt-chat-scroll-${key}). This is static
+        // chrome (buttons, input, pickers), not message data, and it needs
+        // to be a true non-scrolling sibling of the scroll div so it never
+        // rides away with the message history the way it did when it lived
+        // inside the same scrollable element (position:sticky only holds
+        // once the list is already taller than the box - exactly backwards
+        // for a brand new channel, which starts with the least content of
+        // all - and plain flex:0 0 auto inside the SAME scroll container
+        // still scrolls with everything else once there's enough history
+        // to overflow). Appended as the second child of
+        // #wt-panel-body-${key}, after the scroll div.
+        function buildChatInputBar(key, channelKey) {
+            const safeId = wtChatSafeId(channelKey);
+            const container = document.getElementById('wt-panel-body-' + key);
+            if (!container) return;
+            const bar = document.createElement('div');
+            bar.id = 'wt-chat-inputbar-' + safeId;
+            bar.style.cssText = 'flex:0 0 auto; position:relative; padding:8px 12px; background:#15171c; border-top:1px solid #333; display:flex; gap:6px; align-items:center;';
+            bar.innerHTML = `
+                <span id="wt-chat-emoji-btn-${safeId}" title="Emoji" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.9em; flex-shrink:0;">😀</span>
+                <span id="wt-chat-img-btn-${safeId}" title="Send an image (or paste one)" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.8em; flex-shrink:0;">🖼️</span>
+                <span id="wt-chat-gif-btn-${safeId}" title="GIF" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.6em; font-weight:bold; flex-shrink:0;">GIF</span>
+                <span id="wt-chat-discordlink-btn-${safeId}" title="Link your Discord account" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.85em; flex-shrink:0;">🔗</span>
+                <input id="wt-chat-input-${safeId}" type="text" placeholder="Message..." maxlength="1000" style="flex:1; min-width:0; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 8px; border-radius:4px; font-size:0.85em;">
+                <span id="wt-chat-send-btn-${safeId}" style="background:#4CAF50; color:#fff; padding:0 12px; height:26px; border-radius:4px; font-size:0.9em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;">Send</span>
+                <div id="wt-chat-emoji-picker-${safeId}" class="wt-chat-emoji-picker" style="display:none; flex-wrap:wrap; gap:2px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; max-height:180px; overflow-y:auto; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
+                <input id="wt-chat-img-input-${safeId}" type="file" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none;">
+                <div id="wt-chat-gif-picker-${safeId}" class="wt-chat-gif-picker" style="display:none; flex-direction:column; gap:6px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
+                <div id="wt-chat-discordlink-popover-${safeId}" class="wt-chat-discordlink-popover" style="display:none; flex-direction:column; position:absolute; bottom:calc(100% + 6px); right:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:10px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50; color:#ccc; font-size:0.78em;">
+                    <div style="font-weight:bold; color:#eee; margin-bottom:6px;">Link Discord Account</div>
+                    <div id="wt-chat-discordlink-status-${safeId}" style="margin-bottom:8px; line-height:1.4;">Checking...</div>
+                    <div id="wt-chat-discordlink-codebox-${safeId}" style="display:none; margin-bottom:8px;">
+                        <div style="color:#888; margin-bottom:4px;">In any Discord channel the bot can see, type (click to copy):</div>
+                        <div id="wt-chat-discordlink-code-${safeId}" title="Click to copy" style="background:#0b0c10; border:1px solid #444; border-radius:4px; padding:6px; font-family:monospace; font-size:1em; text-align:center; color:#5865F2; letter-spacing:1px; cursor:pointer;"></div>
+                        <div style="color:#666; margin-top:4px;">Expires in 10 minutes.</div>
+                    </div>
+                    <div style="display:flex; gap:6px;">
+                        <span id="wt-chat-discordlink-gen-${safeId}" style="flex:1; text-align:center; background:#5865F2; color:#fff; padding:6px; border-radius:4px; cursor:pointer; font-weight:bold;">Generate Code</span>
+                        <span id="wt-chat-discordlink-unlink-${safeId}" style="display:none; flex:1; text-align:center; background:#252525; border:1px solid #dc3545; color:#dc3545; padding:6px; border-radius:4px; cursor:pointer; font-weight:bold;">Unlink</span>
+                    </div>
+                </div>
+            `;
+            container.appendChild(bar);
+            document.getElementById('wt-chat-send-btn-' + safeId).addEventListener('click', () => wtChatSend(channelKey));
+            document.getElementById('wt-chat-input-' + safeId).addEventListener('keydown', (e) => { if (e.key === 'Enter') wtChatSend(channelKey); });
+            document.getElementById('wt-chat-input-' + safeId).addEventListener('input', () => wtChatPingTyping(channelKey));
+            document.getElementById('wt-chat-emoji-btn-' + safeId).addEventListener('click', (e) => wtChatToggleEmojiPicker(channelKey, e));
+            document.getElementById('wt-chat-gif-btn-' + safeId).addEventListener('click', (e) => wtChatToggleGifPicker(channelKey, e));
+            document.getElementById('wt-chat-img-btn-' + safeId).addEventListener('click', () => document.getElementById('wt-chat-img-input-' + safeId).click());
+            document.getElementById('wt-chat-discordlink-btn-' + safeId).addEventListener('click', (e) => wtChatToggleDiscordLinkPopover(channelKey, e));
+            document.getElementById('wt-chat-discordlink-gen-' + safeId).addEventListener('click', () => wtChatGenerateDiscordLinkCode(channelKey));
+            document.getElementById('wt-chat-discordlink-unlink-' + safeId).addEventListener('click', () => wtChatUnlinkDiscordAccount(channelKey));
+            document.getElementById('wt-chat-img-input-' + safeId).addEventListener('change', (e) => { wtChatSendImageFile(channelKey, e.target.files[0]); e.target.value = ''; });
+            document.getElementById('wt-chat-input-' + safeId).addEventListener('paste', (e) => {
+                const items = (e.clipboardData && e.clipboardData.items) || [];
+                for (const it of items) {
+                    if (it.kind === 'file' && /^image\//.test(it.type)) { e.preventDefault(); wtChatSendImageFile(channelKey, it.getAsFile()); return; }
+                }
+            });
+            // Hides the link button entirely once this player's already
+            // linked - there's nothing left for it to do, same reasoning
+            // as wtChatRefreshDiscordLinkStatus hiding it inside the
+            // (now effectively unreachable) popover.
+            fetchFromWartorn('chat-discord-link').then(data => {
+                const linkBtn = document.getElementById('wt-chat-discordlink-btn-' + safeId);
+                if (linkBtn && data && data.linked) linkBtn.style.display = 'none';
+            }).catch(() => {});
+        }
         // channelKey identifies which docked tab/window this call is for -
         // each channel is now its own top-level tab (see "Chat button:
         // docked next to Torn's own chat tabs" below), not one tab with
@@ -3602,7 +3661,11 @@ function targetRowHtml(t, estRespect) {
         async function renderChatPanel(channelKey) {
             const panelKey = chatPanelKeyOf(channelKey);
             const safeId = wtChatSafeId(channelKey);
-            const body = document.getElementById('wt-panel-body-' + panelKey);
+            // The scrollable message area only, NOT the whole window body -
+            // the input row/buttons live in a separate, non-scrolling
+            // sibling built once by buildChatInputBar (see openPanelWindow),
+            // so they never scroll away with the message history.
+            const body = document.getElementById('wt-chat-scroll-' + panelKey);
             if (!body) return;
             const st = wtChatStateFor(channelKey);
             const freshOpen = !document.getElementById('wt-chat-list-' + safeId);
@@ -3610,77 +3673,22 @@ function targetRowHtml(t, estRespect) {
                 const data = await fetchFromWartorn('chat-history' + wtChatChannelParam(channelKey));
                 st.myPlayerId = (data && data.myPlayerId) || null;
                 const messages = (data && Array.isArray(data.messages)) ? data.messages : [];
-                if (!openWindows.has(panelKey) || !document.getElementById('wt-panel-body-' + panelKey)) return;
+                if (!openWindows.has(panelKey) || !document.getElementById('wt-chat-scroll-' + panelKey)) return;
                 if (freshOpen) {
                     st.renderedMaxTs = messages.length ? messages[messages.length - 1].ts : 0;
                     const shown = messages.slice(-CHAT_PANEL_INITIAL_LIMIT);
-                    // Outer wrapper is a flex column pinned to min-height:100%
-                    // of the scrollable body (which has a definite height -
-                    // window height is fixed, title bar is flex:0 0 auto, so
-                    // the body flex item gets a real computed height, not an
-                    // indefinite one, so this percentage resolves). The
-                    // message list is flex:1 1 auto and bottom-justified, so
-                    // on a near-empty channel (new channel, "No messages yet")
-                    // it still grows to push the input row all the way down
-                    // to the bottom of the visible window instead of leaving
-                    // it floating right under one line of text. A plain
-                    // position:sticky on the input row (tried first) only
-                    // works once the list is already TALLER than the box -
-                    // exactly backwards for a brand new channel, which starts
-                    // with the least content of all. Once there's enough
-                    // history to overflow, this wrapper just grows past
-                    // min-height like any normal block and the body scrolls
-                    // as before - the input row rides along at the true end
-                    // of the content, same place it always was.
+                    // The input row/buttons live outside this scrollable
+                    // element entirely now (see buildChatInputBar, built
+                    // once by openPanelWindow) - this only ever holds the
+                    // message list and typing indicator, so there's
+                    // nothing here fighting the scroll for space.
                     body.innerHTML = `
-                        <div style="display:flex; flex-direction:column; min-height:100%;">
-                        <div id="wt-chat-list-${safeId}" style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:flex-end; gap:8px;">
+                        <div id="wt-chat-list-${safeId}" style="display:flex; flex-direction:column; gap:8px;">
                             ${shown.length ? shown.map(wtChatMsgRowHtml).join('') : '<div style="color:#888;">No messages yet - say hello.</div>'}
                         </div>
-                        <div id="wt-chat-typing-${safeId}" style="display:none; color:#888; font-size:0.72em; font-style:italic; padding:4px 2px 0; flex:0 0 auto;"></div>
-                        <div style="flex:0 0 auto; margin:8px -12px -10px -12px; padding:8px 12px; background:#15171c; border-top:1px solid #333; display:flex; gap:6px; align-items:center;">
-                            <span id="wt-chat-emoji-btn-${safeId}" title="Emoji" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.9em; flex-shrink:0;">😀</span>
-                            <span id="wt-chat-img-btn-${safeId}" title="Send an image (or paste one)" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.8em; flex-shrink:0;">🖼️</span>
-                            <span id="wt-chat-gif-btn-${safeId}" title="GIF" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.6em; font-weight:bold; flex-shrink:0;">GIF</span>
-                            <span id="wt-chat-discordlink-btn-${safeId}" title="Link your Discord account" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.85em; flex-shrink:0;">🔗</span>
-                            <input id="wt-chat-input-${safeId}" type="text" placeholder="Message..." maxlength="1000" style="flex:1; min-width:0; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 8px; border-radius:4px; font-size:0.85em;">
-                            <span id="wt-chat-send-btn-${safeId}" style="background:#4CAF50; color:#fff; padding:0 12px; height:26px; border-radius:4px; font-size:0.9em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;">Send</span>
-                            <div id="wt-chat-emoji-picker-${safeId}" class="wt-chat-emoji-picker" style="display:none; flex-wrap:wrap; gap:2px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; max-height:180px; overflow-y:auto; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
-                            <input id="wt-chat-img-input-${safeId}" type="file" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none;">
-                        <div id="wt-chat-gif-picker-${safeId}" class="wt-chat-gif-picker" style="display:none; flex-direction:column; gap:6px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
-                        <div id="wt-chat-discordlink-popover-${safeId}" class="wt-chat-discordlink-popover" style="display:none; flex-direction:column; position:absolute; bottom:calc(100% + 6px); right:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:10px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50; color:#ccc; font-size:0.78em;">
-                            <div style="font-weight:bold; color:#eee; margin-bottom:6px;">Link Discord Account</div>
-                            <div id="wt-chat-discordlink-status-${safeId}" style="margin-bottom:8px; line-height:1.4;">Checking...</div>
-                            <div id="wt-chat-discordlink-codebox-${safeId}" style="display:none; margin-bottom:8px;">
-                                <div style="color:#888; margin-bottom:4px;">In any Discord channel the bot can see, type:</div>
-                                <div id="wt-chat-discordlink-code-${safeId}" style="background:#0b0c10; border:1px solid #444; border-radius:4px; padding:6px; font-family:monospace; font-size:1em; text-align:center; color:#5865F2; letter-spacing:1px;"></div>
-                                <div style="color:#666; margin-top:4px;">Expires in 10 minutes.</div>
-                            </div>
-                            <div style="display:flex; gap:6px;">
-                                <span id="wt-chat-discordlink-gen-${safeId}" style="flex:1; text-align:center; background:#5865F2; color:#fff; padding:6px; border-radius:4px; cursor:pointer; font-weight:bold;">Generate Code</span>
-                                <span id="wt-chat-discordlink-unlink-${safeId}" style="display:none; flex:1; text-align:center; background:#252525; border:1px solid #dc3545; color:#dc3545; padding:6px; border-radius:4px; cursor:pointer; font-weight:bold;">Unlink</span>
-                            </div>
-                        </div>
-                        </div>
-                        </div>
+                        <div id="wt-chat-typing-${safeId}" style="display:none; color:#888; font-size:0.72em; font-style:italic; padding:4px 2px 0;"></div>
                     `;
                     wtChatScrollToBottom(body);
-                    document.getElementById('wt-chat-send-btn-' + safeId).addEventListener('click', () => wtChatSend(channelKey));
-                    document.getElementById('wt-chat-input-' + safeId).addEventListener('keydown', (e) => { if (e.key === 'Enter') wtChatSend(channelKey); });
-                    document.getElementById('wt-chat-input-' + safeId).addEventListener('input', () => wtChatPingTyping(channelKey));
-                    document.getElementById('wt-chat-emoji-btn-' + safeId).addEventListener('click', (e) => wtChatToggleEmojiPicker(channelKey, e));
-                    document.getElementById('wt-chat-gif-btn-' + safeId).addEventListener('click', (e) => wtChatToggleGifPicker(channelKey, e));
-                    document.getElementById('wt-chat-img-btn-' + safeId).addEventListener('click', () => document.getElementById('wt-chat-img-input-' + safeId).click());
-                    document.getElementById('wt-chat-discordlink-btn-' + safeId).addEventListener('click', (e) => wtChatToggleDiscordLinkPopover(channelKey, e));
-                    document.getElementById('wt-chat-discordlink-gen-' + safeId).addEventListener('click', () => wtChatGenerateDiscordLinkCode(channelKey));
-                    document.getElementById('wt-chat-discordlink-unlink-' + safeId).addEventListener('click', () => wtChatUnlinkDiscordAccount(channelKey));
-                    document.getElementById('wt-chat-img-input-' + safeId).addEventListener('change', (e) => { wtChatSendImageFile(channelKey, e.target.files[0]); e.target.value = ''; });
-                    document.getElementById('wt-chat-input-' + safeId).addEventListener('paste', (e) => {
-                        const items = (e.clipboardData && e.clipboardData.items) || [];
-                        for (const it of items) {
-                            if (it.kind === 'file' && /^image\//.test(it.type)) { e.preventDefault(); wtChatSendImageFile(channelKey, it.getAsFile()); return; }
-                        }
-                    });
                     wtChatStartTypingPoll(channelKey);
                 } else {
                     const newOnes = messages.filter(m => m.ts > st.renderedMaxTs);
@@ -3820,6 +3828,7 @@ function targetRowHtml(t, estRespect) {
             const codeBox = document.getElementById('wt-chat-discordlink-codebox-' + safeId);
             const genBtn = document.getElementById('wt-chat-discordlink-gen-' + safeId);
             const unlinkBtn = document.getElementById('wt-chat-discordlink-unlink-' + safeId);
+            const linkBtn = document.getElementById('wt-chat-discordlink-btn-' + safeId);
             if (!statusEl) return;
             statusEl.innerText = 'Checking...';
             if (codeBox) codeBox.style.display = 'none';
@@ -3828,10 +3837,14 @@ function targetRowHtml(t, estRespect) {
                     statusEl.innerHTML = 'Linked to Discord as <b style="color:#5865F2;">' + (data.discordUsername || 'unknown') + '</b>.';
                     if (genBtn) genBtn.style.display = 'none';
                     if (unlinkBtn) unlinkBtn.style.display = 'block';
+                    // Nothing left for the button itself to do once linked -
+                    // same rule buildChatInputBar applies on first open.
+                    if (linkBtn) linkBtn.style.display = 'none';
                 } else {
-                    statusEl.innerText = 'Not linked. Generate a code, then type "!link <code>" in any Discord channel the Wartorn bot can see.';
+                    statusEl.innerText = 'Not linked. Generate a code, then send it in any Discord channel the Wartorn bot can see.';
                     if (genBtn) genBtn.style.display = 'block';
                     if (unlinkBtn) unlinkBtn.style.display = 'none';
+                    if (linkBtn) linkBtn.style.display = 'inline-flex';
                 }
             }).catch(() => { statusEl.innerText = 'Failed to load status.'; });
         }
@@ -3841,7 +3854,20 @@ function targetRowHtml(t, estRespect) {
             const codeEl = document.getElementById('wt-chat-discordlink-code-' + safeId);
             postToWartorn('chat-discord-link', {}).then(({ data }) => {
                 if (!data || !data.code) return;
-                if (codeEl) codeEl.innerText = data.code;
+                // Full command, not the bare code - pasted straight into
+                // Discord as-is instead of making the player type "!link "
+                // themselves. Click-to-copy on top of that, same reasoning.
+                const full = '!link ' + data.code;
+                if (codeEl) {
+                    codeEl.innerText = full;
+                    codeEl.onclick = () => {
+                        (navigator.clipboard ? navigator.clipboard.writeText(full) : Promise.reject()).then(() => {
+                            const prev = codeEl.innerText;
+                            codeEl.innerText = 'Copied!';
+                            setTimeout(() => { codeEl.innerText = prev; }, 1200);
+                        }).catch(() => {});
+                    };
+                }
                 if (codeBox) codeBox.style.display = 'block';
             }).catch(() => {});
         }
@@ -4903,14 +4929,25 @@ function targetRowHtml(t, estRespect) {
                         <span id="wt-window-close-${key}" title="${isChat ? 'Minimize' : 'Close'}" style="cursor:pointer; color:#888; font-size:1.2em; line-height:1; padding:0 4px;">${isChat ? '&minus;' : '&times;'}</span>
                     </span>
                 </div>
-                <div id="wt-panel-body-${key}" class="wt-window-body" style="flex:1 1 auto; overflow-y:auto; padding:10px 12px; font-size:0.85em;">Loading...</div>
+                ${isChat
+                    ? `<div id="wt-panel-body-${key}" class="wt-window-body" style="flex:1 1 auto; display:flex; flex-direction:column; overflow:hidden; font-size:0.85em;">
+                        <div id="wt-chat-scroll-${key}" style="flex:1 1 auto; overflow-y:auto; padding:10px 12px;">Loading...</div>
+                       </div>`
+                    : `<div id="wt-panel-body-${key}" class="wt-window-body" style="flex:1 1 auto; overflow-y:auto; padding:10px 12px; font-size:0.85em;">Loading...</div>`
+                }
                 ${isChat ? '' : `<div id="wt-window-resize-${key}" title="Drag to resize" style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 50%, #3a3f4b 50%); border-radius:0 0 6px 0;"></div>`}
             `;
             document.body.appendChild(win);
             openWindows.set(key, { el: win, tickTimer: null, refreshTimer: null, locked });
             persistOpenWindowKeys();
 
-            const body = document.getElementById('wt-panel-body-' + key);
+            // Chat's real scrollable element is the nested
+            // #wt-chat-scroll-${key} div (see markup above) - its own
+            // #wt-panel-body-${key} wrapper is just a non-scrolling flex
+            // column holding that scroll div plus the static input bar
+            // below it. Every other panel still scrolls on
+            // #wt-panel-body-${key} directly, same as always.
+            const body = document.getElementById(isChat ? 'wt-chat-scroll-' + key : 'wt-panel-body-' + key);
             // Manually drive scrolling and stop the wheel event from
             // bubbling - Torn's own page can otherwise swallow/intercept
             // wheel events before the browser's native overflow-y:auto
@@ -4981,6 +5018,12 @@ function targetRowHtml(t, estRespect) {
             // into a resize handle that doesn't exist.
             if (!isChat) {
                 makeWindowDraggable(key, win, document.getElementById('wt-window-titlebar-' + key), document.getElementById('wt-window-resize-' + key));
+            } else {
+                // Static chrome (input/send/emoji/gif/discord-link), built
+                // once here rather than by def.render() below - see
+                // buildChatInputBar for why it has to be a non-scrolling
+                // sibling of the scroll div, not inside it.
+                buildChatInputBar(key, chatChannelKeyOf(key));
             }
 
             refreshButtonHighlights();
@@ -5274,35 +5317,32 @@ function targetRowHtml(t, estRespect) {
                         btn.style.right = (12 + i * (38 + 2)) + 'px';
                         btn.style.bottom = '12px';
                     }
-                    // The default channel's window (when open) stacks near
-                    // its button, same as Torn's own chat windows sit right
-                    // above their tab - kept in step with the button here
-                    // since it's never draggable itself (see
-                    // openPanelWindow). If Torn itself has a chat window
-                    // open too (e.g. "Tesseract" or "Your private chats"),
-                    // snap next to whichever one sits closest (small gap,
-                    // not flush) instead of overlapping it - found
-                    // structurally (two levels up from any chat tab button,
-                    // then whichever sibling of the tab row isn't the tab
-                    // row itself) rather than by a hashed class name, so it
-                    // keeps working across a Torn front-end redeploy. Any
-                    // OTHER open channel's window just stacks above its own
-                    // button - no native-snap refinement, that was tuned
-                    // for exactly one window (see getWindowGeometryStyle).
+                    // Every open Wartorn chat window (default or any extra
+                    // channel) stacks near its own button, same as Torn's
+                    // own chat windows sit right above their tab - kept in
+                    // step with the button here since none of them are
+                    // draggable (see openPanelWindow). If Torn itself has a
+                    // chat window open too (e.g. "Tesseract" or "Your
+                    // private chats"), EVERY one of our windows matches its
+                    // height and chains further left of it by index (found
+                    // structurally - two levels up from any chat tab
+                    // button, then whichever sibling of the tab row isn't
+                    // the tab row itself - rather than by a hashed class
+                    // name, so it keeps working across a Torn front-end
+                    // redeploy) - so our windows read as "more of the same
+                    // row," not a differently-sized outlier next to it.
                     const key = btn.dataset.key;
                     const win = document.getElementById('wt-window-' + key);
                     if (!win) return;
                     const DEFAULT_W = 320, DEFAULT_H = 420;
                     const btnRect = btn.getBoundingClientRect();
                     win.style.width = DEFAULT_W + 'px';
-                    if (key === 'chat') {
-                        const nativeRect = wtFindOpenNativeChatWindowRect();
-                        if (nativeRect) {
-                            win.style.top = Math.max(0, Math.round(nativeRect.top)) + 'px';
-                            win.style.height = Math.round(nativeRect.height) + 'px';
-                            win.style.left = Math.max(0, Math.round(nativeRect.left - DEFAULT_W - WT_CHAT_WINDOW_GAP)) + 'px';
-                            return;
-                        }
+                    const nativeRect = wtFindOpenNativeChatWindowRect();
+                    if (nativeRect) {
+                        win.style.top = Math.max(0, Math.round(nativeRect.top)) + 'px';
+                        win.style.height = Math.round(nativeRect.height) + 'px';
+                        win.style.left = Math.max(0, Math.round(nativeRect.left - (i + 1) * (DEFAULT_W + WT_CHAT_WINDOW_GAP))) + 'px';
+                        return;
                     }
                     win.style.top = Math.max(0, Math.round(btnRect.top - DEFAULT_H - 6)) + 'px';
                     win.style.height = DEFAULT_H + 'px';
