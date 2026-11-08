@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.38.0
+// @version      4.39.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.38.0';
+    const COMPANION_VERSION_FALLBACK = '4.39.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3820,7 +3820,15 @@ function targetRowHtml(t, estRespect) {
                         let d = {};
                         try { d = JSON.parse(res.responseText); } catch (e) {}
                         if (res.status === 200 && d.success && d.url) {
-                            postToWartorn('chat-send', { message: '', imageUrl: d.url, channel: channelKey || undefined }).then(() => renderChatPanel(channelKey)).catch(() => flash('Could not send image'));
+                            postToWartorn('chat-send', { message: '', imageUrl: d.url, channel: channelKey || undefined }).then(({ status, data }) => {
+                                if (status === 403 && data && data.needsDiscordLink) {
+                                    flash('Link your Discord account first');
+                                    const pop = document.getElementById('wt-chat-discordlink-popover-' + safeId);
+                                    if (pop) { pop.style.display = 'flex'; wtChatRefreshDiscordLinkStatus(channelKey); }
+                                    return;
+                                }
+                                renderChatPanel(channelKey);
+                            }).catch(() => flash('Could not send image'));
                         } else {
                             flash(d.error || 'Upload failed');
                         }
@@ -3837,16 +3845,23 @@ function targetRowHtml(t, estRespect) {
             const message = input.value.trim();
             if (!message) return;
             input.value = '';
-            postToWartorn('chat-send', { message, imageUrl: '', channel: channelKey || undefined }).then(({ data }) => {
-                renderChatPanel(channelKey);
-                // needsDiscordLink only ever comes back true for a channel
-                // that actually has a Discord link AND an unlinked sender
-                // (see chatSendHandler, routes/chat.js) - the message still
-                // sent fine within Wartorn, it just didn't cross-post.
-                if (data && data.needsDiscordLink) {
-                    showCompanionToast('⚠️ Sent, but not to Discord - link your Discord account to cross-post.' + (data.discordChannelUrl ? ' (click to open the Discord channel)' : ''), data.discordChannelUrl || null);
+            postToWartorn('chat-send', { message, imageUrl: '', channel: channelKey || undefined }).then(({ status, data }) => {
+                // The companion's chat-send route hard-blocks (403) rather
+                // than letting an unlinked sender's message through and
+                // just skipping the Discord relay - a message that posts
+                // in Wartorn but silently never reaches Discord just
+                // clutters the bridged chat. Restore what they typed and
+                // force the Discord-link popover open instead of sending.
+                if (status === 403 && data && data.needsDiscordLink) {
+                    input.value = message;
+                    showCompanionToast('🔒 Link your Discord account to chat in this channel.' + (data.discordChannelUrl ? ' (click to open the Discord channel)' : ''), data.discordChannelUrl || null);
+                    const safeId = wtChatSafeId(channelKey);
+                    const pop = document.getElementById('wt-chat-discordlink-popover-' + safeId);
+                    if (pop) { pop.style.display = 'flex'; wtChatRefreshDiscordLinkStatus(channelKey); }
+                    return;
                 }
-            }).catch(() => {});
+                renderChatPanel(channelKey);
+            }).catch(() => { input.value = message; });
         }
         // Curated fixed grid, no external service - same list the
         // dashboard's own emoji picker uses.
@@ -4003,9 +4018,18 @@ function targetRowHtml(t, estRespect) {
             }).catch(() => { resultsEl.innerHTML = '<div style="color:#f44336; font-size:0.75em; grid-column:1/-1;">Failed to load.</div>'; });
         }
         function wtChatSendGif(channelKey, url) {
-            const picker = document.getElementById('wt-chat-gif-picker-' + wtChatSafeId(channelKey));
+            const safeId = wtChatSafeId(channelKey);
+            const picker = document.getElementById('wt-chat-gif-picker-' + safeId);
             if (picker) picker.style.display = 'none';
-            postToWartorn('chat-send', { message: '', imageUrl: url, channel: channelKey || undefined }).then(() => renderChatPanel(channelKey)).catch(() => {});
+            postToWartorn('chat-send', { message: '', imageUrl: url, channel: channelKey || undefined }).then(({ status, data }) => {
+                if (status === 403 && data && data.needsDiscordLink) {
+                    showCompanionToast('🔒 Link your Discord account to chat in this channel.' + (data.discordChannelUrl ? ' (click to open the Discord channel)' : ''), data.discordChannelUrl || null);
+                    const pop = document.getElementById('wt-chat-discordlink-popover-' + safeId);
+                    if (pop) { pop.style.display = 'flex'; wtChatRefreshDiscordLinkStatus(channelKey); }
+                    return;
+                }
+                renderChatPanel(channelKey);
+            }).catch(() => {});
         }
         // Closes any open emoji/GIF picker on an outside click - class-
         // based (not a fixed id) since there's now one pair of pickers per
