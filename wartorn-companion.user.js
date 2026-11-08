@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.41.0
+// @version      4.42.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.41.0';
+    const COMPANION_VERSION_FALLBACK = '4.42.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1964,7 +1964,14 @@
                 const btnEl = document.querySelector('.wt-side-btn[data-key="' + key + '"]');
                 if (btnEl) {
                     const r = btnEl.getBoundingClientRect();
-                    return { top: Math.max(0, r.top - height - 6), left: Math.max(0, r.left), width, height };
+                    // Right-aligned to the button (which sits snug against
+                    // Torn's own right-anchored chat-tab row), not left-
+                    // aligned - the button's left edge is already near the
+                    // viewport's right edge, so anchoring the window's LEFT
+                    // edge there instead pushed most of a 320px-wide window
+                    // off-screen to the right, taking the title bar's
+                    // minimize button with it.
+                    return { top: Math.max(0, r.top - height - 6), left: Math.max(0, r.right - width), width, height };
                 }
                 return {
                     top: Math.max(0, window.innerHeight - height - 20),
@@ -5452,7 +5459,12 @@ function targetRowHtml(t, estRespect) {
                     }
                     win.style.top = Math.max(0, Math.round(btnRect.top - DEFAULT_H - 6)) + 'px';
                     win.style.height = DEFAULT_H + 'px';
-                    win.style.left = Math.max(0, Math.round(btnRect.left)) + 'px';
+                    // Right-aligned to the button, same reasoning as the
+                    // matching branch in getWindowGeometryStyle - the
+                    // button sits snug against the viewport's right edge,
+                    // so left-aligning here pushed the window (and its
+                    // minimize button) off-screen to the right.
+                    win.style.left = Math.max(0, Math.round(btnRect.right - DEFAULT_W)) + 'px';
                 });
             }
             // requestAnimationFrame, not a slower setInterval - tracks
