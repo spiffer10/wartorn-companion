@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.34.0
+// @version      4.35.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.34.0';
+    const COMPANION_VERSION_FALLBACK = '4.35.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3491,6 +3491,44 @@ function targetRowHtml(t, estRespect) {
             if (!u) return u;
             return u.startsWith('/') ? (WARTORN_HOST + u) : u;
         }
+        // A channel/default-chat icon can now be a server-generated
+        // /chat-uploads/icons/... upload (see /api/staff/chat-icon-upload,
+        // routes/chat.js) instead of one of the fixed preset emoji -
+        // distinguished the same way the dashboard does, by this prefix.
+        function wtChatIsCustomIcon(icon) { return typeof icon === 'string' && icon.startsWith('/chat-uploads/icons/'); }
+        // Clears `el` and fills it with either an <img> (custom upload,
+        // resolved via wtChatAbsUrl since this script runs on torn.com,
+        // not WARTORN_HOST) or the plain emoji glyph as text - shared by
+        // every chat tab button so a custom icon renders consistently
+        // wherever a button's icon gets (re)built.
+        // Same thing as wtChatSetIconContent, but returning an HTML string
+        // instead of mutating a live element - for the one spot (the
+        // window titlebar) that builds its markup as a win.innerHTML
+        // template string rather than assembling DOM nodes.
+        function wtChatIconHtml(icon) {
+            return wtChatIsCustomIcon(icon)
+                ? `<img src="${wtChatAbsUrl(icon)}" style="width:18px; height:18px; object-fit:contain; vertical-align:middle; border-radius:3px;">`
+                : wtChatEscapeHtml(icon || '💬');
+        }
+        function wtChatSetIconContent(el, icon) {
+            // The unread-count badge (see buildSideButton) is a sibling
+            // inside this same button - saved and re-appended rather than
+            // lost when this runs after the button already has one
+            // (the default channel's icon getting patched in once its
+            // real value is fetched, or the favicon <img>'s own onerror).
+            const badge = el.querySelector('span[id^="wt-chat-unread-badge-"]');
+            el.innerHTML = '';
+            if (wtChatIsCustomIcon(icon)) {
+                const img = document.createElement('img');
+                img.src = wtChatAbsUrl(icon);
+                img.style.cssText = 'width:22px; height:22px; object-fit:contain; border-radius:3px;';
+                img.onerror = () => { el.innerText = '💬'; if (badge) el.appendChild(badge); };
+                el.appendChild(img);
+            } else {
+                el.innerText = icon || '💬';
+            }
+            if (badge) el.appendChild(badge);
+        }
         function wtChatMsgRowHtml(m) {
             const textHtml = m.message ? `<div style="color:#ddd; font-size:0.85em; white-space:pre-wrap; word-break:break-word;">${wtChatLinkify(m.message)}</div>` : '';
             // imageUrl only ever comes from the server's own history
@@ -4933,7 +4971,7 @@ function targetRowHtml(t, estRespect) {
             win.style.cssText = `position:fixed; display:flex; flex-direction:column; top:${Math.min(Math.max(0, geo.top), maxTop)}px; left:${Math.min(Math.max(0, geo.left), maxLeft)}px; width:${geo.width}px; height:${geo.height}px; z-index:${topZIndex}; background:rgba(21,23,28,${opacitySetting}); font-size:${fontSizeSetting}px; ${getWindowChromeStyle()}`;
             win.innerHTML = `
                 <div id="wt-window-titlebar-${key}" style="cursor:${isChat ? 'default' : 'move'}; flex:0 0 auto; display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:#0b0c10; border-bottom:1px solid #333;">
-                    <span style="color:#00e5ff; font-weight:bold; font-size:0.9em;">${def.icon} ${def.title}</span>
+                    <span style="color:#00e5ff; font-weight:bold; font-size:0.9em;">${wtChatIconHtml(def.icon)} ${wtChatEscapeHtml(def.title)}</span>
                     <span style="display:flex; align-items:center; gap:8px;">
                         ${isChat ? '' : `<span id="wt-window-lock-${key}" title="Lock this window in place" style="cursor:pointer; color:#888; font-size:1em; line-height:1;">${locked ? '🔒' : '🔓'}</span>`}
                         <span id="wt-window-close-${key}" title="${isChat ? 'Minimize' : 'Close'}" style="cursor:pointer; color:#888; font-size:1.2em; line-height:1; padding:0 4px;">${isChat ? '&minus;' : '&times;'}</span>
@@ -5160,14 +5198,14 @@ function targetRowHtml(t, estRespect) {
                     // Falls back to the plain emoji glyph on a load error
                     // (fallback host unreachable, etc.) rather than
                     // showing a broken-image icon.
-                    if (key === 'chat') {
+                    if (key === 'chat' && !wtChatIsCustomIcon(def.icon)) {
                         const img = document.createElement('img');
                         img.src = `${WARTORN_HOST}/favicon-32x32.png`;
                         img.style.cssText = 'width:24px; height:24px; object-fit:contain;';
-                        img.onerror = () => { btn.innerText = def.icon; };
+                        img.onerror = () => wtChatSetIconContent(btn, def.icon);
                         btn.appendChild(img);
                     } else {
-                        btn.innerText = def.icon;
+                        wtChatSetIconContent(btn, def.icon);
                     }
                     // Unread shows a small count badge in the corner, on
                     // top of the darkish-green background buttonRestColor
@@ -5429,14 +5467,7 @@ function targetRowHtml(t, estRespect) {
                     const defBtn = document.querySelector('.wt-side-btn[data-key="chat"]');
                     if (defBtn) {
                         defBtn.title = PANEL_DEFS.chat.title;
-                        if (channels[0].icon && channels[0].icon !== '💬') {
-                            defBtn.innerHTML = '';
-                            defBtn.innerText = channels[0].icon;
-                            const badge = document.createElement('span');
-                            badge.id = 'wt-chat-unread-badge-default';
-                            badge.style.cssText = 'position:absolute; top:-4px; right:-4px; min-width:15px; height:15px; padding:0 3px; border-radius:8px; background:#5c940d; color:#fff; font-size:10px; font-weight:bold; line-height:15px; text-align:center; display:none; pointer-events:none; box-shadow:0 1px 3px rgba(0,0,0,0.6);';
-                            defBtn.appendChild(badge);
-                        }
+                        if (channels[0].icon && channels[0].icon !== '💬') wtChatSetIconContent(defBtn, channels[0].icon);
                     }
                 }
                 channels.slice(1).forEach(c => {
