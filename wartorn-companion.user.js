@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.42.0
+// @version      4.43.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.42.0';
+    const COMPANION_VERSION_FALLBACK = '4.43.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1910,6 +1910,22 @@
             }
             return leftmost;
         }
+        // Where a native Torn chat window WOULD sit if one were open right
+        // now - the whole tab row's own bounding rect, flush against the
+        // viewport's right edge (same "outer"/tabRow structural walk as
+        // wtFindOpenNativeChatWindowRect, just one level shallower - the
+        // row itself, not whichever open window sits inside its sibling
+        // container). Used as the fallback anchor when no native window
+        // is actually open, so our own chat window still lands in the
+        // same spot a real Torn one would (flush right, just above the
+        // tab row) instead of hanging above whichever one of our OWN
+        // buttons happens to be chained furthest left.
+        function wtNativeChatRowRect() {
+            const firstTab = document.querySelector('[id^="chat_panel_button:"]');
+            if (!firstTab) return null;
+            const tabRow = firstTab.parentElement && firstTab.parentElement.parentElement;
+            return tabRow ? tabRow.getBoundingClientRect() : null;
+        }
         // Every open Wartorn chat window (default channel or any extra
         // one) shares ONE size/position scheme. Chained-left position is
         // ranked among only the OTHER chat windows that are ALSO
@@ -1958,20 +1974,19 @@
                         width, height: nativeRect.height
                     };
                 }
-                // No native window open to snap against - stacks above its
-                // own button instead (which sits to the left of Torn's
-                // native tab row - see wtPositionChatUi).
-                const btnEl = document.querySelector('.wt-side-btn[data-key="' + key + '"]');
-                if (btnEl) {
-                    const r = btnEl.getBoundingClientRect();
-                    // Right-aligned to the button (which sits snug against
-                    // Torn's own right-anchored chat-tab row), not left-
-                    // aligned - the button's left edge is already near the
-                    // viewport's right edge, so anchoring the window's LEFT
-                    // edge there instead pushed most of a 320px-wide window
-                    // off-screen to the right, taking the title bar's
-                    // minimize button with it.
-                    return { top: Math.max(0, r.top - height - 6), left: Math.max(0, r.right - width), width, height };
+                // No native window open to snap against - lands where one
+                // WOULD sit (flush with the right edge of Torn's own tab
+                // row), not above our own button, which is chained further
+                // left per channel and would put each channel's window in
+                // a different spot instead of the one shared slot real
+                // Torn chat windows always use.
+                const rowRect = wtNativeChatRowRect();
+                if (rowRect) {
+                    return {
+                        top: Math.max(0, rowRect.top - height - 6),
+                        left: Math.max(0, rowRect.right - width - i * (width + WT_CHAT_WINDOW_GAP)),
+                        width, height
+                    };
                 }
                 return {
                     top: Math.max(0, window.innerHeight - height - 20),
@@ -5457,13 +5472,25 @@ function targetRowHtml(t, estRespect) {
                         win.style.left = Math.max(0, Math.round(nativeRect.left - (windowIndex + 1) * (DEFAULT_W + WT_CHAT_WINDOW_GAP))) + 'px';
                         return;
                     }
+                    // No native window actually open - lands where one
+                    // WOULD sit (flush with the tab row's right edge),
+                    // chained left by how many of OUR OWN chat windows are
+                    // open (wtChatOpenWindowIndex, same ranking the
+                    // nativeRect branch above uses), not by this button's
+                    // own fixed slot `i` - the button and its window don't
+                    // share a position (see getWindowGeometryStyle's
+                    // matching branch), same as a real Torn chat window
+                    // never floats above the tab that happened to open it.
+                    const rowRect = wtNativeChatRowRect();
+                    const windowIndex = wtChatOpenWindowIndex(key);
+                    if (rowRect) {
+                        win.style.top = Math.max(0, Math.round(rowRect.top - DEFAULT_H - 6)) + 'px';
+                        win.style.height = DEFAULT_H + 'px';
+                        win.style.left = Math.max(0, Math.round(rowRect.right - DEFAULT_W - windowIndex * (DEFAULT_W + WT_CHAT_WINDOW_GAP))) + 'px';
+                        return;
+                    }
                     win.style.top = Math.max(0, Math.round(btnRect.top - DEFAULT_H - 6)) + 'px';
                     win.style.height = DEFAULT_H + 'px';
-                    // Right-aligned to the button, same reasoning as the
-                    // matching branch in getWindowGeometryStyle - the
-                    // button sits snug against the viewport's right edge,
-                    // so left-aligning here pushed the window (and its
-                    // minimize button) off-screen to the right.
                     win.style.left = Math.max(0, Math.round(btnRect.right - DEFAULT_W)) + 'px';
                 });
             }
