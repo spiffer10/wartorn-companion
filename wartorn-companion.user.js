@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.31.1
+// @version      4.32.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.31.1';
+    const COMPANION_VERSION_FALLBACK = '4.32.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3623,11 +3623,25 @@ function targetRowHtml(t, estRespect) {
                             <span id="wt-chat-emoji-btn-${safeId}" title="Emoji" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.9em; flex-shrink:0;">😀</span>
                             <span id="wt-chat-img-btn-${safeId}" title="Send an image (or paste one)" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.8em; flex-shrink:0;">🖼️</span>
                             <span id="wt-chat-gif-btn-${safeId}" title="GIF" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.6em; font-weight:bold; flex-shrink:0;">GIF</span>
+                            <span id="wt-chat-discordlink-btn-${safeId}" title="Link your Discord account" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.85em; flex-shrink:0;">🔗</span>
                             <input id="wt-chat-input-${safeId}" type="text" placeholder="Message..." maxlength="1000" style="flex:1; min-width:0; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 8px; border-radius:4px; font-size:0.85em;">
                             <span id="wt-chat-send-btn-${safeId}" style="background:#4CAF50; color:#fff; padding:0 12px; height:26px; border-radius:4px; font-size:0.9em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;">Send</span>
                             <div id="wt-chat-emoji-picker-${safeId}" class="wt-chat-emoji-picker" style="display:none; flex-wrap:wrap; gap:2px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; max-height:180px; overflow-y:auto; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
                             <input id="wt-chat-img-input-${safeId}" type="file" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none;">
                         <div id="wt-chat-gif-picker-${safeId}" class="wt-chat-gif-picker" style="display:none; flex-direction:column; gap:6px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
+                        <div id="wt-chat-discordlink-popover-${safeId}" class="wt-chat-discordlink-popover" style="display:none; flex-direction:column; position:absolute; bottom:calc(100% + 6px); right:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:10px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50; color:#ccc; font-size:0.78em;">
+                            <div style="font-weight:bold; color:#eee; margin-bottom:6px;">Link Discord Account</div>
+                            <div id="wt-chat-discordlink-status-${safeId}" style="margin-bottom:8px; line-height:1.4;">Checking...</div>
+                            <div id="wt-chat-discordlink-codebox-${safeId}" style="display:none; margin-bottom:8px;">
+                                <div style="color:#888; margin-bottom:4px;">In any Discord channel the bot can see, type:</div>
+                                <div id="wt-chat-discordlink-code-${safeId}" style="background:#0b0c10; border:1px solid #444; border-radius:4px; padding:6px; font-family:monospace; font-size:1em; text-align:center; color:#5865F2; letter-spacing:1px;"></div>
+                                <div style="color:#666; margin-top:4px;">Expires in 10 minutes.</div>
+                            </div>
+                            <div style="display:flex; gap:6px;">
+                                <span id="wt-chat-discordlink-gen-${safeId}" style="flex:1; text-align:center; background:#5865F2; color:#fff; padding:6px; border-radius:4px; cursor:pointer; font-weight:bold;">Generate Code</span>
+                                <span id="wt-chat-discordlink-unlink-${safeId}" style="display:none; flex:1; text-align:center; background:#252525; border:1px solid #dc3545; color:#dc3545; padding:6px; border-radius:4px; cursor:pointer; font-weight:bold;">Unlink</span>
+                            </div>
+                        </div>
                         </div>
                     `;
                     wtChatScrollToBottom(body);
@@ -3637,6 +3651,9 @@ function targetRowHtml(t, estRespect) {
                     document.getElementById('wt-chat-emoji-btn-' + safeId).addEventListener('click', (e) => wtChatToggleEmojiPicker(channelKey, e));
                     document.getElementById('wt-chat-gif-btn-' + safeId).addEventListener('click', (e) => wtChatToggleGifPicker(channelKey, e));
                     document.getElementById('wt-chat-img-btn-' + safeId).addEventListener('click', () => document.getElementById('wt-chat-img-input-' + safeId).click());
+                    document.getElementById('wt-chat-discordlink-btn-' + safeId).addEventListener('click', (e) => wtChatToggleDiscordLinkPopover(channelKey, e));
+                    document.getElementById('wt-chat-discordlink-gen-' + safeId).addEventListener('click', () => wtChatGenerateDiscordLinkCode(channelKey));
+                    document.getElementById('wt-chat-discordlink-unlink-' + safeId).addEventListener('click', () => wtChatUnlinkDiscordAccount(channelKey));
                     document.getElementById('wt-chat-img-input-' + safeId).addEventListener('change', (e) => { wtChatSendImageFile(channelKey, e.target.files[0]); e.target.value = ''; });
                     document.getElementById('wt-chat-input-' + safeId).addEventListener('paste', (e) => {
                         const items = (e.clipboardData && e.clipboardData.items) || [];
@@ -3758,6 +3775,60 @@ function targetRowHtml(t, estRespect) {
             input.focus();
             input.setSelectionRange(pos, pos);
         }
+        // Per-player Discord identity link (not the staff-only per-channel
+        // bridge in Faction Options) - lets anyone tie their own Discord
+        // account to their Torn player, same endpoint pair the dashboard's
+        // chat bubble uses, just through the companion's authenticated
+        // fetchFromWartorn/postToWartorn/deleteFromWartorn instead of a
+        // page fetch().
+        function wtChatToggleDiscordLinkPopover(channelKey, e) {
+            if (e) e.stopPropagation();
+            const safeId = wtChatSafeId(channelKey);
+            const pop = document.getElementById('wt-chat-discordlink-popover-' + safeId);
+            const emojiPicker = document.getElementById('wt-chat-emoji-picker-' + safeId);
+            const gifPicker = document.getElementById('wt-chat-gif-picker-' + safeId);
+            if (!pop) return;
+            if (emojiPicker) emojiPicker.style.display = 'none';
+            if (gifPicker) gifPicker.style.display = 'none';
+            const opening = pop.style.display !== 'flex';
+            pop.style.display = opening ? 'flex' : 'none';
+            if (opening) wtChatRefreshDiscordLinkStatus(channelKey);
+        }
+        function wtChatRefreshDiscordLinkStatus(channelKey) {
+            const safeId = wtChatSafeId(channelKey);
+            const statusEl = document.getElementById('wt-chat-discordlink-status-' + safeId);
+            const codeBox = document.getElementById('wt-chat-discordlink-codebox-' + safeId);
+            const genBtn = document.getElementById('wt-chat-discordlink-gen-' + safeId);
+            const unlinkBtn = document.getElementById('wt-chat-discordlink-unlink-' + safeId);
+            if (!statusEl) return;
+            statusEl.innerText = 'Checking...';
+            if (codeBox) codeBox.style.display = 'none';
+            fetchFromWartorn('chat-discord-link').then(data => {
+                if (data && data.linked) {
+                    statusEl.innerHTML = 'Linked to Discord as <b style="color:#5865F2;">' + (data.discordUsername || 'unknown') + '</b>.';
+                    if (genBtn) genBtn.style.display = 'none';
+                    if (unlinkBtn) unlinkBtn.style.display = 'block';
+                } else {
+                    statusEl.innerText = 'Not linked. Generate a code, then type "!link <code>" in any Discord channel the Wartorn bot can see.';
+                    if (genBtn) genBtn.style.display = 'block';
+                    if (unlinkBtn) unlinkBtn.style.display = 'none';
+                }
+            }).catch(() => { statusEl.innerText = 'Failed to load status.'; });
+        }
+        function wtChatGenerateDiscordLinkCode(channelKey) {
+            const safeId = wtChatSafeId(channelKey);
+            const codeBox = document.getElementById('wt-chat-discordlink-codebox-' + safeId);
+            const codeEl = document.getElementById('wt-chat-discordlink-code-' + safeId);
+            postToWartorn('chat-discord-link', {}).then(({ data }) => {
+                if (!data || !data.code) return;
+                if (codeEl) codeEl.innerText = data.code;
+                if (codeBox) codeBox.style.display = 'block';
+            }).catch(() => {});
+        }
+        function wtChatUnlinkDiscordAccount(channelKey) {
+            if (!confirm('Unlink your Discord account?')) return;
+            deleteFromWartorn('chat-discord-link').then(() => wtChatRefreshDiscordLinkStatus(channelKey)).catch(() => {});
+        }
         // GIF search via /api/companion/chat-gif-search (the same Giphy
         // proxy the dashboard's picker uses, just reached through
         // fetchFromWartorn's authenticated channel instead of a page
@@ -3828,6 +3899,9 @@ function targetRowHtml(t, estRespect) {
             });
             document.querySelectorAll('.wt-chat-gif-picker').forEach(gifPicker => {
                 if (gifPicker.style.display === 'flex' && !gifPicker.contains(e.target) && !e.target.id.startsWith('wt-chat-gif-btn-')) gifPicker.style.display = 'none';
+            });
+            document.querySelectorAll('.wt-chat-discordlink-popover').forEach(pop => {
+                if (pop.style.display === 'flex' && !pop.contains(e.target) && !e.target.id.startsWith('wt-chat-discordlink-btn-')) pop.style.display = 'none';
             });
         });
         // Hides a broken avatar image instead of leaving Torn's default
