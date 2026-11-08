@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.40.0
+// @version      4.41.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.40.0';
+    const COMPANION_VERSION_FALLBACK = '4.41.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -5512,7 +5512,20 @@ function targetRowHtml(t, estRespect) {
                 // this button at all); leaving it as 💬 (the literal
                 // default) keeps the favicon exactly as before.
                 if (channels[0]) {
-                    wtChatChannels[0] = channels[0];
+                    // channelKey stays null (never the real server key the
+                    // listing returns) - null is the sentinel every other
+                    // part of chat (chatPanelKeyOf, wtChatChannelParam,
+                    // PANEL_DEFS.chat's own render closure) uses to mean
+                    // "the default channel." Overwriting it with the real
+                    // key used to make pollChat compute panelKey as
+                    // 'chat:<realKey>' instead of 'chat' - never matching
+                    // the actual open window's key, so openWindows.has()
+                    // came back false and the poll silently stopped
+                    // refreshing an already-open default chat window,
+                    // falling through to the unread-badge-only branch
+                    // (itself targeting a '.wt-side-btn[data-key="chat:..."]'
+                    // selector that doesn't exist either).
+                    wtChatChannels[0] = { ...channels[0], channelKey: null };
                     PANEL_DEFS.chat.title = channels[0].name;
                     PANEL_DEFS.chat.icon = channels[0].icon || '💬';
                     const defBtn = document.querySelector('.wt-side-btn[data-key="chat"]');
