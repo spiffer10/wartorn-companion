@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.35.0
+// @version      4.36.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.35.0';
+    const COMPANION_VERSION_FALLBACK = '4.36.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3537,7 +3537,7 @@ function targetRowHtml(t, estRespect) {
             // side has to re-validate, just escape for safe attribute use.
             const imgUrl = wtChatAbsUrl(m.imageUrl);
             const imgHtml = imgUrl ? `<a href="${wtChatEscapeHtml(imgUrl)}" target="_blank" rel="noopener"><img src="${wtChatEscapeHtml(imgUrl)}" loading="lazy" style="max-width:160px; max-height:160px; border-radius:6px; margin-top:4px; display:block;"></a>` : '';
-            return `<div style="display:flex; gap:6px;">
+            return `<div data-nonce="${wtChatEscapeHtml(m.id)}" style="display:flex; gap:6px;">
                 <img class="wt-chat-avatar" src="${wtChatAbsUrl(m.avatarUrl)}" style="width:22px; height:22px; border-radius:50%; object-fit:cover; flex-shrink:0;">
                 <div style="min-width:0; flex:1;">
                     <span style="color:#00e5ff; font-weight:bold; font-size:0.8em;">${wtChatEscapeHtml(m.name)}</span>
@@ -3748,6 +3748,22 @@ function targetRowHtml(t, estRespect) {
                             wtChatScrollToBottom(body);
                         }
                         st.renderedMaxTs = messages[messages.length - 1].ts;
+                    }
+                    // There's no live push here (no SSE on the companion -
+                    // see the file comment above CHAT_TYPING_POLL_MS), so a
+                    // message deleted on Discord's side (see
+                    // deleteMessageByDiscordId, routes/chat.js) would
+                    // otherwise just sit in this already-rendered list
+                    // forever. Only ever removes rows actually in the DOM
+                    // (at most CHAT_PANEL_INITIAL_LIMIT + however many
+                    // appended since) against the fetched set (up to the
+                    // 200-message server cap), so there's no risk of a
+                    // genuinely-older, merely-off-screen message being
+                    // mistaken for deleted.
+                    const list = document.getElementById('wt-chat-list-' + safeId);
+                    if (list) {
+                        const live = new Set(messages.map(m => m.id));
+                        list.querySelectorAll('[data-nonce]').forEach(row => { if (!live.has(row.dataset.nonce)) row.remove(); });
                     }
                 }
                 // Viewing the panel marks everything currently loaded as
