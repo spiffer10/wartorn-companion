@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.39.0
+// @version      4.40.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.39.0';
+    const COMPANION_VERSION_FALLBACK = '4.40.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -5022,7 +5022,7 @@ function targetRowHtml(t, estRespect) {
             win.style.cssText = `position:fixed; display:flex; flex-direction:column; top:${Math.min(Math.max(0, geo.top), maxTop)}px; left:${Math.min(Math.max(0, geo.left), maxLeft)}px; width:${geo.width}px; height:${geo.height}px; z-index:${topZIndex}; background:rgba(21,23,28,${opacitySetting}); font-size:${fontSizeSetting}px; ${getWindowChromeStyle()}`;
             win.innerHTML = `
                 <div id="wt-window-titlebar-${key}" style="cursor:${isChat ? 'default' : 'move'}; flex:0 0 auto; display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:#0b0c10; border-bottom:1px solid #333;">
-                    <span style="color:#00e5ff; font-weight:bold; font-size:0.9em;">${wtChatIconHtml(def.icon)} ${wtChatEscapeHtml(def.title)}</span>
+                    <span id="wt-window-title-${key}" style="color:#00e5ff; font-weight:bold; font-size:0.9em;">${wtChatIconHtml(def.icon)} ${wtChatEscapeHtml(def.title)}</span>
                     <span style="display:flex; align-items:center; gap:8px;">
                         ${isChat ? '' : `<span id="wt-window-lock-${key}" title="Lock this window in place" style="cursor:pointer; color:#888; font-size:1em; line-height:1;">${locked ? '🔒' : '🔓'}</span>`}
                         <span id="wt-window-close-${key}" title="${isChat ? 'Minimize' : 'Close'}" style="cursor:pointer; color:#888; font-size:1.2em; line-height:1; padding:0 4px;">${isChat ? '&minus;' : '&times;'}</span>
@@ -5520,6 +5520,15 @@ function targetRowHtml(t, estRespect) {
                         defBtn.title = PANEL_DEFS.chat.title;
                         if (channels[0].icon && channels[0].icon !== '💬') wtChatSetIconContent(defBtn, channels[0].icon);
                     }
+                    // openPanelWindow bakes def.title into the titlebar
+                    // once, at window-creation time - if the window was
+                    // already open (or got reopened via keysToReopen)
+                    // before this fetch resolved, it's stuck showing the
+                    // hardcoded 'Faction Chat' placeholder seeded on
+                    // PANEL_DEFS.chat forever otherwise. Patches the live
+                    // DOM too, same values just set above.
+                    const titleEl = document.getElementById('wt-window-title-chat');
+                    if (titleEl) titleEl.innerHTML = `${wtChatIconHtml(PANEL_DEFS.chat.icon)} ${wtChatEscapeHtml(PANEL_DEFS.chat.title)}`;
                 }
                 channels.slice(1).forEach(c => {
                     const panelKey = chatPanelKeyOf(c.channelKey);
