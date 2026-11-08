@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.33.0
+// @version      4.34.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.33.0';
+    const COMPANION_VERSION_FALLBACK = '4.34.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1911,19 +1911,29 @@
             return leftmost;
         }
         // Every open Wartorn chat window (default channel or any extra
-        // one) shares ONE size/position scheme, keyed only by its index
-        // among currently-docked chat buttons (0 = default/closest to
-        // Torn's own tab row) - there's no separate "the default channel
-        // is special" case any more. If a native Torn chat window is open
-        // ("Faction", "Your private chats", ...), every one of our windows
-        // matches ITS height and chains further left of it, one
-        // width-plus-gap per index - exactly how Torn's own multiple open
-        // chat windows line up next to each other, so our windows read as
-        // "more of the same row," not a differently-sized outlier.
-        function wtChatWindowIndex(key) {
+        // one) shares ONE size/position scheme. Chained-left position is
+        // ranked among only the OTHER chat windows that are ALSO
+        // currently open (button order: default first, then extras in
+        // registration order) - NOT among every registered chat button
+        // regardless of open/closed state. A channel's docked BUTTON
+        // always sits at its own fixed slot whether its window is open or
+        // not (same as Torn's own tabs never shuffle), but a window that
+        // skipped a CLOSED channel's slot in the chain would leave an
+        // empty window-sized gap where that closed window "would" sit -
+        // nothing ever draws there, so there's nothing to skip past. This
+        // walks buttons in slot order and stops counting as soon as it
+        // reaches `key` itself, so it never depends on key's own
+        // open/closed state (needed since getWindowGeometryStyle calls
+        // this for a window that doesn't exist in the DOM yet).
+        function wtChatOpenWindowIndex(key) {
             const all = document.querySelectorAll('.wt-side-btn[data-key="chat"], .wt-side-btn[data-key^="chat:"]');
-            for (let i = 0; i < all.length; i++) if (all[i].dataset.key === key) return i;
-            return 0;
+            let idx = 0;
+            for (const btn of all) {
+                const k = btn.dataset.key;
+                if (k === key) return idx;
+                if (document.getElementById('wt-window-' + k)) idx++;
+            }
+            return idx;
         }
         function getWindowGeometryStyle(key) {
             // Chat stacks directly above its own button - which itself
@@ -1934,7 +1944,7 @@
             // chat (it's never draggable/resizable), so this always runs.
             if (isChatKey(key)) {
                 const width = 320, height = 420;
-                const i = wtChatWindowIndex(key);
+                const i = wtChatOpenWindowIndex(key);
                 // Snaps near (not flush against - small gap, see
                 // WT_CHAT_WINDOW_GAP) an already-open native chat window on
                 // this very first open, same as the live wtPositionChatUi
@@ -5339,9 +5349,16 @@ function targetRowHtml(t, estRespect) {
                     win.style.width = DEFAULT_W + 'px';
                     const nativeRect = wtFindOpenNativeChatWindowRect();
                     if (nativeRect) {
+                        // Ranked among only the chat windows that are
+                        // ACTUALLY open right now (see
+                        // wtChatOpenWindowIndex) - not this button's own
+                        // fixed slot index `i`, which would leave a whole
+                        // window-sized gap where a closed earlier-slot
+                        // channel's window "would" sit.
+                        const windowIndex = wtChatOpenWindowIndex(key);
                         win.style.top = Math.max(0, Math.round(nativeRect.top)) + 'px';
                         win.style.height = Math.round(nativeRect.height) + 'px';
-                        win.style.left = Math.max(0, Math.round(nativeRect.left - (i + 1) * (DEFAULT_W + WT_CHAT_WINDOW_GAP))) + 'px';
+                        win.style.left = Math.max(0, Math.round(nativeRect.left - (windowIndex + 1) * (DEFAULT_W + WT_CHAT_WINDOW_GAP))) + 'px';
                         return;
                     }
                     win.style.top = Math.max(0, Math.round(btnRect.top - DEFAULT_H - 6)) + 'px';
@@ -5393,6 +5410,35 @@ function targetRowHtml(t, estRespect) {
             // extended in place as each one is registered.
             fetchFromWartorn('chat-channels').then(chData => {
                 const channels = (chData && Array.isArray(chData.channels)) ? chData.channels : [];
+                // channels[0] is always this faction's own default channel
+                // (listChannelsForFaction, routes/chat.js) - its name/icon
+                // can now be customized per-faction (default-chat-settings),
+                // so the hardcoded 'Faction Chat'/💬 seeded above gets
+                // replaced with the real values once they're known. The
+                // button/title bar were already built synchronously with
+                // the hardcoded placeholder (so chat never waits on this
+                // fetch to appear) - patched in place here rather than
+                // rebuilt. A custom icon overrides the default favicon-image
+                // treatment (the one thing that makes "edit icon" visible on
+                // this button at all); leaving it as 💬 (the literal
+                // default) keeps the favicon exactly as before.
+                if (channels[0]) {
+                    wtChatChannels[0] = channels[0];
+                    PANEL_DEFS.chat.title = channels[0].name;
+                    PANEL_DEFS.chat.icon = channels[0].icon || '💬';
+                    const defBtn = document.querySelector('.wt-side-btn[data-key="chat"]');
+                    if (defBtn) {
+                        defBtn.title = PANEL_DEFS.chat.title;
+                        if (channels[0].icon && channels[0].icon !== '💬') {
+                            defBtn.innerHTML = '';
+                            defBtn.innerText = channels[0].icon;
+                            const badge = document.createElement('span');
+                            badge.id = 'wt-chat-unread-badge-default';
+                            badge.style.cssText = 'position:absolute; top:-4px; right:-4px; min-width:15px; height:15px; padding:0 3px; border-radius:8px; background:#5c940d; color:#fff; font-size:10px; font-weight:bold; line-height:15px; text-align:center; display:none; pointer-events:none; box-shadow:0 1px 3px rgba(0,0,0,0.6);';
+                            defBtn.appendChild(badge);
+                        }
+                    }
+                }
                 channels.slice(1).forEach(c => {
                     const panelKey = chatPanelKeyOf(c.channelKey);
                     PANEL_DEFS[panelKey] = { icon: c.icon || '💬', title: c.name, render: () => renderChatPanel(c.channelKey), ticking: false };
