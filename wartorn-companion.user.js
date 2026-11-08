@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.37.0
+// @version      4.38.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.37.0';
+    const COMPANION_VERSION_FALLBACK = '4.38.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3340,10 +3340,20 @@ function targetRowHtml(t, estRespect) {
         // A small floating notice for when the timer fires while its panel
         // isn't even open - the sound alone is easy to miss/misattribute if
         // there's nothing on screen explaining what just made noise.
-        function showCompanionToast(msg) {
+        // clickUrl (optional) makes the whole toast clickable, opening
+        // that URL in a new tab - used by wtChatSend's "link your Discord
+        // account" nudge to jump straight to the relevant Discord
+        // channel, since this toast is plain text (textContent, not
+        // innerHTML) and can't embed an actual <a> itself.
+        function showCompanionToast(msg, clickUrl) {
             const toast = document.createElement('div');
             toast.textContent = msg;
             toast.style.cssText = 'position:fixed; top:16px; right:16px; z-index:99999999; background:rgba(21,23,28,0.97); border:1px solid #00e5ff; color:#fff; padding:10px 16px; border-radius:6px; font-size:0.9em; font-weight:bold; box-shadow:0 4px 16px rgba(0,0,0,0.6); max-width:280px;';
+            if (clickUrl) {
+                toast.style.cursor = 'pointer';
+                toast.title = 'Click to open';
+                toast.addEventListener('click', () => window.open(clickUrl, '_blank'));
+            }
             document.body.appendChild(toast);
             setTimeout(() => toast.remove(), 8000);
         }
@@ -3827,7 +3837,16 @@ function targetRowHtml(t, estRespect) {
             const message = input.value.trim();
             if (!message) return;
             input.value = '';
-            postToWartorn('chat-send', { message, imageUrl: '', channel: channelKey || undefined }).then(() => renderChatPanel(channelKey)).catch(() => {});
+            postToWartorn('chat-send', { message, imageUrl: '', channel: channelKey || undefined }).then(({ data }) => {
+                renderChatPanel(channelKey);
+                // needsDiscordLink only ever comes back true for a channel
+                // that actually has a Discord link AND an unlinked sender
+                // (see chatSendHandler, routes/chat.js) - the message still
+                // sent fine within Wartorn, it just didn't cross-post.
+                if (data && data.needsDiscordLink) {
+                    showCompanionToast('⚠️ Sent, but not to Discord - link your Discord account to cross-post.' + (data.discordChannelUrl ? ' (click to open the Discord channel)' : ''), data.discordChannelUrl || null);
+                }
+            }).catch(() => {});
         }
         // Curated fixed grid, no external service - same list the
         // dashboard's own emoji picker uses.
