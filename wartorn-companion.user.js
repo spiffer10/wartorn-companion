@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.43.0
+// @version      4.44.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.43.0';
+    const COMPANION_VERSION_FALLBACK = '4.44.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3561,6 +3561,10 @@ function targetRowHtml(t, estRespect) {
             }
             if (badge) el.appendChild(badge);
         }
+        // Re-validated here (not just trusted from the server) since it
+        // lands straight in a CSS color: value - see
+        // resolveDiscordIdentityForPlayer/ingestExternalMessage (routes/chat.js).
+        const WT_CHAT_HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
         function wtChatMsgRowHtml(m) {
             const textHtml = m.message ? `<div style="color:#ddd; font-size:0.85em; white-space:pre-wrap; word-break:break-word;">${wtChatLinkify(m.message)}</div>` : '';
             // imageUrl only ever comes from the server's own history
@@ -3569,10 +3573,14 @@ function targetRowHtml(t, estRespect) {
             // side has to re-validate, just escape for safe attribute use.
             const imgUrl = wtChatAbsUrl(m.imageUrl);
             const imgHtml = imgUrl ? `<a href="${wtChatEscapeHtml(imgUrl)}" target="_blank" rel="noopener"><img src="${wtChatEscapeHtml(imgUrl)}" loading="lazy" style="max-width:160px; max-height:160px; border-radius:6px; margin-top:4px; display:block;"></a>` : '';
+            // A Discord-linked sender's own role color wins over the plain
+            // default cyan - same "whatever Discord calls a user is how it
+            // should show" request this chat already follows for name/avatar.
+            const nameColor = WT_CHAT_HEX_COLOR_RE.test(m.nameColor) ? m.nameColor : '#00e5ff';
             return `<div data-nonce="${wtChatEscapeHtml(m.id)}" style="display:flex; gap:6px;">
                 <img class="wt-chat-avatar" src="${wtChatAbsUrl(m.avatarUrl)}" style="width:22px; height:22px; border-radius:50%; object-fit:cover; flex-shrink:0;">
                 <div style="min-width:0; flex:1;">
-                    <span style="color:#00e5ff; font-weight:bold; font-size:0.8em;">${wtChatEscapeHtml(m.name)}</span>
+                    <span style="color:${nameColor}; font-weight:bold; font-size:0.8em;">${wtChatEscapeHtml(m.name)}</span>
                     ${textHtml}${imgHtml}
                 </div>
             </div>`;
