@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.32.0
+// @version      4.32.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.32.0';
+    const COMPANION_VERSION_FALLBACK = '4.32.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3614,12 +3614,31 @@ function targetRowHtml(t, estRespect) {
                 if (freshOpen) {
                     st.renderedMaxTs = messages.length ? messages[messages.length - 1].ts : 0;
                     const shown = messages.slice(-CHAT_PANEL_INITIAL_LIMIT);
+                    // Outer wrapper is a flex column pinned to min-height:100%
+                    // of the scrollable body (which has a definite height -
+                    // window height is fixed, title bar is flex:0 0 auto, so
+                    // the body flex item gets a real computed height, not an
+                    // indefinite one, so this percentage resolves). The
+                    // message list is flex:1 1 auto and bottom-justified, so
+                    // on a near-empty channel (new channel, "No messages yet")
+                    // it still grows to push the input row all the way down
+                    // to the bottom of the visible window instead of leaving
+                    // it floating right under one line of text. A plain
+                    // position:sticky on the input row (tried first) only
+                    // works once the list is already TALLER than the box -
+                    // exactly backwards for a brand new channel, which starts
+                    // with the least content of all. Once there's enough
+                    // history to overflow, this wrapper just grows past
+                    // min-height like any normal block and the body scrolls
+                    // as before - the input row rides along at the true end
+                    // of the content, same place it always was.
                     body.innerHTML = `
-                        <div id="wt-chat-list-${safeId}" style="display:flex; flex-direction:column; gap:8px;">
+                        <div style="display:flex; flex-direction:column; min-height:100%;">
+                        <div id="wt-chat-list-${safeId}" style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:flex-end; gap:8px;">
                             ${shown.length ? shown.map(wtChatMsgRowHtml).join('') : '<div style="color:#888;">No messages yet - say hello.</div>'}
                         </div>
-                        <div id="wt-chat-typing-${safeId}" style="display:none; color:#888; font-size:0.72em; font-style:italic; padding:4px 2px 0;"></div>
-                        <div style="position:sticky; bottom:-10px; margin:8px -12px -10px -12px; padding:8px 12px; background:#15171c; border-top:1px solid #333; display:flex; gap:6px; align-items:center;">
+                        <div id="wt-chat-typing-${safeId}" style="display:none; color:#888; font-size:0.72em; font-style:italic; padding:4px 2px 0; flex:0 0 auto;"></div>
+                        <div style="flex:0 0 auto; margin:8px -12px -10px -12px; padding:8px 12px; background:#15171c; border-top:1px solid #333; display:flex; gap:6px; align-items:center;">
                             <span id="wt-chat-emoji-btn-${safeId}" title="Emoji" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.9em; flex-shrink:0;">😀</span>
                             <span id="wt-chat-img-btn-${safeId}" title="Send an image (or paste one)" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.8em; flex-shrink:0;">🖼️</span>
                             <span id="wt-chat-gif-btn-${safeId}" title="GIF" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.6em; font-weight:bold; flex-shrink:0;">GIF</span>
@@ -3641,6 +3660,7 @@ function targetRowHtml(t, estRespect) {
                                 <span id="wt-chat-discordlink-gen-${safeId}" style="flex:1; text-align:center; background:#5865F2; color:#fff; padding:6px; border-radius:4px; cursor:pointer; font-weight:bold;">Generate Code</span>
                                 <span id="wt-chat-discordlink-unlink-${safeId}" style="display:none; flex:1; text-align:center; background:#252525; border:1px solid #dc3545; color:#dc3545; padding:6px; border-radius:4px; cursor:pointer; font-weight:bold;">Unlink</span>
                             </div>
+                        </div>
                         </div>
                         </div>
                     `;
