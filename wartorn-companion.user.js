@@ -4175,6 +4175,13 @@ function targetRowHtml(t, estRespect) {
             settings: { icon: '⚙️', title: 'Settings', render: renderSettingsPanel, ticking: false }
         };
 
+        // Filled once the async company-addiction gate (see the Company
+        // Addiction button block further down) confirms this user is a
+        // current employee of the tracked company - renderCompanyAddictionPanel
+        // reads straight from this cache rather than re-fetching, since the
+        // underlying figure only changes about once a day server-side.
+        let wtCompanyAddictionCache = null;
+
         // --- FLIGHT SELECTED-TARGET CARD ---
         // Shows whichever target is currently active - a bundled trip
         // auto-picked from /api/public/top-flight-bundles, a live in-flight/
@@ -5683,6 +5690,41 @@ function targetRowHtml(t, estRespect) {
                 // still playing recently (see maybeAutoResumeRadio below) -
                 // only for Tesseract members, same as the button itself.
                 maybeAutoResumeRadio();
+            }).catch(() => {});
+
+            // --- Company Addiction (effectiveness.addiction from Torn's
+            // own /v2/company/employees) ---
+            // Same async-gated pattern as Radio above, but the gate is
+            // "are you currently an employee of the one tracked company"
+            // (checked server-side, companyAddictionHandler) rather than a
+            // faction check - whoever's asking either shows up in that
+            // company's own roster or they don't.
+            fetchFromWartorn('company-addiction').then(data => {
+                if (!data || !data.employee) return;
+                wtCompanyAddictionCache = data;
+                PANEL_DEFS.companyAddiction = { icon: '🏢', title: 'Company Addiction', render: renderCompanyAddictionPanel, ticking: false };
+                const addictionBtn = document.createElement('div');
+                addictionBtn.id = 'wt-company-addiction-side-btn';
+                addictionBtn.className = 'wt-side-btn';
+                addictionBtn.dataset.key = 'companyAddiction';
+                addictionBtn.style.pointerEvents = 'auto';
+                addictionBtn.title = `Company Addiction (yours: ${data.mine.addiction})`;
+                addictionBtn.innerText = '🏢';
+                addictionBtn.style.cssText = 'width:34px; height:34px; display:grid; place-items:center; line-height:1; transform-origin:center center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.35em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
+                addictionBtn.addEventListener('mouseenter', () => {
+                    addictionBtn.style.opacity = '1';
+                    addictionBtn.style.transform = 'scale(1.05)';
+                    if (!openWindows.has('companyAddiction')) addictionBtn.style.background = 'rgba(10,11,14,0.95)';
+                });
+                addictionBtn.addEventListener('mouseleave', () => {
+                    addictionBtn.style.opacity = openWindows.has('companyAddiction') ? '1' : '0.85';
+                    addictionBtn.style.transform = 'scale(1)';
+                    if (!openWindows.has('companyAddiction')) addictionBtn.style.background = 'rgba(21,23,28,0.9)';
+                });
+                addictionBtn.addEventListener('click', () => togglePanelWindow('companyAddiction'));
+                wrap.appendChild(addictionBtn);
+
+                if (keysToReopen.includes('companyAddiction')) openPanelWindow('companyAddiction');
             }).catch(() => {});
 
             const cluster = getOrCreateEdgeCluster();
@@ -7941,6 +7983,24 @@ setInterval(scanProfileFlightBar, 3000);
             body.querySelectorAll('.wt-oc-ack-btn').forEach(el => {
                 el.addEventListener('click', () => wtOcAckIssue(el.dataset.ackKey));
             });
+        }
+
+        // Reads straight from wtCompanyAddictionCache (filled by the async
+        // gate that decides whether this button exists at all) rather than
+        // fetching again - see that block's own comment.
+        function renderCompanyAddictionPanel() {
+            const body = document.getElementById('wt-panel-body-companyAddiction');
+            if (!body || !wtCompanyAddictionCache) return;
+            const updated = new Date(wtCompanyAddictionCache.fetchedAt).toLocaleString();
+            let html = `<div style="color:#888; font-size:0.75em; margin-bottom:8px;">Updated ${wtChatEscapeHtml(updated)}</div>`;
+            wtCompanyAddictionCache.employees.forEach(e => {
+                const color = e.addiction <= -10 ? '#f44336' : e.addiction < 0 ? '#FFA726' : '#4CAF50';
+                html += `<div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-bottom:1px solid #1f2229; font-size:0.85em;">
+                    <span style="color:#ddd;">${wtChatEscapeHtml(e.name)} <span style="color:#666; font-size:0.85em;">${wtChatEscapeHtml(e.position)}</span></span>
+                    <span style="color:${color}; font-weight:bold; font-family:monospace;">${e.addiction}</span>
+                </div>`;
+            });
+            body.innerHTML = html;
         }
 
         // Torn's OC list (.tt-oc2-list, seen on the faction Crimes tab) is a
