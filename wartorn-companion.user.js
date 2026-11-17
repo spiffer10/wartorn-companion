@@ -310,6 +310,7 @@
         place('wt-link-manual', 195, 1);
         place('wt-version-notice', 45, 44); // right of the logo, vertically centered on its 130px height
         place('wt-unreachable-notice', 45, 44); // same slot as wt-version-notice - the two don't realistically show at once
+        place('wt-addiction-badge', -4, 28); // pinned to the logo's top-right corner (logo is 40px wide)
         // Open panel windows (War Targets/Chain Targets/etc) used to follow
         // a drag of this anchor too, back when there was only ever one of
         // them and it had no independent position of its own. Now that
@@ -439,10 +440,37 @@
 
         link.appendChild(img);
         getOrCreateEdgeCluster().appendChild(link);
+
+        const addictionBadge = document.createElement('div');
+        addictionBadge.id = 'wt-addiction-badge';
+        addictionBadge.textContent = '🧠';
+        getOrCreateEdgeCluster().appendChild(addictionBadge);
+
         applyCompanionAnchor();
     }
- 
+
     injectGhostLogo();
+
+    // Mirrors the dashboard's own-profile "BRAIN ICON ACTIVE" addiction
+    // warning (frontend/index.html's updateProfileCard) - same source field
+    // (war-status's user_icons, matched on the icon's tooltip TEXT rather
+    // than its key, for the same reason given there: Torn doesn't guarantee
+    // a fixed meaning per icon key). Called from checkLiveAlerts, which
+    // already fetches war-status on its existing 30s/4s/2s cadence, so this
+    // adds no new network traffic.
+    function updateAddictionBadge(userIcons) {
+        const badge = document.getElementById('wt-addiction-badge');
+        if (!badge) return;
+        let text = '';
+        if (userIcons) {
+            for (const key in userIcons) {
+                const title = String(userIcons[key]).toLowerCase();
+                if (title.includes('addiction') || title.includes('brain')) { text = userIcons[key]; break; }
+            }
+        }
+        badge.classList.toggle('wt-addiction-active', !!text);
+        badge.title = text ? `⚠️ ${text}` : '';
+    }
 
     // --- 1b. UPDATE-AVAILABLE NOTICE ---
     // Compares this installed copy's own version (GM_info.script.version -
@@ -5199,6 +5227,21 @@ function targetRowHtml(t, estRespect) {
                 }
                 #wt-ghost-logo img.wt-logo-danger { animation: wt-danger-pulse 1s ease-in-out infinite; }
                 #wt-ghost-logo img.wt-logo-away { animation: wt-away-pulse 1.4s ease-in-out infinite; }
+                /* Personal drug-addiction ("brain") badge - mirrors the
+                   dashboard's own-profile addiction-warning widget, sourced
+                   from the same war-status user_icons field (see
+                   updateAddictionBadge). Positioned via applyCompanionAnchor's
+                   place() like the logo/buttons it sits next to, rather than
+                   nested inside #wt-ghost-logo - that link has overflow:hidden
+                   on a tight 40x130 box (sized for the rotated logo image), so
+                   a child badge pinned to its corner would get clipped. */
+                #wt-addiction-badge {
+                    position: fixed; width: 18px; height: 18px; z-index: 9999999;
+                    background: #f44336; border-radius: 50%; display: none; align-items: center;
+                    justify-content: center; font-size: 11px; line-height: 1; pointer-events: none;
+                    box-shadow: 0 0 6px rgba(244,67,54,0.9);
+                }
+                #wt-addiction-badge.wt-addiction-active { display: flex; animation: wt-danger-pulse 1.4s ease-in-out infinite; }
                 /* Chain Hits button - fires while a chain-hit coordination
                    buildup is live (see checkChainHitsActive), same red as
                    the dashboard's own buildup banner. Pulse and wiggle are
@@ -8246,6 +8289,7 @@ setInterval(scanProfileFlightBar, 3000);
                     updateLogoDangerState(null, null);
                     return;
                 }
+                updateAddictionBadge(data.user_icons);
                 const wfSt = wfBestServerTimeSecs(data);
                 if (wfSt) {
                     serverClockOffsetMs = (wfSt * 1000) - Date.now();
