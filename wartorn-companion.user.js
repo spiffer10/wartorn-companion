@@ -5702,13 +5702,13 @@ function targetRowHtml(t, estRespect) {
             fetchFromWartorn('company-addiction').then(data => {
                 if (!data || !data.employee) return;
                 wtCompanyAddictionCache = data;
-                PANEL_DEFS.companyAddiction = { icon: '🏢', title: 'Company Addiction', render: renderCompanyAddictionPanel, ticking: false };
+                PANEL_DEFS.companyAddiction = { icon: '🏢', title: 'Job Addiction', render: renderCompanyAddictionPanel, ticking: false };
                 const addictionBtn = document.createElement('div');
                 addictionBtn.id = 'wt-company-addiction-side-btn';
                 addictionBtn.className = 'wt-side-btn';
                 addictionBtn.dataset.key = 'companyAddiction';
                 addictionBtn.style.pointerEvents = 'auto';
-                addictionBtn.title = `Company Addiction (yours: ${data.mine.addiction})`;
+                addictionBtn.title = `Job Addiction (yours: ${data.mine.addiction})`;
                 addictionBtn.innerText = '🏢';
                 addictionBtn.style.cssText = 'width:34px; height:34px; display:grid; place-items:center; line-height:1; transform-origin:center center; background:rgba(21,23,28,0.9); border:1px solid #3a3f4b; border-radius:6px; cursor:pointer; font-size:1.35em; transition:0.15s; box-shadow:0 2px 8px rgba(0,0,0,0.5); opacity:0.85;';
                 addictionBtn.addEventListener('mouseenter', () => {
