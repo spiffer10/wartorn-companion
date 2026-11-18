@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.45.1
+// @version      4.45.2
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.45.1';
+    const COMPANION_VERSION_FALLBACK = '4.45.2';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -354,7 +354,15 @@
         const link = document.createElement('a');
         link.id = 'wt-ghost-logo';
         link.href = WARTORN_HOST;
-        link.target = 'wartorn_dashboard'; 
+        // A named target opens/reuses a separate tab on a real browser,
+        // which is what's wanted on desktop - but TornPDA's webview has no
+        // popup/new-tab windows at all (same limitation openAttackPopup
+        // already works around), so a named target there just does
+        // nothing when tapped. Reported live 2026-11-17: a PDA user
+        // couldn't open the dashboard from this logo at all. Left off
+        // entirely on TornPDA; the click handler below navigates
+        // window.location.href instead, same-tab, which actually works.
+        if (!isTornPDA()) link.target = 'wartorn_dashboard';
         
         // Position (top/left) is applied below via applyCompanionAnchor() -
         // defaults to 25% down the viewport, with the side-panel button
@@ -435,7 +443,13 @@
         link.addEventListener('click', (e) => {
             // A drag ends with the same 'click' event a plain tap would -
             // without this, every drag would also open the dashboard.
-            if (dragMoved) { e.preventDefault(); dragMoved = false; }
+            if (dragMoved) { e.preventDefault(); dragMoved = false; return; }
+            // No target attribute on TornPDA (see above) - href alone would
+            // still try the webview's normal default-target navigation,
+            // which is this same behavior anyway, but doing it explicitly
+            // avoids depending on whatever TornPDA's webview treats a
+            // target-less link as by default.
+            if (isTornPDA()) { e.preventDefault(); window.location.href = WARTORN_HOST; }
         });
 
         link.appendChild(img);
