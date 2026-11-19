@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.45.2
+// @version      4.46.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.45.2';
+    const COMPANION_VERSION_FALLBACK = '4.46.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1092,6 +1092,30 @@
         });
     }
 
+    // Highlights any shop row whose item is tagged ("notify me when this is
+    // back in stock", set from the dashboard's Flights tab) for the country
+    // currently being viewed - reuses the same id extraction each row
+    // already needed for injectItemHistoryButtons just above, no new DOM
+    // scan. Idempotent: it only ever adds/removes one class, based on the
+    // tag list, so it's safe to call on every tick even though the item
+    // rarely changes.
+    const WT_COUNTRY_NAME_TO_CODE = { mexico: 'mex', cayman: 'cay', canada: 'can', hawaii: 'haw', 'united kingdom': 'uni', argentina: 'arg', switzerland: 'swi', japan: 'jap', china: 'chi', uae: 'uae', 'south africa': 'sou' };
+    function highlightTaggedRows(shopRows) {
+        if (!wtFlightTagsCache) return;
+        const countryName = document.body && document.body.dataset && document.body.dataset.country;
+        const code = countryName && WT_COUNTRY_NAME_TO_CODE[countryName.toLowerCase()];
+        const tagged = code && wtFlightTagsCache.get(code);
+        shopRows.forEach(({ row }) => {
+            if (!row) return;
+            const img = row.querySelector('[data-tt-content-type="item"] img') || row.querySelector('img');
+            const imgMatch = img && img.src && img.src.match(/\/items\/(\d+)\//);
+            const nameBtn = !imgMatch && (row.querySelector('[data-tt-content-type="name"] button[aria-controls]') || row.querySelector('button[aria-controls]'));
+            const btnMatch = nameBtn && nameBtn.getAttribute('aria-controls') && nameBtn.getAttribute('aria-controls').match(/^item-(\d+)-/);
+            const id = imgMatch ? parseInt(imgMatch[1], 10) : (btnMatch ? parseInt(btnMatch[1], 10) : null);
+            row.classList.toggle('wt-tagged-row', !!(id && tagged && tagged.has(id)));
+        });
+    }
+
     // Draws the chart once, plus wires mousemove/mouseleave to redraw with
     // a hover indicator (a vertical guide, a dot on the line, and a
     // time+quantity tooltip) - matching torn-intel.com's own graph
@@ -1338,6 +1362,7 @@
             const shopRows = findShopRows();
             scrapeItemMarket(shopRows);
             injectItemHistoryButtons(shopRows);
+            highlightTaggedRows(shopRows);
         };
         marketTick();
         // The try/catch below only catches Worker CONSTRUCTION throwing -
@@ -4196,6 +4221,26 @@ function targetRowHtml(t, estRespect) {
         // underlying figure only changes about once a day server-side.
         let wtCompanyAddictionCache = null;
 
+        // "Notify me when this is back in stock" tags, set from the
+        // dashboard's Flights tab (🔔 button) - Map of YATA country code ->
+        // Set of tagged item ids. Refreshed periodically rather than on
+        // every scrape tick since it changes rarely; highlightTaggedRows
+        // (near injectItemHistoryButtons) reads straight from this cache.
+        let wtFlightTagsCache = null;
+        function loadFlightTags() {
+            fetchFromWartorn('flight-tags').then(data => {
+                if (!data || !Array.isArray(data.tags)) return;
+                const map = new Map();
+                data.tags.forEach(t => {
+                    if (!map.has(t.countryCode)) map.set(t.countryCode, new Set());
+                    map.get(t.countryCode).add(t.itemId);
+                });
+                wtFlightTagsCache = map;
+            }).catch(() => {});
+        }
+        loadFlightTags();
+        setInterval(loadFlightTags, 5 * 60000);
+
         // --- FLIGHT SELECTED-TARGET CARD ---
         // Shows whichever target is currently active - a bundled trip
         // auto-picked from /api/public/top-flight-bundles, a live in-flight/
@@ -5248,6 +5293,13 @@ function targetRowHtml(t, estRespect) {
                 }
                 #wt-ghost-logo img.wt-logo-danger { animation: wt-danger-pulse 1s ease-in-out infinite; }
                 #wt-ghost-logo img.wt-logo-away { animation: wt-away-pulse 1.4s ease-in-out infinite; }
+                /* A flight-tagged item's shop row (see highlightTaggedRows) - restock
+                   notification tags set from the dashboard's Flights tab. */
+                @keyframes wt-tagged-row-pulse {
+                    0%, 100% { outline: 2px solid rgba(255,152,0,0.5); background: rgba(255,152,0,0.04); }
+                    50% { outline: 2px solid rgba(255,152,0,1); background: rgba(255,152,0,0.12); }
+                }
+                .wt-tagged-row { animation: wt-tagged-row-pulse 1.2s ease-in-out infinite; border-radius: 4px; }
                 /* Personal drug-addiction ("brain") badge - mirrors the
                    dashboard's own-profile addiction-warning widget, sourced
                    from the same war-status user_icons field (see
