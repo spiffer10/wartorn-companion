@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.46.0
+// @version      4.46.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.46.0';
+    const COMPANION_VERSION_FALLBACK = '4.46.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1092,8 +1092,33 @@
         });
     }
 
-    // Highlights any shop row whose item is tagged ("notify me when this is
-    // back in stock", set from the dashboard's Flights tab) for the country
+    // "Notify me when this is back in stock" tags, set from the dashboard's
+    // Flights tab (🔔 button) - Map of YATA country code -> Set of tagged
+    // item ids. Must be declared before marketTick's first synchronous call
+    // below (highlightTaggedRows reads it) - it used to live ~3100 lines
+    // further down near wtCompanyAddictionCache, which meant `let
+    // wtFlightTagsCache` hadn't executed yet the first time this ran,
+    // throwing "Cannot access before initialization" (temporal dead zone)
+    // on every sid=travel page load. Uncaught, that aborted the rest of
+    // this script's top-level execution - which is why controls disappeared
+    // during a flight and the price-history graphs stopped showing on
+    // abroad stock too, both reported directly.
+    let wtFlightTagsCache = null;
+    function loadFlightTags() {
+        fetchFromWartorn('flight-tags').then(data => {
+            if (!data || !Array.isArray(data.tags)) return;
+            const map = new Map();
+            data.tags.forEach(t => {
+                if (!map.has(t.countryCode)) map.set(t.countryCode, new Set());
+                map.get(t.countryCode).add(t.itemId);
+            });
+            wtFlightTagsCache = map;
+        }).catch(() => {});
+    }
+    loadFlightTags();
+    setInterval(loadFlightTags, 5 * 60000);
+
+    // Highlights any shop row whose item is tagged for the country
     // currently being viewed - reuses the same id extraction each row
     // already needed for injectItemHistoryButtons just above, no new DOM
     // scan. Idempotent: it only ever adds/removes one class, based on the
@@ -4221,25 +4246,6 @@ function targetRowHtml(t, estRespect) {
         // underlying figure only changes about once a day server-side.
         let wtCompanyAddictionCache = null;
 
-        // "Notify me when this is back in stock" tags, set from the
-        // dashboard's Flights tab (🔔 button) - Map of YATA country code ->
-        // Set of tagged item ids. Refreshed periodically rather than on
-        // every scrape tick since it changes rarely; highlightTaggedRows
-        // (near injectItemHistoryButtons) reads straight from this cache.
-        let wtFlightTagsCache = null;
-        function loadFlightTags() {
-            fetchFromWartorn('flight-tags').then(data => {
-                if (!data || !Array.isArray(data.tags)) return;
-                const map = new Map();
-                data.tags.forEach(t => {
-                    if (!map.has(t.countryCode)) map.set(t.countryCode, new Set());
-                    map.get(t.countryCode).add(t.itemId);
-                });
-                wtFlightTagsCache = map;
-            }).catch(() => {});
-        }
-        loadFlightTags();
-        setInterval(loadFlightTags, 5 * 60000);
 
         // --- FLIGHT SELECTED-TARGET CARD ---
         // Shows whichever target is currently active - a bundled trip
