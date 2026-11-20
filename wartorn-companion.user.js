@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.46.1
+// @version      4.46.2
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.46.1';
+    const COMPANION_VERSION_FALLBACK = '4.46.2';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1094,29 +1094,21 @@
 
     // "Notify me when this is back in stock" tags, set from the dashboard's
     // Flights tab (🔔 button) - Map of YATA country code -> Set of tagged
-    // item ids. Must be declared before marketTick's first synchronous call
-    // below (highlightTaggedRows reads it) - it used to live ~3100 lines
-    // further down near wtCompanyAddictionCache, which meant `let
-    // wtFlightTagsCache` hadn't executed yet the first time this ran,
-    // throwing "Cannot access before initialization" (temporal dead zone)
-    // on every sid=travel page load. Uncaught, that aborted the rest of
-    // this script's top-level execution - which is why controls disappeared
-    // during a flight and the price-history graphs stopped showing on
-    // abroad stock too, both reported directly.
+    // item ids. Declared out here (not inside startCompanionFeatures,
+    // where it used to live next to wtCompanyAddictionCache) because
+    // marketTick's first synchronous call below runs on every sid=travel
+    // page load regardless of whether startCompanionFeatures has even
+    // started yet (it's gated behind an async server-reachability probe -
+    // see its own comment) - a `let` declared inside that function isn't
+    // in scope out here at all, not just not-yet-initialized, which is
+    // what made every single tick throw "wtFlightTagsCache is not
+    // defined" uncaught and abort the rest of this script's top-level
+    // execution: why controls disappeared during a flight and the
+    // price-history graphs stopped showing on abroad stock too, both
+    // reported directly. The actual loader (loadFlightTags) still has to
+    // live inside startCompanionFeatures, since it needs fetchFromWartorn
+    // - it just writes into this outer variable via closure.
     let wtFlightTagsCache = null;
-    function loadFlightTags() {
-        fetchFromWartorn('flight-tags').then(data => {
-            if (!data || !Array.isArray(data.tags)) return;
-            const map = new Map();
-            data.tags.forEach(t => {
-                if (!map.has(t.countryCode)) map.set(t.countryCode, new Set());
-                map.get(t.countryCode).add(t.itemId);
-            });
-            wtFlightTagsCache = map;
-        }).catch(() => {});
-    }
-    loadFlightTags();
-    setInterval(loadFlightTags, 5 * 60000);
 
     // Highlights any shop row whose item is tagged for the country
     // currently being viewed - reuses the same id extraction each row
@@ -4246,6 +4238,28 @@ function targetRowHtml(t, estRespect) {
         // underlying figure only changes about once a day server-side.
         let wtCompanyAddictionCache = null;
 
+        // Fills the OUTER wtFlightTagsCache (declared up near
+        // highlightTaggedRows, well before this function even runs - that
+        // scraping tick needs to read it on every tick regardless of
+        // whether startCompanionFeatures has started yet). This loader
+        // itself has to live in here instead, since it needs
+        // fetchFromWartorn, which only exists inside this function -
+        // moving the loader out to the outer scope alongside the cache (an
+        // earlier attempt at this fix) threw "fetchFromWartorn is not
+        // defined" instead, confirmed live via a console screenshot.
+        function loadFlightTags() {
+            fetchFromWartorn('flight-tags').then(data => {
+                if (!data || !Array.isArray(data.tags)) return;
+                const map = new Map();
+                data.tags.forEach(t => {
+                    if (!map.has(t.countryCode)) map.set(t.countryCode, new Set());
+                    map.get(t.countryCode).add(t.itemId);
+                });
+                wtFlightTagsCache = map;
+            }).catch(() => {});
+        }
+        loadFlightTags();
+        setInterval(loadFlightTags, 5 * 60000);
 
         // --- FLIGHT SELECTED-TARGET CARD ---
         // Shows whichever target is currently active - a bundled trip
