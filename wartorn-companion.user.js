@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.46.2
+// @version      4.46.3
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.46.2';
+    const COMPANION_VERSION_FALLBACK = '4.46.3';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -1474,6 +1474,18 @@
         let wtOcCrimesTimer = null;
         let wtOcCrimesCache = [];
         let wtOcIssueList = [];
+        // Same class of bug, same fix, this time hitting the Flights panel -
+        // confirmed live via a console screenshot ("Cannot access
+        // 'travelLandAtMs' before initialization", thrown from
+        // flightStateMode via a reopened Flights panel's renderFlightsPanel,
+        // the exact injectSidePanels()-reopens-a-left-open-panel path
+        // described above). These three used to live far below, next to
+        // checkTravelStatus (the code that actually SETS them) - fine for
+        // that code's own later reads, not for flightStateMode's much
+        // earlier one.
+        let travelLandAtMs = null;
+        let travelDestination = null;
+        let wtIsFlying = false;
         // One quick, immediate retry on a timeout/network error before
         // actually giving up - reported directly as panels (War Targets'
         // "Our Faction" column among them) "sometimes" failing to load,
@@ -7423,26 +7435,13 @@ function targetRowHtml(t, estRespect) {
         // from that value every 5s poll let a noisy reading nudge the
         // estimate back above 30s right as the alert flag had just been
         // reset for landing, re-arming it and firing the chime again on
-        // the next crossing - repeating roughly every poll. So instead
-        // this locks in one absolute landing timestamp (travelLandAtMs)
-        // that can only be pulled EARLIER by a later poll, never later,
-        // unless the jump is big enough to mean a genuinely new/extended
-        // trip rather than jitter - that's the only case allowed to push
-        // it later, and it also re-arms the alert for the new countdown.
-        let travelLandAtMs = null;
-        // Destination alongside the landing timestamp - added for the
-        // flight widget's real-flight-detection mode (see
-        // updateFlightWidgetForTravel below), which needs to know WHERE
-        // you're actually headed, not just when you land. Torn's own
-        // selections=travel response names this "destination" directly
-        // (a plain country name like "Mexico"), no guessing needed.
-        let travelDestination = null;
-        // True while actually airborne (outbound OR return leg) - set from
-        // checkTravelStatus's own stillTraveling check below. The item
-        // hotbar reads this to hide itself entirely mid-flight (Torn blocks
-        // using items while traveling, so a bar that still looks clickable
-        // there would just be misleading).
-        let wtIsFlying = false;
+        // the next crossing - repeating roughly every poll. So instead this
+        // locks in one absolute landing timestamp (travelLandAtMs, declared
+        // up near wtOcIssueList - see its own comment for why) that can
+        // only be pulled EARLIER by a later poll, never later, unless the
+        // jump is big enough to mean a genuinely new/extended trip rather
+        // than jitter - that's the only case allowed to push it later, and
+        // it also re-arms the alert for the new countdown.
         const TRAVEL_NEW_TRIP_JUMP_SECS = 60;
 
         function fetchTornTravel() {
