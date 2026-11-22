@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.47.0
+// @version      4.48.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.47.0';
+    const COMPANION_VERSION_FALLBACK = '4.48.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3559,6 +3559,23 @@ function targetRowHtml(t, estRespect) {
         // "Chat button" section below), read live by pollChat and the
         // docking position loop.
         let wtChatChannels = [{ channelKey: null, name: 'Faction Chat', icon: '💬' }];
+        // TornPDA + more than one channel: no per-extra-channel docked
+        // button (too cramped on a phone screen) - the single 'chat'
+        // window instead gets an in-window tab strip (see
+        // wtRenderPdaChatTabs/wtSwitchPdaChatChannel) and this tracks
+        // which channel it's currently showing. Stays null forever on
+        // desktop/single-channel accounts, since nothing there ever calls
+        // wtSwitchPdaChatChannel.
+        let wtPdaChatActiveChannel = null;
+        const wtChatUnreadByChannel = new Map(); // channelKey -> last known unread count, for the aggregate badge + tab dots
+        // The single 'chat' window's displayed channel can change at
+        // runtime now (TornPDA only) - every spot that used to assume
+        // chatChannelKeyOf(key) (always null for key 'chat') goes through
+        // this instead, so closing/rebuilding/polling the window matches
+        // what's actually on screen rather than silently falling back to
+        // the default channel underneath an unrelated one. A no-op
+        // everywhere wtPdaChatActiveChannel never leaves null.
+        function wtChatKeyChannel(key) { return key === 'chat' ? wtPdaChatActiveChannel : chatChannelKeyOf(key); }
         const wtChatState = new Map(); // channelKey -> { renderedMaxTs, myPlayerId, typingPollTimer, lastTypingPingAt, lastSeenTs }
         function wtChatStateFor(channelKey) {
             if (!wtChatState.has(channelKey)) {
@@ -3690,15 +3707,39 @@ function targetRowHtml(t, estRespect) {
         // stays a plain '0'/'1' for refreshButtonHighlights/wtUnreadColor,
         // which only care whether there's anything unread at all.
         function wtChatSetButtonUnread(channelKey, count) {
+            wtChatUnreadByChannel.set(channelKey, count);
             const btn = document.querySelector('.wt-side-btn[data-key="' + chatPanelKeyOf(channelKey) + '"]');
-            if (!btn) return;
-            btn.dataset.unread = count > 0 ? '1' : '0';
-            const badge = document.getElementById('wt-chat-unread-badge-' + wtChatSafeId(channelKey));
-            if (badge) {
-                badge.style.display = count > 0 ? 'block' : 'none';
-                badge.textContent = count > 99 ? '99+' : String(count);
+            if (btn) {
+                btn.dataset.unread = count > 0 ? '1' : '0';
+                const badge = document.getElementById('wt-chat-unread-badge-' + wtChatSafeId(channelKey));
+                if (badge) {
+                    badge.style.display = count > 0 ? 'block' : 'none';
+                    badge.textContent = count > 99 ? '99+' : String(count);
+                }
             }
+            wtRefreshPdaChatAggregateBadge();
             refreshButtonHighlights();
+        }
+        // TornPDA + more than one channel only - there's no per-extra-
+        // channel button there (see wtRenderPdaChatTabs), so the single
+        // 'chat' button instead shows the TOTAL unread across every
+        // channel. Guard is load-bearing: on desktop each channel already
+        // has its own correct per-channel badge (set just above) - running
+        // this there too would stomp the default channel's real count with
+        // an all-channels total.
+        function wtRefreshPdaChatAggregateBadge() {
+            if (!isTornPDA() || wtChatChannels.length <= 1) return;
+            const total = [...wtChatUnreadByChannel.values()].reduce((a, b) => a + (b || 0), 0);
+            const btn = document.querySelector('.wt-side-btn[data-key="chat"]');
+            if (btn) {
+                btn.dataset.unread = total > 0 ? '1' : '0';
+                const badge = document.getElementById('wt-chat-unread-badge-' + wtChatSafeId(null));
+                if (badge) {
+                    badge.style.display = total > 0 ? 'block' : 'none';
+                    badge.textContent = total > 99 ? '99+' : String(total);
+                }
+            }
+            wtRenderPdaChatTabs();
         }
         // Vendettas' side-button (🔪) covers both Targets and the Stakeouts
         // list, not chat - a pending alert gets the same dataset.unread
@@ -3753,9 +3794,13 @@ function targetRowHtml(t, estRespect) {
         }
         function wtChatStartTypingPoll(channelKey) {
             wtChatStopTypingPoll(channelKey);
-            const panelKey = chatPanelKeyOf(channelKey);
             const tick = () => {
-                if (!openWindows.has(panelKey)) { wtChatStopTypingPoll(channelKey); return; }
+                // wtChatOpenWindowKeyFor, not a raw openWindows.has(panelKey) -
+                // on TornPDA a non-default channel's "window" is the shared
+                // 'chat' one, never its own 'chat:<key>', which a plain
+                // panelKey check would never find (self-stopping the poll
+                // on its very first tick).
+                if (!wtChatOpenWindowKeyFor(channelKey)) { wtChatStopTypingPoll(channelKey); return; }
                 fetchFromWartorn('chat-typing' + wtChatChannelParam(channelKey)).then(data => {
                     wtChatRenderTyping(channelKey, data && Array.isArray(data.typing) ? data.typing : []);
                 }).catch(() => {});
@@ -3923,12 +3968,16 @@ function targetRowHtml(t, estRespect) {
                 }
             });
         }
-        // channelKey identifies which docked tab/window this call is for -
-        // each channel is now its own top-level tab (see "Chat button:
-        // docked next to Torn's own chat tabs" below), not one tab with
-        // an inner switcher, so there's no more in-panel tab bar here.
-        async function renderChatPanel(channelKey) {
-            const panelKey = chatPanelKeyOf(channelKey);
+        // channelKey identifies which channel to load; windowKey identifies
+        // which window's DOM to render it into - normally the same thing
+        // (each channel is its own top-level tab, see "Chat button: docked
+        // next to Torn's own chat tabs" below), EXCEPT on TornPDA with
+        // more than one channel, where every channel shares the single
+        // 'chat' window via an in-window tab strip instead (see
+        // wtSwitchPdaChatChannel) and windowKey is passed explicitly as
+        // 'chat' regardless of which channel that currently is.
+        async function renderChatPanel(channelKey, windowKey) {
+            const panelKey = windowKey || chatPanelKeyOf(channelKey);
             const safeId = wtChatSafeId(channelKey);
             // The scrollable message area only, NOT the whole window body -
             // the input row/buttons live in a separate, non-scrolling
@@ -4283,6 +4332,59 @@ function targetRowHtml(t, estRespect) {
                 e.target.style.display = 'none';
             }
         }, true);
+        // Which window (if any) is currently showing a given channel's
+        // messages - usually its own dedicated panelKey, but on TornPDA a
+        // non-default channel can instead be the one currently selected in
+        // the single shared 'chat' window (see wtSwitchPdaChatChannel).
+        function wtChatOpenWindowKeyFor(channelKey) {
+            const panelKey = chatPanelKeyOf(channelKey);
+            if (openWindows.has(panelKey)) return panelKey;
+            if (channelKey === wtPdaChatActiveChannel && openWindows.has('chat')) return 'chat';
+            return null;
+        }
+        // --- TornPDA in-window channel switcher (more than one channel,
+        // no room for a docked button per channel - see the "Chat button:
+        // extra channels" fetch handler below, which skips building those
+        // on TornPDA and calls this instead). ---
+        function wtRenderPdaChatTabs() {
+            if (!isTornPDA() || wtChatChannels.length <= 1) return;
+            const strip = document.getElementById('wt-chat-pda-tabs-chat');
+            if (!strip) return; // window isn't open right now
+            strip.innerHTML = wtChatChannels.map(c => {
+                const active = c.channelKey === wtPdaChatActiveChannel;
+                const unread = wtChatUnreadByChannel.get(c.channelKey) || 0;
+                return `<span data-ck="${wtChatEscapeHtml(c.channelKey || '')}" title="${wtChatEscapeHtml(c.name)}"
+                    style="position:relative; flex-shrink:0; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:0.85em;
+                    background:${active ? '#2d3a2d' : '#1a1d24'}; border:1px solid ${active ? '#4CAF50' : '#333'};">
+                    ${wtChatIconHtml(c.icon || '💬')}${(!active && unread > 0) ? '<span style="position:absolute; top:-2px; right:-2px; width:7px; height:7px; border-radius:50%; background:#f44336;"></span>' : ''}
+                </span>`;
+            }).join('');
+            strip.style.display = 'flex';
+            strip.querySelectorAll('span[data-ck]').forEach(el => {
+                el.addEventListener('click', () => wtSwitchPdaChatChannel(el.dataset.ck || null));
+            });
+        }
+        // Swaps which channel the single 'chat' window shows, in place -
+        // never closes/reopens the window. Tears down the old channel's
+        // input bar/typing-poll (both keyed by channel, not window) and
+        // rebuilds them for the new one, same functions openPanelWindow
+        // itself uses on first open.
+        function wtSwitchPdaChatChannel(newChannelKey) {
+            if (newChannelKey === wtPdaChatActiveChannel) return;
+            wtChatStopTypingPoll(wtPdaChatActiveChannel);
+            const oldBar = document.getElementById('wt-chat-inputbar-' + wtChatSafeId(wtPdaChatActiveChannel));
+            if (oldBar) oldBar.remove();
+            wtPdaChatActiveChannel = newChannelKey;
+            safeGmSet('wt_chat_pda_active_channel', newChannelKey || '');
+            const scroll = document.getElementById('wt-chat-scroll-chat');
+            if (scroll) scroll.innerHTML = 'Loading...';
+            buildChatInputBar('chat', newChannelKey);
+            const meta = wtChatChannels.find(c => c.channelKey === newChannelKey);
+            const titleEl = document.getElementById('wt-window-title-chat');
+            if (titleEl && meta) titleEl.innerHTML = `${wtChatIconHtml(meta.icon || '💬')} ${wtChatEscapeHtml(meta.name)}`;
+            renderChatPanel(newChannelKey, 'chat');
+            wtRenderPdaChatTabs();
+        }
         // The actual unread-detection loop - runs regardless of whether a
         // given channel's panel is open, unlike renderChatPanel above
         // (which only ever runs while its window exists). Started
@@ -4294,8 +4396,8 @@ function targetRowHtml(t, estRespect) {
         // its own independent tab.
         async function pollChat() {
             for (const c of wtChatChannels) {
-                const panelKey = chatPanelKeyOf(c.channelKey);
-                if (openWindows.has(panelKey)) { renderChatPanel(c.channelKey); continue; }
+                const windowKey = wtChatOpenWindowKeyFor(c.channelKey);
+                if (windowKey) { renderChatPanel(c.channelKey, windowKey); continue; }
                 try {
                     const data = await fetchFromWartorn('chat-history' + wtChatChannelParam(c.channelKey));
                     const messages = (data && Array.isArray(data.messages)) ? data.messages : [];
@@ -4319,7 +4421,7 @@ function targetRowHtml(t, estRespect) {
             // their own entry registered dynamically - see the "Chat
             // button" section below - each with its own render closure
             // bound to that channel's key.
-            chat: { icon: '💬', title: 'Faction Chat', render: () => renderChatPanel(null), ticking: false },
+            chat: { icon: '💬', title: 'Faction Chat', render: () => renderChatPanel(wtChatKeyChannel('chat'), 'chat'), ticking: false },
             // Not ticking: the setup form (label/h/m/s inputs) would get
             // wiped out and reset every second by that window's own tick
             // timer (startWindowTick) while someone's still typing into it. The live
@@ -5115,7 +5217,7 @@ function targetRowHtml(t, estRespect) {
             // here too means there's no gap between the window closing and
             // that check next firing.
             if (isChatKey(key)) {
-                const channelKey = chatChannelKeyOf(key);
+                const channelKey = wtChatKeyChannel(key);
                 wtChatStateFor(channelKey).renderedMaxTs = 0;
                 wtChatStopTypingPoll(channelKey);
             }
@@ -5279,6 +5381,7 @@ function targetRowHtml(t, estRespect) {
                 </div>
                 ${isChat
                     ? `<div id="wt-panel-body-${key}" class="wt-window-body" style="flex:1 1 auto; display:flex; flex-direction:column; overflow:hidden; font-size:0.85em;">
+                        <div id="wt-chat-pda-tabs-${key}" style="display:none; flex:0 0 auto; gap:4px; padding:6px 8px; background:#0b0c10; border-bottom:1px solid #222; overflow-x:auto;"></div>
                         <div id="wt-chat-scroll-${key}" style="flex:1 1 auto; overflow-y:auto; padding:10px 12px;">Loading...</div>
                        </div>`
                     : `<div id="wt-panel-body-${key}" class="wt-window-body" style="flex:1 1 auto; overflow-y:auto; padding:10px 12px; font-size:0.85em;">Loading...</div>`
@@ -5371,7 +5474,8 @@ function targetRowHtml(t, estRespect) {
                 // once here rather than by def.render() below - see
                 // buildChatInputBar for why it has to be a non-scrolling
                 // sibling of the scroll div, not inside it.
-                buildChatInputBar(key, chatChannelKeyOf(key));
+                buildChatInputBar(key, wtChatKeyChannel(key));
+                if (key === 'chat') wtRenderPdaChatTabs();
             }
 
             refreshButtonHighlights();
@@ -5832,13 +5936,43 @@ function targetRowHtml(t, estRespect) {
                     if (titleEl) titleEl.innerHTML = `${wtChatIconHtml(PANEL_DEFS.chat.icon)} ${wtChatEscapeHtml(PANEL_DEFS.chat.title)}`;
                 }
                 channels.slice(1).forEach(c => {
+                    wtChatChannels.push(c);
+                    // TornPDA: no per-extra-channel button/window - see
+                    // wtRenderPdaChatTabs below, built once after this
+                    // whole loop instead of per-channel here.
+                    if (isTornPDA()) return;
                     const panelKey = chatPanelKeyOf(c.channelKey);
                     PANEL_DEFS[panelKey] = { icon: c.icon || '💬', title: c.name, render: () => renderChatPanel(c.channelKey), ticking: false };
-                    wtChatChannels.push(c);
                     buildDockedChatButton(panelKey);
                     wtUpdateChatVisibility();
                     if (keysToReopen.includes(panelKey)) openPanelWindow(panelKey);
                 });
+                // TornPDA + more than one channel: restore whichever
+                // channel the single 'chat' window last showed, and let
+                // the in-window tab strip (not a dedicated button per
+                // channel) handle switching between them from here on.
+                if (isTornPDA() && wtChatChannels.length > 1) {
+                    const saved = safeGmGet('wt_chat_pda_active_channel', '') || null;
+                    if (wtChatChannels.some(ch => ch.channelKey === saved)) wtPdaChatActiveChannel = saved;
+                    if (openWindows.has('chat') && wtPdaChatActiveChannel) {
+                        // Already open (reopened via keysToReopen before
+                        // this fetch resolved) and still showing the
+                        // hardcoded default placeholder - patch it to the
+                        // real restored channel now that it's known, same
+                        // "patch in place" posture as the channels[0]
+                        // name/icon patch just above this.
+                        const meta = wtChatChannels.find(ch => ch.channelKey === wtPdaChatActiveChannel);
+                        if (meta) {
+                            const titleEl = document.getElementById('wt-window-title-chat');
+                            if (titleEl) titleEl.innerHTML = `${wtChatIconHtml(meta.icon || '💬')} ${wtChatEscapeHtml(meta.name)}`;
+                            const defaultBar = document.getElementById('wt-chat-inputbar-' + wtChatSafeId(null));
+                            if (defaultBar) defaultBar.remove();
+                            buildChatInputBar('chat', wtPdaChatActiveChannel);
+                            renderChatPanel(wtPdaChatActiveChannel, 'chat');
+                        }
+                    }
+                    wtRenderPdaChatTabs();
+                }
             }).catch(() => {});
 
             // --- Radio: Tesseract (tesseract.on-air.fm) ---
