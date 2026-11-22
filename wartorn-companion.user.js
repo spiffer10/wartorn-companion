@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.46.3
+// @version      4.46.4
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.46.3';
+    const COMPANION_VERSION_FALLBACK = '4.46.4';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -472,6 +472,9 @@
     // a fixed meaning per icon key). Called from checkLiveAlerts, which
     // already fetches war-status on its existing 30s/4s/2s cadence, so this
     // adds no new network traffic.
+    // Word-boundary regex on 'brain', not a plain substring match - that
+    // false-fired for someone reading the book "Brawn over Brains"
+    // (2026-11-22), since "Brains" contains "brain" as a substring.
     function updateAddictionBadge(userIcons) {
         const badge = document.getElementById('wt-addiction-badge');
         if (!badge) return;
@@ -479,7 +482,7 @@
         if (userIcons) {
             for (const key in userIcons) {
                 const title = String(userIcons[key]).toLowerCase();
-                if (title.includes('addiction') || title.includes('brain')) { text = userIcons[key]; break; }
+                if (title.includes('addiction') || /\bbrain\b/.test(title)) { text = userIcons[key]; break; }
             }
         }
         badge.classList.toggle('wt-addiction-active', !!text);
