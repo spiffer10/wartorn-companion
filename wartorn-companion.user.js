@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.49.0
+// @version      4.50.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -56,7 +56,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.49.0';
+    const COMPANION_VERSION_FALLBACK = '4.50.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3678,7 +3678,30 @@ function targetRowHtml(t, estRespect) {
         // lands straight in a CSS color: value - see
         // resolveDiscordIdentityForPlayer/ingestExternalMessage (routes/chat.js).
         const WT_CHAT_HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
-        function wtChatMsgRowHtml(m) {
+        const WT_CHAT_QUICK_EMOJI = ['❤️', '👍', '👎', '😂', '😮', '😢'];
+        // Shared by every rendered reaction strip AND the poll-driven patch
+        // of already-displayed rows (see renderChatPanel's "else" branch) -
+        // takes the raw per-message reactions array straight off whatever
+        // chat-history just returned, no persistent client-side state to
+        // keep in sync (unlike the dashboard's SSE-driven
+        // wfChatReactionsByNonce - the companion has no live push to patch
+        // incrementally against, it just re-derives this fresh every poll).
+        function wtChatReactionPillsHtml(reactions, myPlayerId) {
+            if (!reactions || !reactions.length) return '';
+            const byEmoji = new Map();
+            for (const r of reactions) {
+                if (!byEmoji.has(r.emoji)) byEmoji.set(r.emoji, []);
+                byEmoji.get(r.emoji).push(r);
+            }
+            const myActorKey = 'p:' + myPlayerId;
+            return [...byEmoji.entries()].map(([emoji, list]) => {
+                const mine = list.some(r => r.actorKey === myActorKey);
+                const names = list.map(r => r.displayName).join(', ');
+                const safeEmoji = wtChatEscapeHtml(emoji);
+                return `<span class="wt-chat-reaction-pill" data-emoji="${safeEmoji}" title="${wtChatEscapeHtml(names)}" style="cursor:pointer; font-size:0.72em; background:${mine ? '#1b3a2e' : '#1a1d24'}; border:1px solid ${mine ? '#4CAF50' : '#333'}; border-radius:9px; padding:0 5px; color:#ccc;">${safeEmoji} ${list.length}</span>`;
+            }).join('');
+        }
+        function wtChatMsgRowHtml(m, myPlayerId) {
             const textHtml = m.message ? `<div style="color:#ddd; font-size:0.85em; white-space:pre-wrap; word-break:break-word;">${wtChatLinkify(m.message)}</div>` : '';
             // imageUrl only ever comes from the server's own history
             // (already validated server-side when it was posted - see
@@ -3690,13 +3713,116 @@ function targetRowHtml(t, estRespect) {
             // default cyan - same "whatever Discord calls a user is how it
             // should show" request this chat already follows for name/avatar.
             const nameColor = WT_CHAT_HEX_COLOR_RE.test(m.nameColor) ? m.nameColor : '#00e5ff';
-            return `<div data-nonce="${wtChatEscapeHtml(m.id)}" style="display:flex; gap:6px;">
+            // name/message stashed as data- attributes (the browser
+            // HTML-decodes them back on read via .dataset) rather than a
+            // separate nonce->preview Map, so wtChatStartReply (bound once,
+            // delegated - see wtChatBindMsgActions) can read "what am I
+            // replying to" straight off the clicked row without needing
+            // any extra state of its own.
+            const replyHtml = m.replyTo
+                ? `<div class="wt-chat-reply-ref" data-jump-nonce="${wtChatEscapeHtml(m.replyTo.nonce)}" style="color:#888; font-size:0.72em; margin-bottom:2px; cursor:pointer; border-left:2px solid #3a3f4b; padding-left:5px;">↪ <b>${wtChatEscapeHtml(m.replyTo.name)}:</b> ${wtChatEscapeHtml(m.replyTo.snippet)}</div>`
+                : (m.replyToNonce ? `<div style="color:#666; font-size:0.68em; font-style:italic; margin-bottom:2px;">↪ original message deleted</div>` : '');
+            // No :hover reveal here (unlike the dashboard) - TornPDA is a
+            // touch webview with no hover state at all, so these stay
+            // dimly visible all the time instead of invisible there.
+            const actionsHtml = `<div class="wt-chat-msg-actions" style="position:absolute; top:-3px; right:0; display:flex; gap:1px; background:#1a1d24; border:1px solid #3a3f4b; border-radius:5px; padding:1px 3px; opacity:0.55;">
+                ${WT_CHAT_QUICK_EMOJI.map(e => `<span class="wt-chat-react-btn" data-emoji="${wtChatEscapeHtml(e)}" style="cursor:pointer; font-size:0.8em; padding:0 1px;">${e}</span>`).join('')}
+                <span class="wt-chat-reply-btn" title="Reply" style="cursor:pointer; font-size:0.8em; padding:0 2px; color:#888;">↩</span>
+            </div>`;
+            return `<div class="wt-chat-msg-row" data-nonce="${wtChatEscapeHtml(m.id)}" data-name="${wtChatEscapeHtml(m.name)}" data-text="${wtChatEscapeHtml(m.message || '')}" style="display:flex; gap:6px; position:relative;">
+                ${actionsHtml}
                 <img class="wt-chat-avatar" src="${wtChatAbsUrl(m.avatarUrl)}" style="width:22px; height:22px; border-radius:50%; object-fit:cover; flex-shrink:0;">
                 <div style="min-width:0; flex:1;">
+                    ${replyHtml}
                     <span style="color:${nameColor}; font-weight:bold; font-size:0.8em;">${wtChatEscapeHtml(m.name)}</span>
                     ${textHtml}${imgHtml}
+                    <div class="wt-chat-reactions" data-nonce="${wtChatEscapeHtml(m.id)}" data-cache="${wtChatEscapeHtml(JSON.stringify(m.reactions || []))}" style="display:flex; gap:3px; flex-wrap:wrap; margin-top:3px;">${wtChatReactionPillsHtml(m.reactions, myPlayerId)}</div>
                 </div>
             </div>`;
+        }
+        // One delegated listener per scroll body (bound once, same
+        // _wtStickBound-style guard as wtChatScrollToBottom) rather than
+        // per-row - row HTML gets replaced wholesale often enough (every
+        // freshOpen) that per-row listeners would mean constant
+        // rebinding. panelKey is fixed for a given body for its whole
+        // lifetime; the CHANNEL it's currently showing is re-resolved via
+        // wtChatKeyChannel on every click rather than captured once, since
+        // on TornPDA this exact body can get reused across different
+        // channels as the tab strip switches (see wtSwitchPdaChatChannel) -
+        // a captured-at-bind-time channelKey would go stale the moment
+        // that happens.
+        function wtChatBindMsgActions(body, panelKey) {
+            if (body._wtActionsBound) return;
+            body._wtActionsBound = true;
+            body.addEventListener('click', (e) => {
+                const channelKey = wtChatKeyChannel(panelKey);
+                const reactBtn = e.target.closest('.wt-chat-react-btn');
+                if (reactBtn) {
+                    const row = reactBtn.closest('.wt-chat-msg-row');
+                    if (row) wtChatToggleReaction(channelKey, row.dataset.nonce, reactBtn.dataset.emoji);
+                    return;
+                }
+                const pill = e.target.closest('.wt-chat-reaction-pill');
+                if (pill) {
+                    const row = pill.closest('.wt-chat-msg-row');
+                    if (row) wtChatToggleReaction(channelKey, row.dataset.nonce, pill.dataset.emoji);
+                    return;
+                }
+                const replyBtn = e.target.closest('.wt-chat-reply-btn');
+                if (replyBtn) {
+                    const row = replyBtn.closest('.wt-chat-msg-row');
+                    if (row) wtChatStartReply(channelKey, row.dataset.nonce, row.dataset.name, row.dataset.text);
+                    return;
+                }
+                const jumpEl = e.target.closest('[data-jump-nonce]');
+                if (jumpEl) wtChatJumpToMessage(body, jumpEl.dataset.jumpNonce);
+            });
+        }
+        function wtChatToggleReaction(channelKey, messageNonce, emoji) {
+            postToWartorn('chat-react', { messageNonce, emoji }).then(({ data }) => {
+                if (!data || typeof data.added !== 'boolean') return;
+                // Optimistic, immediate patch rather than waiting out
+                // CHAT_POLL_MS (5s) - the next poll tick re-derives the
+                // same thing from the server anyway, this just avoids a
+                // click feeling laggy in the meantime.
+                const safeId = wtChatSafeId(channelKey);
+                const el = document.querySelector('#wt-chat-list-' + safeId + ' .wt-chat-reactions[data-nonce="' + messageNonce + '"]');
+                if (!el) return;
+                const st = wtChatStateFor(channelKey);
+                const current = el.dataset.cache ? JSON.parse(el.dataset.cache) : [];
+                const myActorKey = 'p:' + st.myPlayerId;
+                const idx = current.findIndex(r => r.actorKey === myActorKey && r.emoji === emoji);
+                if (data.added && idx === -1) current.push({ emoji, actorKey: myActorKey, displayName: 'You' });
+                else if (!data.added && idx !== -1) current.splice(idx, 1);
+                el.dataset.cache = JSON.stringify(current);
+                el.innerHTML = wtChatReactionPillsHtml(current, st.myPlayerId);
+            }).catch(() => {});
+        }
+        function wtChatStartReply(channelKey, nonce, name, text) {
+            const safeId = wtChatSafeId(channelKey);
+            wtChatStateFor(channelKey).replyingTo = { nonce, name, snippet: (text || '').slice(0, 140) };
+            const bar = document.getElementById('wt-chat-reply-preview-' + safeId);
+            const nameEl = document.getElementById('wt-chat-reply-name-' + safeId);
+            const snippetEl = document.getElementById('wt-chat-reply-snippet-' + safeId);
+            if (nameEl) nameEl.innerText = name;
+            if (snippetEl) snippetEl.innerText = text || '';
+            if (bar) bar.style.display = 'flex';
+            const input = document.getElementById('wt-chat-input-' + safeId);
+            if (input) input.focus();
+        }
+        function wtChatCancelReply(channelKey) {
+            wtChatStateFor(channelKey).replyingTo = null;
+            const bar = document.getElementById('wt-chat-reply-preview-' + wtChatSafeId(channelKey));
+            if (bar) bar.style.display = 'none';
+        }
+        function wtChatJumpToMessage(body, nonce) {
+            const row = body.querySelector('[data-nonce="' + nonce + '"]');
+            if (!row) return;
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const prevBg = row.style.background;
+            row.style.transition = 'background 0.3s';
+            row.style.background = 'rgba(76,175,80,0.2)';
+            setTimeout(() => { row.style.background = prevBg; }, 1200);
         }
         // Takes an unread MESSAGE COUNT (not just a boolean) - drives the
         // small corner badge (see buildSideButton) the same way Torn's own
@@ -3921,33 +4047,40 @@ function targetRowHtml(t, estRespect) {
             if (!container) return;
             const bar = document.createElement('div');
             bar.id = 'wt-chat-inputbar-' + safeId;
-            bar.style.cssText = 'flex:0 0 auto; position:relative; padding:8px 12px; background:#15171c; border-top:1px solid #333; display:flex; gap:6px; align-items:center;';
+            bar.style.cssText = 'flex:0 0 auto; position:relative; padding:8px 12px; background:#15171c; border-top:1px solid #333; display:flex; flex-direction:column; gap:6px;';
             bar.innerHTML = `
-                <span id="wt-chat-emoji-btn-${safeId}" title="Emoji" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.9em; flex-shrink:0;">😀</span>
-                <span id="wt-chat-img-btn-${safeId}" title="Send an image (or paste one)" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.8em; flex-shrink:0;">🖼️</span>
-                <span id="wt-chat-gif-btn-${safeId}" title="GIF" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.6em; font-weight:bold; flex-shrink:0;">GIF</span>
-                <span id="wt-chat-discordlink-btn-${safeId}" title="Link your Discord account" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.85em; flex-shrink:0;">🔗</span>
-                <input id="wt-chat-input-${safeId}" type="text" placeholder="Message..." maxlength="1000" style="flex:1; min-width:0; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 8px; border-radius:4px; font-size:0.85em;">
-                <span id="wt-chat-send-btn-${safeId}" style="background:#4CAF50; color:#fff; padding:0 12px; height:26px; border-radius:4px; font-size:0.9em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;">Send</span>
-                <div id="wt-chat-mention-dropdown-${safeId}" style="display:none; flex-direction:column; position:absolute; bottom:calc(100% + 6px); left:8px; min-width:140px; max-height:160px; overflow-y:auto; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:4px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:51;"></div>
-                <div id="wt-chat-emoji-picker-${safeId}" class="wt-chat-emoji-picker" style="display:none; flex-wrap:wrap; gap:2px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; max-height:180px; overflow-y:auto; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
-                <input id="wt-chat-img-input-${safeId}" type="file" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none;">
-                <div id="wt-chat-gif-picker-${safeId}" class="wt-chat-gif-picker" style="display:none; flex-direction:column; gap:6px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
-                <div id="wt-chat-discordlink-popover-${safeId}" class="wt-chat-discordlink-popover" style="display:none; flex-direction:column; position:absolute; bottom:calc(100% + 6px); right:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:10px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50; color:#ccc; font-size:0.78em;">
-                    <div style="font-weight:bold; color:#eee; margin-bottom:6px;">Link Discord Account</div>
-                    <div id="wt-chat-discordlink-status-${safeId}" style="margin-bottom:8px; line-height:1.4;">Checking...</div>
-                    <div id="wt-chat-discordlink-codebox-${safeId}" style="display:none; margin-bottom:8px;">
-                        <div style="color:#888; margin-bottom:4px;">In any Discord channel the bot can see, type (click to copy):</div>
-                        <div id="wt-chat-discordlink-code-${safeId}" title="Click to copy" style="background:#0b0c10; border:1px solid #444; border-radius:4px; padding:6px; font-family:monospace; font-size:1em; text-align:center; color:#5865F2; letter-spacing:1px; cursor:pointer;"></div>
-                        <div style="color:#666; margin-top:4px;">Expires in 10 minutes.</div>
-                    </div>
-                    <div style="display:flex; gap:6px;">
-                        <span id="wt-chat-discordlink-gen-${safeId}" style="flex:1; text-align:center; background:#5865F2; color:#fff; padding:6px; border-radius:4px; cursor:pointer; font-weight:bold;">Generate Code</span>
-                        <span id="wt-chat-discordlink-unlink-${safeId}" style="display:none; flex:1; text-align:center; background:#252525; border:1px solid #dc3545; color:#dc3545; padding:6px; border-radius:4px; cursor:pointer; font-weight:bold;">Unlink</span>
+                <div id="wt-chat-reply-preview-${safeId}" style="display:none; align-items:center; gap:6px; background:#0b0c10; border:1px solid #444; border-left:2px solid #4CAF50; border-radius:4px; padding:4px 6px;">
+                    <span style="color:#888; font-size:0.72em; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Replying to <b id="wt-chat-reply-name-${safeId}" style="color:#ccc;"></b>: <span id="wt-chat-reply-snippet-${safeId}"></span></span>
+                    <span id="wt-chat-reply-cancel-${safeId}" style="color:#f44336; cursor:pointer; font-size:0.9em;">✕</span>
+                </div>
+                <div style="display:flex; gap:6px; align-items:center; position:relative;">
+                    <span id="wt-chat-emoji-btn-${safeId}" title="Emoji" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.9em; flex-shrink:0;">😀</span>
+                    <span id="wt-chat-img-btn-${safeId}" title="Send an image (or paste one)" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.8em; flex-shrink:0;">🖼️</span>
+                    <span id="wt-chat-gif-btn-${safeId}" title="GIF" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.6em; font-weight:bold; flex-shrink:0;">GIF</span>
+                    <span id="wt-chat-discordlink-btn-${safeId}" title="Link your Discord account" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.85em; flex-shrink:0;">🔗</span>
+                    <input id="wt-chat-input-${safeId}" type="text" placeholder="Message..." maxlength="1000" style="flex:1; min-width:0; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 8px; border-radius:4px; font-size:0.85em;">
+                    <span id="wt-chat-send-btn-${safeId}" style="background:#4CAF50; color:#fff; padding:0 12px; height:26px; border-radius:4px; font-size:0.9em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;">Send</span>
+                    <div id="wt-chat-mention-dropdown-${safeId}" style="display:none; flex-direction:column; position:absolute; bottom:calc(100% + 6px); left:8px; min-width:140px; max-height:160px; overflow-y:auto; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:4px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:51;"></div>
+                    <div id="wt-chat-emoji-picker-${safeId}" class="wt-chat-emoji-picker" style="display:none; flex-wrap:wrap; gap:2px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; max-height:180px; overflow-y:auto; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
+                    <input id="wt-chat-img-input-${safeId}" type="file" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none;">
+                    <div id="wt-chat-gif-picker-${safeId}" class="wt-chat-gif-picker" style="display:none; flex-direction:column; gap:6px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
+                    <div id="wt-chat-discordlink-popover-${safeId}" class="wt-chat-discordlink-popover" style="display:none; flex-direction:column; position:absolute; bottom:calc(100% + 6px); right:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:10px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50; color:#ccc; font-size:0.78em;">
+                        <div style="font-weight:bold; color:#eee; margin-bottom:6px;">Link Discord Account</div>
+                        <div id="wt-chat-discordlink-status-${safeId}" style="margin-bottom:8px; line-height:1.4;">Checking...</div>
+                        <div id="wt-chat-discordlink-codebox-${safeId}" style="display:none; margin-bottom:8px;">
+                            <div style="color:#888; margin-bottom:4px;">In any Discord channel the bot can see, type (click to copy):</div>
+                            <div id="wt-chat-discordlink-code-${safeId}" title="Click to copy" style="background:#0b0c10; border:1px solid #444; border-radius:4px; padding:6px; font-family:monospace; font-size:1em; text-align:center; color:#5865F2; letter-spacing:1px; cursor:pointer;"></div>
+                            <div style="color:#666; margin-top:4px;">Expires in 10 minutes.</div>
+                        </div>
+                        <div style="display:flex; gap:6px;">
+                            <span id="wt-chat-discordlink-gen-${safeId}" style="flex:1; text-align:center; background:#5865F2; color:#fff; padding:6px; border-radius:4px; cursor:pointer; font-weight:bold;">Generate Code</span>
+                            <span id="wt-chat-discordlink-unlink-${safeId}" style="display:none; flex:1; text-align:center; background:#252525; border:1px solid #dc3545; color:#dc3545; padding:6px; border-radius:4px; cursor:pointer; font-weight:bold;">Unlink</span>
+                        </div>
                     </div>
                 </div>
             `;
             container.appendChild(bar);
+            document.getElementById('wt-chat-reply-cancel-' + safeId).addEventListener('click', () => wtChatCancelReply(channelKey));
             document.getElementById('wt-chat-send-btn-' + safeId).addEventListener('click', () => wtChatSend(channelKey));
             document.getElementById('wt-chat-input-' + safeId).addEventListener('keydown', (e) => wtChatInputKeydown(channelKey, e));
             document.getElementById('wt-chat-input-' + safeId).addEventListener('input', () => { wtChatPingTyping(channelKey); wtChatHandleMentionInput(channelKey); });
@@ -3999,22 +4132,43 @@ function targetRowHtml(t, estRespect) {
                     // nothing here fighting the scroll for space.
                     body.innerHTML = `
                         <div id="wt-chat-list-${safeId}" style="display:flex; flex-direction:column; gap:8px;">
-                            ${shown.length ? shown.map(wtChatMsgRowHtml).join('') : '<div style="color:#888;">No messages yet - say hello.</div>'}
+                            ${shown.length ? shown.map(m => wtChatMsgRowHtml(m, st.myPlayerId)).join('') : '<div style="color:#888;">No messages yet - say hello.</div>'}
                         </div>
                         <div id="wt-chat-typing-${safeId}" style="display:none; color:#888; font-size:0.72em; font-style:italic; padding:4px 2px 0;"></div>
                     `;
                     wtChatScrollToBottom(body);
                     wtChatStartTypingPoll(channelKey);
+                    wtChatBindMsgActions(body, panelKey);
                 } else {
                     const newOnes = messages.filter(m => m.ts > st.renderedMaxTs);
                     if (newOnes.length) {
                         const list = document.getElementById('wt-chat-list-' + safeId);
                         if (list) {
                             if (list.firstElementChild && list.firstElementChild.innerText === 'No messages yet - say hello.') list.innerHTML = '';
-                            list.insertAdjacentHTML('beforeend', newOnes.map(wtChatMsgRowHtml).join(''));
+                            list.insertAdjacentHTML('beforeend', newOnes.map(m => wtChatMsgRowHtml(m, st.myPlayerId)).join(''));
                             wtChatScrollToBottom(body);
                         }
                         st.renderedMaxTs = messages[messages.length - 1].ts;
+                    }
+                    // Patches reaction pills on rows rendered in a PRIOR
+                    // poll tick too, not just brand-new ones above - a
+                    // reaction added to an older, already-displayed
+                    // message would otherwise never show up here (there's
+                    // no live push to catch it the way the dashboard's SSE
+                    // 'reaction' event does). Skips the DOM write entirely
+                    // when nothing actually changed since the cached
+                    // snapshot, so a quiet channel's poll stays a no-op.
+                    const listForReactions = document.getElementById('wt-chat-list-' + safeId);
+                    if (listForReactions) {
+                        const byNonce = new Map(messages.map(m => [m.id, m]));
+                        listForReactions.querySelectorAll('.wt-chat-reactions[data-nonce]').forEach(el => {
+                            const m = byNonce.get(el.dataset.nonce);
+                            if (!m) return;
+                            const freshJson = JSON.stringify(m.reactions || []);
+                            if (el.dataset.cache === freshJson) return;
+                            el.dataset.cache = freshJson;
+                            el.innerHTML = wtChatReactionPillsHtml(m.reactions, st.myPlayerId);
+                        });
                     }
                     // There's no live push here (no SSE on the companion -
                     // see the file comment above CHAT_TYPING_POLL_MS), so a
@@ -4085,7 +4239,7 @@ function targetRowHtml(t, estRespect) {
                         let d = {};
                         try { d = JSON.parse(res.responseText); } catch (e) {}
                         if (res.status === 200 && d.success && d.url) {
-                            postToWartorn('chat-send', { message: '', imageUrl: d.url, channel: channelKey || undefined }).then(({ status, data }) => {
+                            postToWartorn('chat-send', { message: '', imageUrl: d.url, replyToNonce: wtChatConsumeReplyToNonce(channelKey), channel: channelKey || undefined }).then(({ status, data }) => {
                                 if (status === 403 && data && data.needsDiscordLink) {
                                     flash('Link your Discord account first');
                                     const pop = document.getElementById('wt-chat-discordlink-popover-' + safeId);
@@ -4104,13 +4258,23 @@ function targetRowHtml(t, estRespect) {
             };
             reader.readAsDataURL(file);
         }
+        // Clears the reply bar (if open) and hands back the nonce it was
+        // showing, for both send paths below to include in their POST -
+        // shared rather than duplicated since an image send
+        // (wtChatSendImageFile) can be a reply too, same as a text one.
+        function wtChatConsumeReplyToNonce(channelKey) {
+            const r = wtChatStateFor(channelKey).replyingTo;
+            if (r) wtChatCancelReply(channelKey);
+            return r ? r.nonce : undefined;
+        }
         function wtChatSend(channelKey) {
             const input = document.getElementById('wt-chat-input-' + wtChatSafeId(channelKey));
             if (!input) return;
             const message = input.value.trim();
             if (!message) return;
             input.value = '';
-            postToWartorn('chat-send', { message, imageUrl: '', channel: channelKey || undefined }).then(({ status, data }) => {
+            const replyToNonce = wtChatConsumeReplyToNonce(channelKey);
+            postToWartorn('chat-send', { message, imageUrl: '', replyToNonce, channel: channelKey || undefined }).then(({ status, data }) => {
                 // The companion's chat-send route hard-blocks (403) rather
                 // than letting an unlinked sender's message through and
                 // just skipping the Discord relay - a message that posts
@@ -4286,7 +4450,7 @@ function targetRowHtml(t, estRespect) {
             const safeId = wtChatSafeId(channelKey);
             const picker = document.getElementById('wt-chat-gif-picker-' + safeId);
             if (picker) picker.style.display = 'none';
-            postToWartorn('chat-send', { message: '', imageUrl: url, channel: channelKey || undefined }).then(({ status, data }) => {
+            postToWartorn('chat-send', { message: '', imageUrl: url, replyToNonce: wtChatConsumeReplyToNonce(channelKey), channel: channelKey || undefined }).then(({ status, data }) => {
                 if (status === 403 && data && data.needsDiscordLink) {
                     showCompanionToast('🔒 Link your Discord account to chat in this channel.' + (data.discordChannelUrl ? ' (click to open the Discord channel)' : ''), data.discordChannelUrl || null);
                     const pop = document.getElementById('wt-chat-discordlink-popover-' + safeId);
