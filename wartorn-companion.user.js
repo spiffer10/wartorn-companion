@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.48.0
+// @version      4.49.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -44,9 +44,6 @@
     // declaration (hoisted - callable here regardless of its own later
     // position in the file).
     const WT_PROBE_TIMEOUT_MS = isTornPDA() ? 4000 : 1200;
-    // Gates the radio button (see MODULE: LEFT-EDGE CONDENSED PANELS below)
-    // to Tesseract's own faction for now, per an explicit ask.
-    const TESSERACT_FACTION_ID = 53940;
 
     // Confirmed live 2026-09-24: GM_info.script.version reads as undefined
     // in at least one real TornPDA session (its own version display fell
@@ -59,7 +56,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.48.0';
+    const COMPANION_VERSION_FALLBACK = '4.49.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -5979,14 +5976,12 @@ function targetRowHtml(t, estRespect) {
             // Slides open the same way every other panel does (registered
             // into PANEL_DEFS below, opened via the normal togglePanelWindow()
             // path) - same button styling as the panel buttons above for
-            // visual consistency. Restricted to Tesseract's own faction
-            // (53940) for now, per the user's explicit ask - checked
-            // server-side (whoami reads req.user.factionId from the
-            // caller's own authenticated key, not anything the client
-            // could spoof) so it only appears once that's confirmed,
-            // rather than showing then hiding.
+            // visual consistency. Open to every faction now (was Tesseract-
+            // only - user said it's fine being public) - "Tesseract Radio"
+            // is just the station's own name, same as it stays the station
+            // name for every listener regardless of which faction they're in.
             fetchFromWartorn('whoami').then(data => {
-                if (!data || data.factionId !== TESSERACT_FACTION_ID) return;
+                if (!data) return;
                 PANEL_DEFS.radio = { icon: '🎵', title: 'Tesseract Radio', render: renderRadioPanel, ticking: false };
                 const radioBtn = document.createElement('div');
                 radioBtn.id = 'wt-radio-side-btn';
@@ -6012,8 +6007,7 @@ function targetRowHtml(t, estRespect) {
                 if (keysToReopen.includes('radio')) openPanelWindow('radio');
 
                 // Reconnect automatically on this fresh page load if it was
-                // still playing recently (see maybeAutoResumeRadio below) -
-                // only for Tesseract members, same as the button itself.
+                // still playing recently (see maybeAutoResumeRadio below).
                 maybeAutoResumeRadio();
             }).catch(() => {});
 
