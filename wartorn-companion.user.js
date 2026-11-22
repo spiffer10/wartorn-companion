@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.46.4
+// @version      4.47.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.46.4';
+    const COMPANION_VERSION_FALLBACK = '4.47.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3771,6 +3771,95 @@ function targetRowHtml(t, estRespect) {
             st.lastTypingPingAt = now;
             postToWartorn('chat-typing', { channel: channelKey || undefined }).catch(() => {});
         }
+        // --- @mention autocomplete (mirrors the dashboard's same feature
+        // on #home-chat-input) - suggests who's actually in this channel
+        // as you type "@", Discord-style. Mention UI state lives on this
+        // channel's own wtChatStateFor() bucket (st.mention), not a
+        // separate map, since only one channel's input can be focused at
+        // a time anyway and this piggybacks that existing per-channel
+        // lifecycle (cleared for free whenever that bucket resets).
+        const wtChatMentionableCache = new Map(); // channelKey -> string[] of usernames
+        const wtChatMentionableLoading = new Map(); // channelKey -> in-flight Promise, de-dupes rapid keystrokes
+        function wtChatLoadMentionable(channelKey) {
+            if (wtChatMentionableCache.has(channelKey)) return Promise.resolve(wtChatMentionableCache.get(channelKey));
+            if (wtChatMentionableLoading.has(channelKey)) return wtChatMentionableLoading.get(channelKey);
+            const p = fetchFromWartorn('mentionable' + wtChatChannelParam(channelKey)).then(data => {
+                const users = (data && data.users) || [];
+                wtChatMentionableCache.set(channelKey, users);
+                wtChatMentionableLoading.delete(channelKey);
+                return users;
+            }).catch(() => { wtChatMentionableLoading.delete(channelKey); return []; });
+            wtChatMentionableLoading.set(channelKey, p);
+            return p;
+        }
+        function wtChatCloseMentionDropdown(channelKey) {
+            wtChatStateFor(channelKey).mention = null;
+            const dd = document.getElementById('wt-chat-mention-dropdown-' + wtChatSafeId(channelKey));
+            if (dd) dd.style.display = 'none';
+        }
+        function wtChatRenderMentionDropdown(channelKey) {
+            const m = wtChatStateFor(channelKey).mention;
+            const dd = document.getElementById('wt-chat-mention-dropdown-' + wtChatSafeId(channelKey));
+            if (!dd || !m) return;
+            dd.innerHTML = m.matches.map((name, i) =>
+                `<div data-i="${i}" style="padding:5px 8px; cursor:pointer; font-size:0.82em; color:#eee; border-radius:4px; ${i === m.selected ? 'background:#2d3a2d;' : ''}">@${wtChatEscapeHtml(name)}</div>`
+            ).join('');
+            dd.querySelectorAll('div[data-i]').forEach(el => {
+                el.addEventListener('mousedown', (e) => { e.preventDefault(); wtChatAcceptMention(channelKey, parseInt(el.dataset.i, 10)); });
+            });
+        }
+        function wtChatAcceptMention(channelKey, i) {
+            const m = wtChatStateFor(channelKey).mention;
+            if (!m || !m.matches[i]) return;
+            const inputEl = document.getElementById('wt-chat-input-' + wtChatSafeId(channelKey));
+            if (!inputEl) return;
+            const name = m.matches[i];
+            const val = inputEl.value;
+            inputEl.value = val.slice(0, m.start) + '@' + name + ' ' + val.slice(m.pos);
+            const newPos = m.start + 1 + name.length + 1;
+            inputEl.focus();
+            inputEl.setSelectionRange(newPos, newPos);
+            wtChatCloseMentionDropdown(channelKey);
+        }
+        // Same "walk back from the cursor to an unfinished @token" shape as
+        // the dashboard's wfHandleChatInput - an '@' not preceded by
+        // whitespace/start-of-line is mid-word, not a mention being typed.
+        function wtChatHandleMentionInput(channelKey) {
+            const inputEl = document.getElementById('wt-chat-input-' + wtChatSafeId(channelKey));
+            if (!inputEl) return;
+            const val = inputEl.value;
+            const pos = inputEl.selectionStart;
+            let start = -1;
+            for (let i = pos - 1; i >= 0; i--) {
+                const c = val[i];
+                if (c === '@') { start = i; break; }
+                if (/\s/.test(c)) break;
+            }
+            if (start === -1 || (start > 0 && !/\s/.test(val[start - 1]))) { wtChatCloseMentionDropdown(channelKey); return; }
+            const partial = val.slice(start + 1, pos);
+            if (/\s/.test(partial)) { wtChatCloseMentionDropdown(channelKey); return; }
+            wtChatLoadMentionable(channelKey).then(users => {
+                // Bails if the input moved on while this (possibly
+                // first-load, async) lookup was in flight.
+                if (inputEl.selectionStart !== pos || inputEl.value !== val) return;
+                const matches = users.filter(u => u.toLowerCase().startsWith(partial.toLowerCase())).slice(0, 8);
+                const dd = document.getElementById('wt-chat-mention-dropdown-' + wtChatSafeId(channelKey));
+                if (!matches.length || !dd) { wtChatCloseMentionDropdown(channelKey); return; }
+                wtChatStateFor(channelKey).mention = { start, pos, selected: 0, matches };
+                wtChatRenderMentionDropdown(channelKey);
+                dd.style.display = 'flex';
+            });
+        }
+        function wtChatInputKeydown(channelKey, e) {
+            const m = wtChatStateFor(channelKey).mention;
+            if (m) {
+                if (e.key === 'ArrowDown') { e.preventDefault(); m.selected = (m.selected + 1) % m.matches.length; wtChatRenderMentionDropdown(channelKey); return; }
+                if (e.key === 'ArrowUp') { e.preventDefault(); m.selected = (m.selected - 1 + m.matches.length) % m.matches.length; wtChatRenderMentionDropdown(channelKey); return; }
+                if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); wtChatAcceptMention(channelKey, m.selected); return; }
+                if (e.key === 'Escape') { e.preventDefault(); wtChatCloseMentionDropdown(channelKey); return; }
+            }
+            if (e.key === 'Enter') wtChatSend(channelKey);
+        }
         // Built ONCE per window, by openPanelWindow right after the window
         // itself is created - NOT by renderChatPanel, and NOT inside the
         // scrollable message area (#wt-chat-scroll-${key}). This is static
@@ -3798,6 +3887,7 @@ function targetRowHtml(t, estRespect) {
                 <span id="wt-chat-discordlink-btn-${safeId}" title="Link your Discord account" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.85em; flex-shrink:0;">🔗</span>
                 <input id="wt-chat-input-${safeId}" type="text" placeholder="Message..." maxlength="1000" style="flex:1; min-width:0; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 8px; border-radius:4px; font-size:0.85em;">
                 <span id="wt-chat-send-btn-${safeId}" style="background:#4CAF50; color:#fff; padding:0 12px; height:26px; border-radius:4px; font-size:0.9em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;">Send</span>
+                <div id="wt-chat-mention-dropdown-${safeId}" style="display:none; flex-direction:column; position:absolute; bottom:calc(100% + 6px); left:8px; min-width:140px; max-height:160px; overflow-y:auto; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:4px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:51;"></div>
                 <div id="wt-chat-emoji-picker-${safeId}" class="wt-chat-emoji-picker" style="display:none; flex-wrap:wrap; gap:2px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; max-height:180px; overflow-y:auto; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
                 <input id="wt-chat-img-input-${safeId}" type="file" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none;">
                 <div id="wt-chat-gif-picker-${safeId}" class="wt-chat-gif-picker" style="display:none; flex-direction:column; gap:6px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
@@ -3817,8 +3907,8 @@ function targetRowHtml(t, estRespect) {
             `;
             container.appendChild(bar);
             document.getElementById('wt-chat-send-btn-' + safeId).addEventListener('click', () => wtChatSend(channelKey));
-            document.getElementById('wt-chat-input-' + safeId).addEventListener('keydown', (e) => { if (e.key === 'Enter') wtChatSend(channelKey); });
-            document.getElementById('wt-chat-input-' + safeId).addEventListener('input', () => wtChatPingTyping(channelKey));
+            document.getElementById('wt-chat-input-' + safeId).addEventListener('keydown', (e) => wtChatInputKeydown(channelKey, e));
+            document.getElementById('wt-chat-input-' + safeId).addEventListener('input', () => { wtChatPingTyping(channelKey); wtChatHandleMentionInput(channelKey); });
             document.getElementById('wt-chat-emoji-btn-' + safeId).addEventListener('click', (e) => wtChatToggleEmojiPicker(channelKey, e));
             document.getElementById('wt-chat-gif-btn-' + safeId).addEventListener('click', (e) => wtChatToggleGifPicker(channelKey, e));
             document.getElementById('wt-chat-img-btn-' + safeId).addEventListener('click', () => document.getElementById('wt-chat-img-input-' + safeId).click());
