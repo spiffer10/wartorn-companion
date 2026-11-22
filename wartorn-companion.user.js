@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.50.0
+// @version      4.50.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -56,7 +56,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.50.0';
+    const COMPANION_VERSION_FALLBACK = '4.50.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3722,10 +3722,13 @@ function targetRowHtml(t, estRespect) {
             const replyHtml = m.replyTo
                 ? `<div class="wt-chat-reply-ref" data-jump-nonce="${wtChatEscapeHtml(m.replyTo.nonce)}" style="color:#888; font-size:0.72em; margin-bottom:2px; cursor:pointer; border-left:2px solid #3a3f4b; padding-left:5px;">↪ <b>${wtChatEscapeHtml(m.replyTo.name)}:</b> ${wtChatEscapeHtml(m.replyTo.snippet)}</div>`
                 : (m.replyToNonce ? `<div style="color:#666; font-size:0.68em; font-style:italic; margin-bottom:2px;">↪ original message deleted</div>` : '');
-            // No :hover reveal here (unlike the dashboard) - TornPDA is a
-            // touch webview with no hover state at all, so these stay
-            // dimly visible all the time instead of invisible there.
-            const actionsHtml = `<div class="wt-chat-msg-actions" style="position:absolute; top:-3px; right:0; display:flex; gap:1px; background:#1a1d24; border:1px solid #3a3f4b; border-radius:5px; padding:1px 3px; opacity:0.55;">
+            // Hidden by default (user call: always-visible was too
+            // cluttered), shown only on tapping the message itself - see
+            // the delegated click handler in wtChatBindMsgActions, which
+            // toggles this same class. A message's existing reactions
+            // still show as pills below regardless - that's the "someone
+            // reacted to this" signal, no separate icon needed on top.
+            const actionsHtml = `<div class="wt-chat-msg-actions" style="display:none; position:absolute; top:-3px; right:0; gap:1px; background:#1a1d24; border:1px solid #3a3f4b; border-radius:5px; padding:1px 3px;">
                 ${WT_CHAT_QUICK_EMOJI.map(e => `<span class="wt-chat-react-btn" data-emoji="${wtChatEscapeHtml(e)}" style="cursor:pointer; font-size:0.8em; padding:0 1px;">${e}</span>`).join('')}
                 <span class="wt-chat-reply-btn" title="Reply" style="cursor:pointer; font-size:0.8em; padding:0 2px; color:#888;">↩</span>
             </div>`;
@@ -3775,7 +3778,14 @@ function targetRowHtml(t, estRespect) {
                     return;
                 }
                 const jumpEl = e.target.closest('[data-jump-nonce]');
-                if (jumpEl) wtChatJumpToMessage(body, jumpEl.dataset.jumpNonce);
+                if (jumpEl) { wtChatJumpToMessage(body, jumpEl.dataset.jumpNonce); return; }
+                // A tap anywhere else on the row (not a link/image, which
+                // should open/navigate instead) toggles its action row.
+                if (e.target.closest('a, img')) return;
+                const row = e.target.closest('.wt-chat-msg-row');
+                if (!row) return;
+                const actions = row.querySelector('.wt-chat-msg-actions');
+                if (actions) actions.style.display = actions.style.display === 'flex' ? 'none' : 'flex';
             });
         }
         function wtChatToggleReaction(channelKey, messageNonce, emoji) {
