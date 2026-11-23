@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.50.2
+// @version      4.51.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -56,7 +56,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.50.2';
+    const COMPANION_VERSION_FALLBACK = '4.51.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3702,7 +3702,8 @@ function targetRowHtml(t, estRespect) {
             }).join('');
         }
         function wtChatMsgRowHtml(m, myPlayerId) {
-            const textHtml = m.message ? `<div style="color:#ddd; font-size:0.85em; white-space:pre-wrap; word-break:break-word;">${wtChatLinkify(m.message)}</div>` : '';
+            const editedHtml = m.editedAt ? `<span class="wt-chat-edited-marker" style="color:#666; font-size:0.68em; margin-left:3px;">(edited)</span>` : '';
+            const textHtml = m.message ? `<div class="wt-chat-msg-text" style="color:#ddd; font-size:0.85em; white-space:pre-wrap; word-break:break-word;">${wtChatLinkify(m.message)}${editedHtml}</div>` : '';
             // imageUrl only ever comes from the server's own history
             // (already validated server-side when it was posted - see
             // isAllowedChatImageUrl in server.js), not something this
@@ -4178,6 +4179,29 @@ function targetRowHtml(t, estRespect) {
                             if (el.dataset.cache === freshJson) return;
                             el.dataset.cache = freshJson;
                             el.innerHTML = wtChatReactionPillsHtml(m.reactions, st.myPlayerId);
+                        });
+                        // Same "patch a row rendered in a prior poll tick"
+                        // treatment, for a message EDITED on Discord's side
+                        // (see setExternalMessageEdit, routes/chat.js) - no
+                        // live push here either, so a stale row would
+                        // otherwise sit there showing the pre-edit text
+                        // forever. data-text (already stashed per-row for
+                        // wtChatStartReply) doubles as the "did this
+                        // change" cache, same role data-cache plays above.
+                        listForReactions.querySelectorAll('.wt-chat-msg-row[data-nonce]').forEach(row => {
+                            const m = byNonce.get(row.dataset.nonce);
+                            if (!m || row.dataset.text === (m.message || '')) return;
+                            row.dataset.text = m.message || '';
+                            let textEl = row.querySelector('.wt-chat-msg-text');
+                            if (!textEl && m.message) {
+                                textEl = document.createElement('div');
+                                textEl.className = 'wt-chat-msg-text';
+                                textEl.style.cssText = 'color:#ddd; font-size:0.85em; white-space:pre-wrap; word-break:break-word;';
+                                row.querySelector('.wt-chat-reactions').insertAdjacentElement('beforebegin', textEl);
+                            }
+                            if (!textEl) return;
+                            const editedHtml = m.editedAt ? `<span class="wt-chat-edited-marker" style="color:#666; font-size:0.68em; margin-left:3px;">(edited)</span>` : '';
+                            textEl.innerHTML = wtChatLinkify(m.message || '') + editedHtml;
                         });
                     }
                     // There's no live push here (no SSE on the companion -
