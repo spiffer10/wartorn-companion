@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.51.0
+// @version      4.52.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -56,7 +56,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.51.0';
+    const COMPANION_VERSION_FALLBACK = '4.52.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3732,6 +3732,7 @@ function targetRowHtml(t, estRespect) {
             const actionsHtml = `<div class="wt-chat-msg-actions" style="display:none; position:absolute; top:-3px; right:0; gap:1px; background:#1a1d24; border:1px solid #3a3f4b; border-radius:5px; padding:1px 3px;">
                 ${WT_CHAT_QUICK_EMOJI.map(e => `<span class="wt-chat-react-btn" data-emoji="${wtChatEscapeHtml(e)}" style="cursor:pointer; font-size:0.8em; padding:0 1px;">${e}</span>`).join('')}
                 <span class="wt-chat-reply-btn" title="Reply" style="cursor:pointer; font-size:0.8em; padding:0 2px; color:#888;">↩</span>
+                ${m.playerId && m.playerId === myPlayerId ? `<span class="wt-chat-edit-btn" title="Edit" style="cursor:pointer; font-size:0.8em; padding:0 2px; color:#888;">✎</span>` : ''}
             </div>`;
             return `<div class="wt-chat-msg-row" data-nonce="${wtChatEscapeHtml(m.id)}" data-name="${wtChatEscapeHtml(m.name)}" data-text="${wtChatEscapeHtml(m.message || '')}" style="display:flex; gap:6px; position:relative;">
                 ${actionsHtml}
@@ -3778,6 +3779,12 @@ function targetRowHtml(t, estRespect) {
                     if (row) wtChatStartReply(channelKey, row.dataset.nonce, row.dataset.name, row.dataset.text);
                     return;
                 }
+                const editBtn = e.target.closest('.wt-chat-edit-btn');
+                if (editBtn) {
+                    const row = editBtn.closest('.wt-chat-msg-row');
+                    if (row) wtChatStartEdit(channelKey, row.dataset.nonce, row.dataset.text);
+                    return;
+                }
                 const jumpEl = e.target.closest('[data-jump-nonce]');
                 if (jumpEl) { wtChatJumpToMessage(body, jumpEl.dataset.jumpNonce); return; }
                 // A tap anywhere else on the row (not a link/image, which
@@ -3811,6 +3818,7 @@ function targetRowHtml(t, estRespect) {
         }
         function wtChatStartReply(channelKey, nonce, name, text) {
             const safeId = wtChatSafeId(channelKey);
+            wtChatCancelEdit(channelKey); // mutually exclusive input modes
             wtChatStateFor(channelKey).replyingTo = { nonce, name, snippet: (text || '').slice(0, 140) };
             const bar = document.getElementById('wt-chat-reply-preview-' + safeId);
             const nameEl = document.getElementById('wt-chat-reply-name-' + safeId);
@@ -3824,6 +3832,31 @@ function targetRowHtml(t, estRespect) {
         function wtChatCancelReply(channelKey) {
             wtChatStateFor(channelKey).replyingTo = null;
             const bar = document.getElementById('wt-chat-reply-preview-' + wtChatSafeId(channelKey));
+            if (bar) bar.style.display = 'none';
+        }
+        // Own messages only - the ✎ button itself is only ever rendered
+        // for m.playerId === myPlayerId (see wtChatMsgRowHtml), and
+        // makeChatEditHandler re-checks ownership server-side regardless.
+        // Reuses the input bar Send already posts from (becomes a Save,
+        // see wtChatSend) rather than an inline-edit box, same "reuse the
+        // reply plumbing" call the dashboard's equivalent makes.
+        function wtChatStartEdit(channelKey, nonce, text) {
+            const safeId = wtChatSafeId(channelKey);
+            wtChatCancelReply(channelKey);
+            wtChatStateFor(channelKey).editingNonce = nonce;
+            const bar = document.getElementById('wt-chat-edit-preview-' + safeId);
+            if (bar) bar.style.display = 'flex';
+            const input = document.getElementById('wt-chat-input-' + safeId);
+            if (input) { input.value = text || ''; input.focus(); }
+        }
+        function wtChatCancelEdit(channelKey) {
+            const safeId = wtChatSafeId(channelKey);
+            if (wtChatStateFor(channelKey).editingNonce) {
+                const input = document.getElementById('wt-chat-input-' + safeId);
+                if (input) input.value = '';
+            }
+            wtChatStateFor(channelKey).editingNonce = null;
+            const bar = document.getElementById('wt-chat-edit-preview-' + safeId);
             if (bar) bar.style.display = 'none';
         }
         function wtChatJumpToMessage(body, nonce) {
@@ -4038,6 +4071,7 @@ function targetRowHtml(t, estRespect) {
                 if (e.key === 'Escape') { e.preventDefault(); wtChatCloseMentionDropdown(channelKey); return; }
             }
             if (e.key === 'Enter') wtChatSend(channelKey);
+            else if (e.key === 'Escape' && wtChatStateFor(channelKey).editingNonce) wtChatCancelEdit(channelKey);
         }
         // Built ONCE per window, by openPanelWindow right after the window
         // itself is created - NOT by renderChatPanel, and NOT inside the
@@ -4063,6 +4097,10 @@ function targetRowHtml(t, estRespect) {
                 <div id="wt-chat-reply-preview-${safeId}" style="display:none; align-items:center; gap:6px; background:#0b0c10; border:1px solid #444; border-left:2px solid #4CAF50; border-radius:4px; padding:4px 6px;">
                     <span style="color:#888; font-size:0.72em; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Replying to <b id="wt-chat-reply-name-${safeId}" style="color:#ccc;"></b>: <span id="wt-chat-reply-snippet-${safeId}"></span></span>
                     <span id="wt-chat-reply-cancel-${safeId}" style="color:#f44336; cursor:pointer; font-size:0.9em;">✕</span>
+                </div>
+                <div id="wt-chat-edit-preview-${safeId}" style="display:none; align-items:center; gap:6px; background:#0b0c10; border:1px solid #444; border-left:2px solid #ffa726; border-radius:4px; padding:4px 6px;">
+                    <span style="color:#888; font-size:0.72em; flex:1;">Editing message...</span>
+                    <span id="wt-chat-edit-cancel-${safeId}" style="color:#f44336; cursor:pointer; font-size:0.9em;">✕</span>
                 </div>
                 <div style="display:flex; gap:6px; align-items:center; position:relative;">
                     <span id="wt-chat-emoji-btn-${safeId}" title="Emoji" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.9em; flex-shrink:0;">😀</span>
@@ -4092,6 +4130,7 @@ function targetRowHtml(t, estRespect) {
             `;
             container.appendChild(bar);
             document.getElementById('wt-chat-reply-cancel-' + safeId).addEventListener('click', () => wtChatCancelReply(channelKey));
+            document.getElementById('wt-chat-edit-cancel-' + safeId).addEventListener('click', () => wtChatCancelEdit(channelKey));
             document.getElementById('wt-chat-send-btn-' + safeId).addEventListener('click', () => wtChatSend(channelKey));
             document.getElementById('wt-chat-input-' + safeId).addEventListener('keydown', (e) => wtChatInputKeydown(channelKey, e));
             document.getElementById('wt-chat-input-' + safeId).addEventListener('input', () => { wtChatPingTyping(channelKey); wtChatHandleMentionInput(channelKey); });
@@ -4306,6 +4345,16 @@ function targetRowHtml(t, estRespect) {
             if (!input) return;
             const message = input.value.trim();
             if (!message) return;
+            const editingNonce = wtChatStateFor(channelKey).editingNonce;
+            if (editingNonce) {
+                input.value = '';
+                wtChatCancelEdit(channelKey);
+                postToWartorn('chat-edit', { messageNonce: editingNonce, message }).then(({ data }) => {
+                    if (data && data.error) showCompanionToast('⚠️ ' + data.error, null);
+                    renderChatPanel(channelKey);
+                }).catch(() => {});
+                return;
+            }
             input.value = '';
             const replyToNonce = wtChatConsumeReplyToNonce(channelKey);
             postToWartorn('chat-send', { message, imageUrl: '', replyToNonce, channel: channelKey || undefined }).then(({ status, data }) => {
