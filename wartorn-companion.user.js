@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.52.0
+// @version      4.52.1
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -56,7 +56,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.52.0';
+    const COMPANION_VERSION_FALLBACK = '4.52.1';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3709,7 +3709,13 @@ function targetRowHtml(t, estRespect) {
             // isAllowedChatImageUrl in server.js), not something this
             // side has to re-validate, just escape for safe attribute use.
             const imgUrl = wtChatAbsUrl(m.imageUrl);
-            const imgHtml = imgUrl ? `<a href="${wtChatEscapeHtml(imgUrl)}" target="_blank" rel="noopener"><img src="${wtChatEscapeHtml(imgUrl)}" loading="lazy" style="max-width:160px; max-height:160px; border-radius:6px; margin-top:4px; display:block;"></a>` : '';
+            // The only way this is ever a video is a rehosted Discord
+            // video attachment (see rehostFirstImageAttachment,
+            // discordBridge.js) - Wartorn's own picture picker only ever
+            // accepts image mime types.
+            const imgHtml = !imgUrl ? '' : (/\.(mp4|webm|mov)$/i.test(imgUrl)
+                ? `<video controls preload="metadata" style="max-width:160px; max-height:160px; border-radius:6px; margin-top:4px; display:block;" src="${wtChatEscapeHtml(imgUrl)}"></video>`
+                : `<a href="${wtChatEscapeHtml(imgUrl)}" target="_blank" rel="noopener"><img src="${wtChatEscapeHtml(imgUrl)}" loading="lazy" style="max-width:160px; max-height:160px; border-radius:6px; margin-top:4px; display:block;"></a>`);
             // A Discord-linked sender's own role color wins over the plain
             // default cyan - same "whatever Discord calls a user is how it
             // should show" request this chat already follows for name/avatar.
