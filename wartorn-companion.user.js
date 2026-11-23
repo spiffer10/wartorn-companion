@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.50.1
+// @version      4.50.2
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -56,7 +56,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.50.1';
+    const COMPANION_VERSION_FALLBACK = '4.50.2';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4504,13 +4504,26 @@ function targetRowHtml(t, estRespect) {
             }
         }, true);
         // Which window (if any) is currently showing a given channel's
-        // messages - usually its own dedicated panelKey, but on TornPDA a
-        // non-default channel can instead be the one currently selected in
-        // the single shared 'chat' window (see wtSwitchPdaChatChannel).
+        // messages - usually its own dedicated panelKey, but on TornPDA
+        // every channel (including the default one) shares the single
+        // 'chat' window instead, showing whichever channel the in-window
+        // tab strip currently has active (see wtSwitchPdaChatChannel).
+        // That TornPDA case has to be checked FIRST and exclusively - the
+        // default channel's own panelKey is also literally 'chat', so
+        // checking openWindows.has(panelKey) first (as a previous version
+        // did) matched the default channel unconditionally whenever the
+        // window was open, regardless of which tab was actually active -
+        // pollChat (runs on an interval regardless of which panel is
+        // open) then kept re-rendering the default channel's messages
+        // into the window every tick, stomping whatever other channel
+        // the user had switched to and making it look like chat kept
+        // switching channels on its own.
         function wtChatOpenWindowKeyFor(channelKey) {
+            if (isTornPDA() && wtChatChannels.length > 1) {
+                return (channelKey === wtPdaChatActiveChannel && openWindows.has('chat')) ? 'chat' : null;
+            }
             const panelKey = chatPanelKeyOf(channelKey);
             if (openWindows.has(panelKey)) return panelKey;
-            if (channelKey === wtPdaChatActiveChannel && openWindows.has('chat')) return 'chat';
             return null;
         }
         // --- TornPDA in-window channel switcher (more than one channel,
