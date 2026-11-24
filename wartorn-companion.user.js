@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.52.1
+// @version      4.53.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -56,7 +56,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.52.1';
+    const COMPANION_VERSION_FALLBACK = '4.53.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -3701,7 +3701,7 @@ function targetRowHtml(t, estRespect) {
                 return `<span class="wt-chat-reaction-pill" data-emoji="${safeEmoji}" title="${wtChatEscapeHtml(names)}" style="cursor:pointer; font-size:0.72em; background:${mine ? '#1b3a2e' : '#1a1d24'}; border:1px solid ${mine ? '#4CAF50' : '#333'}; border-radius:9px; padding:0 5px; color:#ccc;">${safeEmoji} ${list.length}</span>`;
             }).join('');
         }
-        function wtChatMsgRowHtml(m, myPlayerId) {
+        function wtChatMsgRowHtml(m, myPlayerId, isOlder) {
             const editedHtml = m.editedAt ? `<span class="wt-chat-edited-marker" style="color:#666; font-size:0.68em; margin-left:3px;">(edited)</span>` : '';
             const textHtml = m.message ? `<div class="wt-chat-msg-text" style="color:#ddd; font-size:0.85em; white-space:pre-wrap; word-break:break-word;">${wtChatLinkify(m.message)}${editedHtml}</div>` : '';
             // imageUrl only ever comes from the server's own history
@@ -3740,7 +3740,12 @@ function targetRowHtml(t, estRespect) {
                 <span class="wt-chat-reply-btn" title="Reply" style="cursor:pointer; font-size:0.8em; padding:0 2px; color:#888;">↩</span>
                 ${m.playerId && m.playerId === myPlayerId ? `<span class="wt-chat-edit-btn" title="Edit" style="cursor:pointer; font-size:0.8em; padding:0 2px; color:#888;">✎</span>` : ''}
             </div>`;
-            return `<div class="wt-chat-msg-row" data-nonce="${wtChatEscapeHtml(m.id)}" data-name="${wtChatEscapeHtml(m.name)}" data-text="${wtChatEscapeHtml(m.message || '')}" style="display:flex; gap:6px; position:relative;">
+            // data-older marks a row pulled in by wtChatLoadOlder - excluded
+            // from renderChatPanel's poll-driven delete-sync sweep below,
+            // which only ever sees the server's most-recent-page fetch and
+            // would otherwise mistake every older row for one deleted on
+            // Discord's side.
+            return `<div class="wt-chat-msg-row"${isOlder ? ' data-older="1"' : ''} data-nonce="${wtChatEscapeHtml(m.id)}" data-name="${wtChatEscapeHtml(m.name)}" data-text="${wtChatEscapeHtml(m.message || '')}" style="display:flex; gap:6px; position:relative;">
                 ${actionsHtml}
                 <img class="wt-chat-avatar" src="${wtChatAbsUrl(m.avatarUrl)}" style="width:22px; height:22px; border-radius:50%; object-fit:cover; flex-shrink:0;">
                 <div style="min-width:0; flex:1;">
@@ -3767,6 +3772,8 @@ function targetRowHtml(t, estRespect) {
             body._wtActionsBound = true;
             body.addEventListener('click', (e) => {
                 const channelKey = wtChatKeyChannel(panelKey);
+                const loadOlderBtn = e.target.closest('.wt-chat-load-older-btn');
+                if (loadOlderBtn) { wtChatLoadOlder(channelKey, loadOlderBtn, body); return; }
                 const reactBtn = e.target.closest('.wt-chat-react-btn');
                 if (reactBtn) {
                     const row = reactBtn.closest('.wt-chat-msg-row');
@@ -3801,6 +3808,33 @@ function targetRowHtml(t, estRespect) {
                 const actions = row.querySelector('.wt-chat-msg-actions');
                 if (actions) actions.style.display = actions.style.display === 'flex' ? 'none' : 'flex';
             });
+        }
+        // Pulls another page before st.oldestTs and prepends it, right
+        // after the button itself so the button stays pinned at the top
+        // for the next click - same "load older" design as the dashboard's
+        // (index.html's renderMsg/connectFactionChat), adapted to this
+        // file's delegated-click/row-tagging pattern (see wtChatMsgRowHtml's
+        // isOlder param) instead of inline onclick handlers.
+        async function wtChatLoadOlder(channelKey, btn, body) {
+            const st = wtChatStateFor(channelKey);
+            if (!btn || st.oldestTs == null) return;
+            btn.innerText = 'Loading...';
+            try {
+                const data = await fetchFromWartorn('chat-history' + wtChatChannelParam(channelKey) + (channelKey ? '&' : '?') + 'before=' + st.oldestTs);
+                const older = (data && Array.isArray(data.messages)) ? data.messages : [];
+                st.hasMore = !!(data && data.hasMore);
+                if (older.length) {
+                    st.oldestTs = older[0].ts;
+                    const scrollHeightBefore = body.scrollHeight;
+                    const scrollTopBefore = body.scrollTop;
+                    btn.insertAdjacentHTML('afterend', older.map(m => wtChatMsgRowHtml(m, st.myPlayerId, true)).join(''));
+                    body.scrollTop = scrollTopBefore + (body.scrollHeight - scrollHeightBefore);
+                }
+                if (!st.hasMore) btn.remove();
+                else btn.innerText = '↑ Load older messages';
+            } catch (e) {
+                btn.innerText = '↑ Load older messages (failed - tap to retry)';
+            }
         }
         function wtChatToggleReaction(channelKey, messageNonce, emoji) {
             postToWartorn('chat-react', { messageNonce, emoji }).then(({ data }) => {
@@ -4181,6 +4215,14 @@ function targetRowHtml(t, estRespect) {
                 if (freshOpen) {
                     st.renderedMaxTs = messages.length ? messages[messages.length - 1].ts : 0;
                     const shown = messages.slice(-CHAT_PANEL_INITIAL_LIMIT);
+                    // More to show here is either still sitting unshown in
+                    // this same fetch (CHAT_PANEL_INITIAL_LIMIT trimmed it)
+                    // or on the server past this page (data.hasMore) - either
+                    // way wtChatLoadOlder's own fetch (before=st.oldestTs)
+                    // covers it, so both collapse to the same flag/cursor.
+                    st.oldestTs = shown.length ? shown[0].ts : null;
+                    st.hasMore = messages.length > shown.length || !!(data && data.hasMore);
+                    const loadOlderHtml = st.hasMore ? `<div class="wt-chat-load-older-btn" style="text-align:center; color:#00e5ff; font-size:0.72em; cursor:pointer; padding:3px 0;">↑ Load older messages</div>` : '';
                     // The input row/buttons live outside this scrollable
                     // element entirely now (see buildChatInputBar, built
                     // once by openPanelWindow) - this only ever holds the
@@ -4188,6 +4230,7 @@ function targetRowHtml(t, estRespect) {
                     // nothing here fighting the scroll for space.
                     body.innerHTML = `
                         <div id="wt-chat-list-${safeId}" style="display:flex; flex-direction:column; gap:8px;">
+                            ${loadOlderHtml}
                             ${shown.length ? shown.map(m => wtChatMsgRowHtml(m, st.myPlayerId)).join('') : '<div style="color:#888;">No messages yet - say hello.</div>'}
                         </div>
                         <div id="wt-chat-typing-${safeId}" style="display:none; color:#888; font-size:0.72em; font-style:italic; padding:4px 2px 0;"></div>
@@ -4263,7 +4306,7 @@ function targetRowHtml(t, estRespect) {
                     const list = document.getElementById('wt-chat-list-' + safeId);
                     if (list) {
                         const live = new Set(messages.map(m => m.id));
-                        list.querySelectorAll('[data-nonce]').forEach(row => { if (!live.has(row.dataset.nonce)) row.remove(); });
+                        list.querySelectorAll('[data-nonce]').forEach(row => { if (!row.dataset.older && !live.has(row.dataset.nonce)) row.remove(); });
                     }
                 }
                 // Viewing the panel marks everything currently loaded as
