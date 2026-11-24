@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wartorn Companion
 // @namespace    http://tampermonkey.net/
-// @version      4.53.0
+// @version      4.54.0
 // @description  Wartorn's companion for your faction: side panels for War Targets, Chain Targets, Chain Hits, Vendettas, Flights, and Faction Chat right on torn.com, with a Flights panel that shows a browsable list of bundled multi-item trips (or the live stock to grab while traveling/abroad) plus whichever one you've picked pinned at the bottom, a custom countdown timer, and a live radio player for factions that have one set up. Also feeds live Torn data back to the Wartorn Dashboard in the background. Links or signs up with just your Torn API key - no dashboard visit required.
 // @author       Calvaros
 // @match        https://www.torn.com/*
@@ -56,7 +56,7 @@
     // instead of a useful fallback. Declared up here specifically (not
     // nearer its first use) since checkForCompanionUpdate() below calls
     // itself before the file reaches most other module-level consts.
-    const COMPANION_VERSION_FALLBACK = '4.53.0';
+    const COMPANION_VERSION_FALLBACK = '4.54.0';
 
     // A real, positive signal instead of inferring TornPDA indirectly from
     // GM_* calls throwing (see safeGmGet/safeGmSet below, which still stay
@@ -4144,14 +4144,14 @@ function targetRowHtml(t, estRespect) {
                 </div>
                 <div style="display:flex; gap:6px; align-items:center; position:relative;">
                     <span id="wt-chat-emoji-btn-${safeId}" title="Emoji" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.9em; flex-shrink:0;">😀</span>
-                    <span id="wt-chat-img-btn-${safeId}" title="Send an image (or paste one)" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.8em; flex-shrink:0;">🖼️</span>
+                    <span id="wt-chat-img-btn-${safeId}" title="Send an image or video (or paste an image)" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.8em; flex-shrink:0;">🖼️</span>
                     <span id="wt-chat-gif-btn-${safeId}" title="GIF" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.6em; font-weight:bold; flex-shrink:0;">GIF</span>
                     <span id="wt-chat-discordlink-btn-${safeId}" title="Link your Discord account" style="background:#252525; border:1px solid #444; color:#ccc; width:26px; height:26px; border-radius:4px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; font-size:0.85em; flex-shrink:0;">🔗</span>
                     <input id="wt-chat-input-${safeId}" type="text" placeholder="Message..." maxlength="1000" style="flex:1; min-width:0; background:#0b0c10; border:1px solid #444; color:#fff; padding:6px 8px; border-radius:4px; font-size:0.85em;">
                     <span id="wt-chat-send-btn-${safeId}" style="background:#4CAF50; color:#fff; padding:0 12px; height:26px; border-radius:4px; font-size:0.9em; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;">Send</span>
                     <div id="wt-chat-mention-dropdown-${safeId}" style="display:none; flex-direction:column; position:absolute; bottom:calc(100% + 6px); left:8px; min-width:140px; max-height:160px; overflow-y:auto; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:4px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:51;"></div>
                     <div id="wt-chat-emoji-picker-${safeId}" class="wt-chat-emoji-picker" style="display:none; flex-wrap:wrap; gap:2px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; max-height:180px; overflow-y:auto; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
-                    <input id="wt-chat-img-input-${safeId}" type="file" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none;">
+                    <input id="wt-chat-img-input-${safeId}" type="file" accept="image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm,video/quicktime" style="display:none;">
                     <div id="wt-chat-gif-picker-${safeId}" class="wt-chat-gif-picker" style="display:none; flex-direction:column; gap:6px; position:absolute; bottom:calc(100% + 6px); left:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:8px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50;"></div>
                     <div id="wt-chat-discordlink-popover-${safeId}" class="wt-chat-discordlink-popover" style="display:none; flex-direction:column; position:absolute; bottom:calc(100% + 6px); right:8px; width:220px; background:#1a1d24; border:1px solid #444; border-radius:6px; padding:10px; box-shadow:0 6px 16px rgba(0,0,0,0.5); z-index:50; color:#ccc; font-size:0.78em;">
                         <div style="font-weight:bold; color:#eee; margin-bottom:6px;">Link Discord Account</div>
@@ -4337,9 +4337,15 @@ function targetRowHtml(t, estRespect) {
                 if (!img.complete) img.addEventListener('load', pin, { once: true });
             });
         }
-        // Uploads a picked or pasted image through the companion route, then posts it to chat.
+        // Uploads a picked or pasted image/video through the companion route, then posts it to chat.
+        // Size matches CHAT_UPLOAD_MAX_BYTES/CHAT_UPLOAD_VIDEO_MAX_BYTES (routes/chat.js) -
+        // checked here too so a too-big file never even reaches the FileReader/base64
+        // round trip just to get rejected server-side.
         function wtChatSendImageFile(channelKey, file) {
             if (!file) return;
+            const isVideo = /^video\//.test(file.type);
+            const maxBytes = (isVideo ? 25 : 5) * 1024 * 1024;
+            if (file.size > maxBytes) { alert(`${isVideo ? 'Video' : 'Image'} must be under ${maxBytes / (1024 * 1024)}MB.`); return; }
             const safeId = wtChatSafeId(channelKey);
             const input = document.getElementById('wt-chat-input-' + safeId);
             const flash = (text) => {
@@ -4347,7 +4353,7 @@ function targetRowHtml(t, estRespect) {
                 input.placeholder = text;
                 setTimeout(() => { input.placeholder = 'Message...'; }, 3000);
             };
-            flash('Uploading image...');
+            flash(isVideo ? 'Uploading video...' : 'Uploading image...');
             const reader = new FileReader();
             reader.onload = () => {
                 GM_xmlhttpRequest({
@@ -4355,7 +4361,7 @@ function targetRowHtml(t, estRespect) {
                     url: `${WARTORN_HOST}/api/companion/chat-upload`,
                     headers: { 'Content-Type': 'application/json', 'x-wartorn-key': userApiKey, 'x-wartorn-companion-version': COMPANION_VERSION },
                     data: JSON.stringify({ imageData: reader.result }),
-                    timeout: 30000,
+                    timeout: isVideo ? 60000 : 30000,
                     onload: (res) => {
                         if (res.status === 401) { wtHandleUnauthorized(); return; }
                         let d = {};
@@ -4374,7 +4380,7 @@ function targetRowHtml(t, estRespect) {
                             flash(d.error || 'Upload failed');
                         }
                     },
-                    onerror: () => flash('Upload failed'),
+                    onerror: () => flash(isVideo ? 'Video upload failed' : 'Upload failed'),
                     ontimeout: () => flash('Upload timed out')
                 });
             };
